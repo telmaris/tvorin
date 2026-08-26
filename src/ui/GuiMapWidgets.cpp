@@ -13,7 +13,10 @@
 #include "warfare/CombatPipeline.h"
 #include "ui/GameplayClock.h"
 
+#include <algorithm>
 #include <cmath>
+#include <map>
+#include <set>
 #include <sstream>
 
 namespace
@@ -102,22 +105,82 @@ void GameplayClockWidget::Update(double dt)
 
 // ─── SelectedBuildingWidget ──────────────────────────────────────────────────
 
-// Highlights the selected building and its suppliers.
+// Highlights the selected building and its logistics endpoints.
 void SelectedBuildingWidget::Update(double dt)
 {
-    if (scene == nullptr || scene->game == nullptr || building == nullptr)
+    (void)dt;
+    if (scene == nullptr || scene->game == nullptr || building == nullptr ||
+        !scene->game->GetTileMap().ContainsBuilding(building))
         return;
 
-    const float pulse = 0.5f + 0.5f * std::sin(static_cast<float>(GetTime()) * 3.6f);
-    for (const auto& supplier : building->GetSupplierViews())
+    struct EndpointOverlay
     {
-        if (supplier.building == nullptr)
+        Building* building{nullptr};
+        bool supplier{false};
+        bool receiver{false};
+        std::set<ResourceType> resources;
+    };
+    std::map<int, EndpointOverlay> endpoints;
+    const auto addEndpoint = [&](const BuildingConnectionView& view, bool supplier)
+    {
+        if (view.building == nullptr ||
+            !scene->game->GetTileMap().ContainsBuilding(view.building))
+            return;
+        auto& endpoint = endpoints[view.building->id];
+        endpoint.building = view.building;
+        endpoint.supplier = endpoint.supplier || supplier;
+        endpoint.receiver = endpoint.receiver || !supplier;
+        endpoint.resources.insert(view.type);
+    };
+    for (const auto& supplier : building->GetSupplierViews())
+        addEndpoint(supplier, true);
+    for (const auto& receiver : building->GetReceiverViews())
+        addEndpoint(receiver, false);
+
+    const float pulse = 0.5f + 0.5f * std::sin(static_cast<float>(GetTime()) * 3.6f);
+    for (const auto& [endpointId, endpoint] : endpoints)
+    {
+        (void)endpointId;
+        if (endpoint.building == nullptr)
             continue;
 
-        Rectangle supplierDest = BuildingScreenRect(scene, supplier.building);
-        DrawRectangleRounded(supplierDest, 0.04f, 8,
-                             Color{73, 146, 236, static_cast<unsigned char>(28.0f + pulse * 24.0f)});
-        DrawPulsingOutline(supplierDest, Color{96, 174, 255, 190}, 1.0f);
+        const Rectangle endpointDest = BuildingScreenRect(scene, endpoint.building);
+        const bool combined = endpoint.supplier && endpoint.receiver;
+        const Color fill = combined
+            ? Color{210, 185, 84, static_cast<unsigned char>(28.0f + pulse * 24.0f)}
+            : endpoint.supplier
+                ? Color{73, 146, 236, static_cast<unsigned char>(28.0f + pulse * 24.0f)}
+                : Color{236, 168, 74, static_cast<unsigned char>(28.0f + pulse * 24.0f)};
+        const Color outline = combined ? Color{238, 210, 104, 210}
+            : endpoint.supplier ? Color{96, 174, 255, 190} : Color{255, 190, 86, 205};
+        DrawRectangleRounded(endpointDest, 0.04f, 8, fill);
+        DrawPulsingOutline(endpointDest, outline, 1.0f);
+
+        const int visibleResourceCount = std::min(3, static_cast<int>(endpoint.resources.size()));
+        const float iconSize = 20.0f;
+        const float iconGap = 3.0f;
+        const bool hasOverflow = endpoint.resources.size() > 3;
+        const float overflowWidth = hasOverflow ? 25.0f : 0.0f;
+        const float rowWidth = visibleResourceCount * iconSize +
+                               std::max(0, visibleResourceCount - 1) * iconGap + overflowWidth;
+        float iconX = endpointDest.x + (endpointDest.width - rowWidth) * 0.5f;
+        iconX = std::clamp(iconX, 8.0f,
+                          std::max(8.0f, static_cast<float>(GetScreenWidth()) - rowWidth - 8.0f));
+        float iconY = endpointDest.y - iconSize - 5.0f;
+        if (iconY < 8.0f)
+            iconY = endpointDest.y + endpointDest.height + 5.0f;
+        iconY = std::clamp(iconY, 8.0f, static_cast<float>(GetScreenHeight()) - iconSize - 8.0f);
+        int index = 0;
+        for (ResourceType type : endpoint.resources)
+        {
+            if (index++ >= visibleResourceCount)
+                break;
+            GuiPanel::DrawResourceIcon(type, {iconX, iconY, iconSize, iconSize});
+            iconX += iconSize + iconGap;
+        }
+        if (hasOverflow)
+            UiText::Draw("+" + std::to_string(endpoint.resources.size() - 3),
+                         iconX, iconY + 3.0f, 14, UiTheme::Parchment);
     }
 
     Rectangle dest = BuildingScreenRect(scene, building);

@@ -2924,6 +2924,24 @@ void GuiPanel::Update(double dt)
 
     auto receivers = building->GetReceiverViews();
     auto suppliers = building->GetSupplierViews();
+    const auto endpointIsLive = [&](const BuildingConnectionView& view)
+    {
+        return view.building != nullptr && scene != nullptr && scene->game != nullptr &&
+               scene->game->GetTileMap().ContainsBuilding(view.building);
+    };
+    const auto connectionLess = [&](const BuildingConnectionView& left,
+                                     const BuildingConnectionView& right)
+    {
+        const int leftId = endpointIsLive(left) ? left.building->id : std::numeric_limits<int>::max();
+        const int rightId = endpointIsLive(right) ? right.building->id : std::numeric_limits<int>::max();
+        if (leftId != rightId)
+            return leftId < rightId;
+        if (left.type != right.type)
+            return static_cast<int>(left.type) < static_cast<int>(right.type);
+        return left.alternative < right.alternative;
+    };
+    std::stable_sort(suppliers.begin(), suppliers.end(), connectionLess);
+    std::stable_sort(receivers.begin(), receivers.end(), connectionLess);
     const int connectionLine = 23;
     const int connectionColumnW = std::max(1, (contentW - columnGap) / 2);
     const int connectionRightX = contentX + connectionColumnW + columnGap;
@@ -2932,42 +2950,70 @@ void GuiPanel::Update(double dt)
     int leftY = y + 23;
     int rightY = y + 23;
     const std::string arrow = " -> ";
+    const Color missingColor{238, 184, 84, 255};
+    const auto drawConnectionRow = [&](const BuildingConnectionView& view, bool supplier,
+                                        int x, int& rowY)
+    {
+        const bool live = endpointIsLive(view);
+        const std::string endpointName = live ? view.building->name : "Missing";
+        const std::string resourceName = ResourceDisplayName(view.type);
+        const Color color = live ? UiTheme::Parchment : missingColor;
+        const float iconSize = 18.0f;
+        const float iconY = static_cast<float>(rowY + 2);
+
+        if (supplier)
+        {
+            const std::string prefix = endpointName + arrow;
+            const float prefixWidth = std::min(
+                static_cast<float>(std::max(1, connectionColumnW - 28)),
+                static_cast<float>(MeasureText(prefix.c_str(), 15) + 2));
+            DrawTextFit(prefix,
+                        Rectangle{static_cast<float>(x), static_cast<float>(rowY),
+                                  prefixWidth, 20.0f},
+                        15, color);
+            const float iconX = static_cast<float>(x) + prefixWidth + 3.0f;
+            GuiPanel::DrawResourceIcon(view.type, {iconX, iconY, iconSize, iconSize});
+            DrawTextFit(resourceName,
+                        Rectangle{iconX + iconSize + 4.0f, static_cast<float>(rowY),
+                                  std::max(1.0f, static_cast<float>(std::max(1, connectionColumnW)) -
+                                      prefixWidth - iconSize - 7.0f),
+                                  20.0f},
+                        15, color);
+        }
+        else
+        {
+            GuiPanel::DrawResourceIcon(view.type,
+                                       {static_cast<float>(x), iconY, iconSize, iconSize});
+            std::string suffix = resourceName + arrow + endpointName;
+            if (view.alternative)
+                suffix += " [alt]";
+            DrawTextFit(suffix,
+                        Rectangle{static_cast<float>(x) + iconSize + 5.0f,
+                                  static_cast<float>(rowY),
+                                  static_cast<float>(std::max(1, connectionColumnW)) - iconSize - 5.0f,
+                                  20.0f},
+                        15, color);
+        }
+        rowY += connectionLine;
+    };
     if (suppliers.empty())
     {
-        const std::string label = "No supplier" + arrow + building->name;
-        DrawTextFit(label, Rectangle{static_cast<float>(contentX), static_cast<float>(leftY),
+        DrawTextFit("No supplier", Rectangle{static_cast<float>(contentX), static_cast<float>(leftY),
                                      static_cast<float>(connectionColumnW), 20.0f},
-                    18, Color{238, 184, 84, 255});
+                    15, missingColor);
         leftY += connectionLine;
     }
     for (const auto& supplier : suppliers)
-    {
-        const std::string label = (supplier.building != nullptr ? supplier.building->name : "No supplier") +
-                                  arrow + building->name;
-        const Color color = supplier.building != nullptr ? UiTheme::Parchment : Color{238, 184, 84, 255};
-        DrawTextFit(label, Rectangle{static_cast<float>(contentX), static_cast<float>(leftY),
-                                     static_cast<float>(connectionColumnW), 22.0f}, 18, color);
-        leftY += connectionLine;
-    }
+        drawConnectionRow(supplier, true, contentX, leftY);
     if (receivers.empty() && !outputBuffers.empty())
     {
-        const std::string label = building->name + arrow + "No receiver";
-        DrawTextFit(label, Rectangle{static_cast<float>(connectionRightX), static_cast<float>(rightY),
+        DrawTextFit("No receiver", Rectangle{static_cast<float>(connectionRightX), static_cast<float>(rightY),
                                      static_cast<float>(connectionColumnW), 20.0f},
-                    18, Color{238, 184, 84, 255});
+                    15, missingColor);
         rightY += connectionLine;
     }
     for (const auto& receiver : receivers)
-    {
-        std::string label = building->name + arrow +
-            (receiver.building != nullptr ? receiver.building->name : "No receiver");
-        if (receiver.alternative)
-            label += " (alt)";
-        const Color color = receiver.building != nullptr ? UiTheme::Parchment : Color{238, 184, 84, 255};
-        DrawTextFit(label, Rectangle{static_cast<float>(connectionRightX), static_cast<float>(rightY),
-                                     static_cast<float>(connectionColumnW), 22.0f}, 18, color);
-        rightY += connectionLine;
-    }
+        drawConnectionRow(receiver, false, connectionRightX, rightY);
     y = std::max(leftY, rightY) + sectionGap;
     DrawLineEx({static_cast<float>(contentX), static_cast<float>(y)},
                {static_cast<float>(contentX + contentW), static_cast<float>(y)},
