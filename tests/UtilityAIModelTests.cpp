@@ -1031,7 +1031,7 @@ TEST(UtilityAIModelTests, AIUsesAnIdleUniversityOrStartsAFocus)
         << "with an idle University standing, the AI should start a focus or a technology";
 }
 
-TEST(UtilityAIModelTests, AIStartsNextFocusOnFirstTickAfterCompletion)
+TEST(UtilityAIModelTests, AIStartsNextFocusAfterActionCadence)
 {
     MapParameters params;
     params.sizeX = 301;
@@ -1053,9 +1053,14 @@ TEST(UtilityAIModelTests, AIStartsNextFocusOnFirstTickAfterCompletion)
     ASSERT_TRUE(ai->focuses.GetActiveFocusId().empty());
     ASSERT_TRUE(ai->focuses.HasFocus(firstFocus));
 
-    world.UpdateSimulation(FixedSimulationClock::FixedDt);
-    EXPECT_FALSE(ai->focuses.GetActiveFocusId().empty())
-        << "focus selection must bypass the ordinary decision interval and difficulty skip";
+    bool startedNextFocus = false;
+    for (int tick = 0; tick < 1200 && !startedNextFocus; tick++)
+    {
+        world.UpdateSimulation(FixedSimulationClock::FixedDt);
+        startedNextFocus = !ai->focuses.GetActiveFocusId().empty();
+    }
+    EXPECT_TRUE(startedNextFocus)
+        << "focus selection should resume when the shared action cadence is available";
 }
 
 // The per-player personality must be seeded, never wall-clock or unseeded.
@@ -1151,58 +1156,26 @@ TEST(UtilityAIModelTests, PersonalityBiasDiffersAcrossPlayersButIsStablePerSeed)
     EXPECT_EQ(modelA.GetPersonalityWaveBias(), modelARepeat.GetPersonalityWaveBias());
 }
 
-TEST(UtilityAIModelTests, DifficultyProfilesAreMonotonicAndPrimitiveMatchesFormerHard)
+TEST(UtilityAIModelTests, DifficultyProfilesDoNotGrantStartingAdvantage)
 {
-    const auto& primitive = GetAIDifficultyProfile(AIDifficulty::Primitive);
-    const auto& easy = GetAIDifficultyProfile(AIDifficulty::Easy);
-    const auto& normal = GetAIDifficultyProfile(AIDifficulty::Normal);
-    const auto& hard = GetAIDifficultyProfile(AIDifficulty::Hard);
+    EXPECT_EQ(GetAIDifficultyProfile(AIDifficulty::Primitive).name, "Primitive");
+    EXPECT_EQ(GetAIDifficultyProfile(AIDifficulty::Easy).name, "Easy");
+    EXPECT_EQ(GetAIDifficultyProfile(AIDifficulty::Normal).name, "Normal");
+    EXPECT_EQ(GetAIDifficultyProfile(AIDifficulty::Hard).name, "Hard");
+    EXPECT_DOUBLE_EQ(GetAIDifficultyProfile(AIDifficulty::Primitive).actionIntervalSeconds, 10.0);
+    EXPECT_DOUBLE_EQ(GetAIDifficultyProfile(AIDifficulty::Easy).actionIntervalSeconds, 6.0);
+    EXPECT_DOUBLE_EQ(GetAIDifficultyProfile(AIDifficulty::Normal).actionIntervalSeconds, 3.0);
+    EXPECT_DOUBLE_EQ(GetAIDifficultyProfile(AIDifficulty::Hard).actionIntervalSeconds, 1.0);
 
-    auto amount = [](const AIDifficultyProfile& profile, ResourceType resource)
-    {
-        for (const auto& grant : profile.startingResources)
-            if (grant.resource == resource)
-                return grant.amount;
-        return 0;
-    };
-
-    EXPECT_EQ(amount(primitive, ResourceType::WOOD), 30);
-    EXPECT_EQ(amount(primitive, ResourceType::STONE), 50);
-    EXPECT_EQ(amount(primitive, ResourceType::PLANKS), 40);
-    EXPECT_EQ(amount(primitive, ResourceType::FOOD_PROVISIONS), 30);
-    EXPECT_EQ(amount(primitive, ResourceType::IRON), 30);
-    EXPECT_EQ(amount(primitive, ResourceType::TOOLS), 10);
-    EXPECT_DOUBLE_EQ(primitive.manpowerCapFraction, 0.50);
-
-    for (ResourceType resource : {ResourceType::WOOD, ResourceType::STONE,
-                                  ResourceType::PLANKS, ResourceType::FOOD_PROVISIONS,
-                                  ResourceType::IRON, ResourceType::TOOLS,
-                                  ResourceType::IRON_SWORD, ResourceType::LEATHER_ARMOR,
-                                  ResourceType::HEAVY_ARMOR, ResourceType::ARROWS,
-                                  ResourceType::BATTERING_RAM, ResourceType::BALLISTA})
-    {
-        EXPECT_LE(amount(primitive, resource), amount(easy, resource));
-        EXPECT_LE(amount(easy, resource), amount(normal, resource));
-        EXPECT_LE(amount(normal, resource), amount(hard, resource));
-    }
-    EXPECT_LT(primitive.manpowerCapFraction, easy.manpowerCapFraction);
-    EXPECT_LT(easy.manpowerCapFraction, normal.manpowerCapFraction);
-    EXPECT_LT(normal.manpowerCapFraction, hard.manpowerCapFraction);
-}
-
-// Higher difficulty = a broader head start (resources + manpower into the
-// AI's HQ at init), never a different algorithm.
-TEST(UtilityAIModelTests, HigherDifficultyGrantsStartingAdvantage)
-{
     MapParameters params;
     params.aiOpponentCount = 1;
     params.seed = 5150;
 
-    params.aiDifficulty = 0;  // Primitive — former Hard baseline
+    params.aiDifficulty = 0;
     GameWorld primitiveWorld;
     primitiveWorld.InitWorld("difficulty-baseline", nullptr, nullptr, params);
 
-    params.aiDifficulty = 3;  // Hard — biggest head start
+    params.aiDifficulty = 3;
     GameWorld hardWorld;
     hardWorld.InitWorld("difficulty-hard", nullptr, nullptr, params);
 
@@ -1213,21 +1186,21 @@ TEST(UtilityAIModelTests, HigherDifficultyGrantsStartingAdvantage)
     ASSERT_NE(aiHard, nullptr);
     ASSERT_NE(humanHard, nullptr);
 
-    // Deliberately asserted through MANPOWER only: this comparison isolates
-    // the strategic bonus from the resource stock used by the behavior setup.
-    EXPECT_GT(aiHard->strategicResources.Get(StrategicResourceType::Manpower),
-              aiPrimitive->strategicResources.Get(StrategicResourceType::Manpower))
-        << "Hard AI should start with a manpower cushion a Primitive AI lacks";
-    EXPECT_GT(aiHard->strategicResources.Get(StrategicResourceType::Manpower),
-              humanHard->strategicResources.Get(StrategicResourceType::Manpower))
-        << "the cushion is the AI's advantage over the human";
-    for (ResourceType resource : {ResourceType::IRON_SWORD, ResourceType::LEATHER_ARMOR,
-                                  ResourceType::HEAVY_ARMOR, ResourceType::ARROWS,
-                                  ResourceType::BATTERING_RAM, ResourceType::BALLISTA})
+    auto expectSameStartingState = [](Player* lhs, Player* rhs)
     {
-        EXPECT_GT(AIActions::CountStoredResource(aiHard, resource),
-                  AIActions::CountStoredResource(humanHard, resource))
-            << "Hard profile did not reach the AI stockpile for resource "
-            << static_cast<int>(resource);
-    }
+        ASSERT_NE(lhs, nullptr);
+        ASSERT_NE(rhs, nullptr);
+        EXPECT_EQ(lhs->GetPopulationCap(), rhs->GetPopulationCap());
+        EXPECT_DOUBLE_EQ(lhs->strategicResources.Get(StrategicResourceType::Manpower),
+                         rhs->strategicResources.Get(StrategicResourceType::Manpower));
+        for (ResourceType resource : resourceTypes)
+            EXPECT_EQ(AIActions::CountStoredResource(lhs, resource),
+                      AIActions::CountStoredResource(rhs, resource))
+                << "different starting stock for resource " << static_cast<int>(resource);
+    };
+
+    // Difficulty must not alter the inventory or manpower before the first
+    // simulation command. The AI and human start from the same economy too.
+    expectSameStartingState(aiPrimitive, aiHard);
+    expectSameStartingState(aiHard, humanHard);
 }

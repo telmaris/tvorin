@@ -7,8 +7,8 @@
 # runs dry (playtest 2026-07-17: roads stopped dead when STONE ran out).
 #
 # Values are hand-tuned per-minute averages. Every difficulty uses the same
-# planning targets and decision quality; difficulty is expressed solely by
-# the starting-resource profile in ai/AIDifficulty.h.
+# planning targets and decision quality; difficulty does not change the
+# starting inventory or manpower of the AI.
 #
 # Retuned 2026-07-18 (AI economy tuning plan, Task 5) after fixing the three
 # structural bugs the original values were masking (chain-walk poisoned by
@@ -90,13 +90,9 @@ ai_economy_bias
     # aren't a resource.
     tower_readiness_buildings 4
 
-    # Seconds between AI decision cycles (one concrete action attempt per
-    # cycle). Old hardcoded pace was 1.5; lowered on user request 2026-07-19
-    # ("da się przyspieszyć decyzje AI?"). Note the perceived "fast first
-    # minute, then nothing" is mostly RESOURCE-bound, not cadence-bound: the
-    # opening build-out spends the starting stock, then most decisions fail
-    # affordability checks until production ramps — a faster cadence shortens
-    # the reaction lag once resources ARE there, it can't conjure resources.
+    # Retry interval after no command was produced. A successful command uses
+    # the shared difficulty cadence from ai/AIDifficulty.h; this value only
+    # controls how often an infeasible candidate is reconsidered.
     decision_interval 1.0
 
     # Manpower floor (user design 2026-07-19): below this, with villages

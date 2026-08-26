@@ -12,8 +12,8 @@
 // assets/data/ai.rtsdata and added to the consumption side of what the AI
 // senses — the AI then works to keep production >= consumption, which makes
 // it stand up and sustain production for those costs instead of stalling
-// when its starting stock runs dry. Every difficulty uses the same targets;
-// stronger opponents receive a larger starting profile instead.
+// when its starting stock runs dry. Every difficulty uses the same targets
+// and the same common starting package.
 // Ceiling a `priority` line in ai.rtsdata is normalized against — see
 // AIEconomyBias::NormalizedPriority.
 constexpr int PriorityCeiling = 100;
@@ -43,11 +43,9 @@ struct AIEconomyBias
     // this is the equivalent build-order lever for "start defense in the
     // meantime, once the economy has SOME footing" (user design 2026-07-19).
     int towerReadinessBuildings{4};
-    // Seconds between AI decision cycles (one concrete action attempt per
-    // cycle) — the pace lever (user request 2026-07-19: "da się przyspieszyć
-    // decyzje AI?"). Identical for every AI in both lockstep worlds (static
-    // config), so lowering it is determinism-safe. Default matches the old
-    // hardcoded cadence when the line is absent.
+    // Seconds between retry evaluations after no command was produced. The
+    // actual command cadence is difficulty-specific and lives in
+    // AIDifficultyProfile, so all command-producing actions share one budget.
     double decisionIntervalSeconds{1.5};
     // Manpower floor (user design 2026-07-19): below this, with villages
     // already near population capacity (so manpower won't recover on its

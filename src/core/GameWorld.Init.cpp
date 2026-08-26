@@ -478,45 +478,50 @@ namespace
         }
     }
 
-    // Difficulty is an init-only starting advantage. All levels run the same
-    // decision model; the profile controls only resources and manpower. The
-    // grant is params-driven and therefore identical on host/client mirrors
-    // (lockstep-safe) and requires no save-format change.
-    void GrantDifficultyStartingBonus(Player* aiPlayer, int aiDifficulty)
+    // The opening economy needs a small bootstrap package because the HQ
+    // starts with no wood/planks/tools. The two weapon entries let the first
+    // Barracks demonstrate the military loop before the production chains
+    // are fully online. It is deliberately common to every player and
+    // independent of AIDifficulty, so difficulty cannot buy a head start.
+    void GrantCommonStartingPackage(Player* player)
     {
-        if (aiPlayer == nullptr)
+        if (player == nullptr)
             return;
-        const AIDifficultyProfile& profile = GetAIDifficultyProfile(aiDifficulty);
 
-        auto grantResource = [](StorageComponent* storage, ResourceType type, int amount)
-        {
-            if (amount <= 0)
-                return;
-            auto& buffer = storage->buffers[type];
-            if (buffer.type == ResourceType::Null)
-                buffer = ResourceBuffer{type, amount};
-            buffer.bufferSize = std::max(buffer.bufferSize, static_cast<int>(buffer.buffer.size()) + amount);
-            for (int i = 0; i < amount; i++)
-                buffer.GenerateResource(type);
-        };
+        static constexpr std::array<std::pair<ResourceType, int>, 8> resources{{
+            {ResourceType::WOOD, 30},
+            {ResourceType::STONE, 50},
+            {ResourceType::PLANKS, 40},
+            {ResourceType::FOOD_PROVISIONS, 30},
+            {ResourceType::IRON, 30},
+            {ResourceType::TOOLS, 10},
+            {ResourceType::IRON_SWORD, 20},
+            {ResourceType::LEATHER_ARMOR, 12},
+        }};
 
-        if (!profile.startingResources.empty())
+        for (Building* building : player->GetTrackedBuildingsWithComponent<StorageComponent>())
         {
-            for (auto* building : aiPlayer->GetTrackedBuildingsWithComponent<StorageComponent>())
+            StorageComponent* storage = building != nullptr
+                ? building->GetComponent<StorageComponent>() : nullptr;
+            if (storage == nullptr || building->buildingType != BuildingType::Headquarters)
+                continue;
+
+            for (const auto& [type, amount] : resources)
             {
-                auto* storage = building != nullptr ? building->GetComponent<StorageComponent>() : nullptr;
-                if (storage == nullptr || building->buildingType != BuildingType::Headquarters)
-                    continue;
-
-                for (const AIStartingResourceGrant& grant : profile.startingResources)
-                    grantResource(storage, grant.resource, grant.amount);
-                break;  // a player owns at most one HQ
+                auto& buffer = storage->buffers[type];
+                if (buffer.type == ResourceType::Null)
+                    buffer = ResourceBuffer{type, amount};
+                buffer.bufferSize = std::max(buffer.bufferSize,
+                                             static_cast<int>(buffer.buffer.size()) + amount);
+                for (int i = 0; i < amount; i++)
+                    buffer.GenerateResource(type);
             }
+            break;
         }
 
-        double manpowerGift = aiPlayer->GetPopulationCap() * profile.manpowerCapFraction;
-        if (manpowerGift > 0.0)
-            aiPlayer->AddManpower(manpowerGift);
+        const int manpowerGift = static_cast<int>(player->GetPopulationCap() * 0.50);
+        if (manpowerGift > 0)
+            player->AddManpower(static_cast<double>(manpowerGift));
     }
 
 }
@@ -887,6 +892,7 @@ bool GameWorld::InitWorld(std::string name, Renderer* r, AudioSystem* a, MapPara
     {
         Player* p = playersById.at(playerId);
         CreateStartingVillageAndResources(p, anchor, baseSeedByPlayer.at(playerId));
+        GrantCommonStartingPackage(p);
         // Preserves the original (asymmetric) debug behavior: only the human
         // player gets a resource/manpower grant here, AI opponents only get
         // the debugMode flag — matches pre-reorder InitWorld exactly.
@@ -899,11 +905,6 @@ bool GameWorld::InitWorld(std::string name, Renderer* r, AudioSystem* a, MapPara
                 GrantDebugManpower(p);
             }
         }
-        // Keyed on the slot id, NOT controllerType — playerId 0 is always
-        // the human here, and slot identity is what stays identical between
-        // a host world and a client mirror.
-        if (playerId != 0)
-            GrantDifficultyStartingBonus(p, params.aiDifficulty);
     }
 
     if (render != nullptr)
@@ -998,11 +999,8 @@ bool GameWorld::InitMultiplayerWorld(std::string name, Renderer* r, AudioSystem*
     for (const auto& [playerId, anchor] : hqAnchorsByPlayer)
         CreateStartingVillageAndResources(playersById.at(playerId), anchor, baseSeedByPlayer.at(playerId));
 
-    // Keyed on the slot id, NOT controllerType — AI slots are Remote on a
-    // client mirror, and both sides must build the identical starting state.
     for (const auto& [playerId, anchor] : hqAnchorsByPlayer)
-        if (playerId >= MultiplayerHumanSlots)
-            GrantDifficultyStartingBonus(playersById.at(playerId), params.aiDifficulty);
+        GrantCommonStartingPackage(playersById.at(playerId));
 
     if (params.debugMode)
     {

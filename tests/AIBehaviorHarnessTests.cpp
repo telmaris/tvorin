@@ -242,19 +242,9 @@ TEST(AIBehaviorHarnessTests, HardAIMakesSteadyProgressAndAttacks)
     // gated on AISituation::economyEstablished) — verified here by a real
     // Smith standing and something other than bare militia in circulation.
     //
-    // NOT asserting Foundry specifically (investigated 2026-07-20, confirmed
-    // NOT a Task 1-5 regression): Hard difficulty's starting grant seeds 200
-    // IRON at HQ (GameWorld.Init.cpp), which is vastly more than any recipe's
-    // per-cycle IRON input — so TryBuildProducerFor's chain-walk (AIActions.cpp)
-    // never sees IRON as a "missing input" long enough to descend to
-    // Foundry/IRON_ORE; it stops at IRON_SWORD/STEEL_SWORD and (correctly, by
-    // today's logic) tries another Smith instead, which isn't guaranteed to
-    // default to the sword recipe (RecipeComponent picks recipe 0). That's a
-    // separate, pre-existing gap (producer-type vs. active-recipe selection)
-    // outside this fix's scope — confirmed by extending this same run to 10
-    // sim-minutes: Mine(IRON_ORE) DOES eventually get built (mine count 1->2)
-    // and roster/deploy keep growing normally the whole time, but Foundry
-    // still never appears even then.
+    // NOT asserting Foundry specifically (investigated 2026-07-20):
+    // producer-type vs. active-recipe selection remains a separate concern;
+    // this harness must not depend on a difficulty-specific starting grant.
     EXPECT_GE(samples.back().smiths, 1)
         << "no Smith - the tools/weapon chain never stood up" << report();
     EXPECT_TRUE(sawNonMilitiaUnit)

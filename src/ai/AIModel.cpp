@@ -1,4 +1,5 @@
 #include "ai/AIModel.h"
+#include "ai/AIDifficulty.h"
 #include "ai/AIEconomyBias.h"
 #include "core/GameWorld.h"
 #include "warfare/UnitDefinition.h"
@@ -462,6 +463,7 @@ void UtilityAIModel::Update(GameWorld& world, Player* player, double dt)
     UpdateWaveEvaluation(world, player);
 
     senseTimer -= dt;
+    actionCadenceTimer -= dt;
     decisionTimer -= dt;
     roadTimer -= dt;
     recruitEconomyBuildTimer -= dt;
@@ -498,6 +500,7 @@ void UtilityAIModel::Update(GameWorld& world, Player* player, double dt)
               << " roster=" << situation.rosterCount
               << " manpower=" << situation.manpower
               << " unconnected=" << situation.unconnectedPositionIds.size()
+              << " actionCooldown=" << std::max(0.0, actionCadenceTimer)
               << " action=" << (lastDecisionAction.empty() ? "none" : lastDecisionAction)
               << " scores=" << (lastScoreSummary.empty() ? "none" : lastScoreSummary)
               << " stored={wood:" << AIActions::CountStoredResource(player, ResourceType::WOOD)
@@ -610,18 +613,23 @@ void UtilityAIModel::Update(GameWorld& world, Player* player, double dt)
         decisionTraceCount = std::min(decisionTraceCount + 1, decisionTrace.size());
     }
 
-    // Focuses are a parallel, zero-cost strategic track. They must not wait
-    // for decisionTimer or compete
-    // with an urgent road/build/recruit action.
-    if (player->focuses.GetActiveFocusId().empty())
-        TryStartBestFocus(world, player, situation);
+    // Focuses are zero-cost in resources, but starting one is still a real
+    // command and consumes the same cadence budget as every other action.
+    if (actionCadenceTimer <= 0.0 && player->focuses.GetActiveFocusId().empty() &&
+        TryStartBestFocus(world, player, situation))
+    {
+        lastDecisionAction = "focus";
+        ConsumeActionCadence();
+        return;
+    }
 
-    if (roadTimer <= 0.0)
+    if (roadTimer <= 0.0 && actionCadenceTimer <= 0.0)
     {
         roadTimer = RoadMaintenanceInterval;
         if (AIActions::TryBuildRoads(world, player, actions))
         {
             lastDecisionAction = "roads";
+            ConsumeActionCadence();
             return;
         }
     }
@@ -632,19 +640,20 @@ void UtilityAIModel::Update(GameWorld& world, Player* player, double dt)
     // military milestone is merely waiting for its exact cost. Production and
     // the road-maintenance path continue to run; the next decision retries the
     // Barracks transaction deterministically.
-    if (situation.barracksCount == 0 && situation.basicEconomyEstablished &&
+    if (actionCadenceTimer <= 0.0 && situation.barracksCount == 0 && situation.basicEconomyEstablished &&
         AIActions::CountCompletedOrQueuedBuildings(world, player, BuildingType::Smith) > 0 &&
         HasCompletedFoodFoundation(player))
     {
         if (TryUnlockBarracks(world, player, situation))
         {
             lastDecisionAction = "barracks-opening";
+            ConsumeActionCadence();
             return;
         }
         return;
     }
 
-    if (decisionTimer > 0.0)
+    if (actionCadenceTimer > 0.0 || decisionTimer > 0.0)
         return;
     decisionTimer = GetAIEconomyBias().decisionIntervalSeconds;
 
@@ -677,9 +686,15 @@ void UtilityAIModel::Update(GameWorld& world, Player* player, double dt)
         if (ExecuteNeed(static_cast<AINeed>(index), world, player, situation))
         {
             lastDecisionAction = std::to_string(index);
+            ConsumeActionCadence();
             return;
         }
     }
+}
+
+void UtilityAIModel::ConsumeActionCadence()
+{
+    actionCadenceTimer = GetAIDifficultyProfile(difficulty).actionIntervalSeconds;
 }
 
 std::string UtilityAIModel::GetDecisionTrace() const
@@ -777,10 +792,10 @@ AISituation UtilityAIModel::Sense(GameWorld& world, Player* player)
     // stopped developing — no more Mines, no University — after its early
     // buildout filled every buffer, since Research's University trigger also
     // gates on foodProductionAlive). A raw "stored > 0" check was tried and
-    // reverted (harness catch): difficulty starting grants seed
-    // FOOD_PROVISIONS at HQ, so that reads "alive" for a long time
-    // regardless of whether the chain works at all, which changed Economy's
-    // behavior enough to spam rejected commands on the stress-test seed.
+    // reverted (harness catch): a starting FOOD_PROVISIONS stockpile made
+    // that reads "alive" for a long time regardless of whether the chain
+    // works at all, which changed Economy's behavior enough to spam rejected
+    // commands on the stress-test seed.
     // Checking producer HEALTH instead of a stock snapshot sidesteps that
     // confound entirely: a completed, connected, manned Inn is alive even
     // mid-topped-up-buffer; one with any real problem flag isn't, regardless
@@ -1120,7 +1135,7 @@ bool UtilityAIModel::ExecuteEconomy(GameWorld& world, Player* player, const AISi
     // plan front-loads the basic materials and the (cheap) iron chain, so those
     // get built off the opening stock before anything competes for it — the AI
     // reliably stands up real coal/iron production instead of leaning on a big
-    // starting grant (user report 2026-07-20: "AI wciąż nie buduje żelaza/
+    // starting stockpile (user report 2026-07-20: "AI wciąż nie buduje żelaza/
     // węgla"). When the plan places a step it consumes the cycle; when it's
     // saving up (unaffordable next step) or complete it returns false and the
     // deficit ladder below takes over reactive scaling/sustain.
@@ -2168,11 +2183,10 @@ bool UtilityAIModel::ExecuteRecruitDeploy(GameWorld& world, Player* player, cons
             continue;
         if (smithMissing && def->id != "militia")
         {
-            // Easy+ may start with finished equipment. Spend that finite
-            // reserve before the Smith is ready; after it runs out, the
-            // ordinary producer-chain logic re-establishes the workshop.
-            // Primitive has no gifted weapons and naturally falls back to
-            // militia without a difficulty-specific decision branch.
+            // Every difficulty starts with the same small finished-equipment
+            // reserve. Spend that finite reserve before the Smith is ready;
+            // after it runs out, the ordinary producer-chain logic
+            // re-establishes the workshop.
             bool hasFinishedEquipment = true;
             for (const auto& cost : def->cost)
             {

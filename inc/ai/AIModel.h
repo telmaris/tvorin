@@ -199,9 +199,9 @@ private:
     bool ExecuteLogistics(GameWorld& world, Player* player, const AISituation& s);
     bool ExecuteResearch(GameWorld& world, Player* player, const AISituation& s);
     // Focuses run in parallel with ordinary actions and cost no resources.
-    // This is called every simulation tick, outside the throttled need
-    // cycle, so completion is followed by the next valid choice immediately.
+    // This still uses the same action cadence budget as every other command.
     bool TryStartBestFocus(GameWorld& world, Player* player, const AISituation& s);
+    void ConsumeActionCadence();
     int GetCachedAttackTargetPlayer(GameWorld& world, Player* player);
     // Builds the first affordable producer of `resource` (or of the deepest
     // missing input in its chain). Returns false when nothing can be placed
@@ -230,6 +230,9 @@ private:
     int playerId{0};
     AIActions::AIActionState actions;
     AISituation situation;
+    // One shared budget for every command-producing action: build, recruit,
+    // deploy, road maintenance, research and focus start.
+    double actionCadenceTimer{0.0};
     double senseTimer{0.0};
     double decisionTimer{0.0};
     double roadTimer{0.0};
@@ -253,8 +256,7 @@ private:
     double attackTargetCacheTimer{0.0};
     int cachedAttackTargetPlayer{-1};
     // Deterministic personality RNG, seeded once from (map seed, player id).
-    // Difficulty does not alter decisions; it only selects the starting
-    // profile applied by GameWorld initialization.
+    // Difficulty does not alter decisions; it selects only action cadence.
     std::mt19937 noiseRng;
     bool noiseSeeded{false};
     int difficulty{0};

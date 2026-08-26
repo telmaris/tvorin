@@ -243,6 +243,9 @@ TEST(EliminationTests, EliminationDrainsDefeatedStorageAndCreditsFractionToConqu
     ASSERT_TRUE(p1Storage->buffers.count(ResourceType::WOOD) > 0);
     ASSERT_TRUE(p0Storage->buffers.count(ResourceType::WOOD) > 0);
     p1Storage->buffers[ResourceType::WOOD].SetStoredAmount(100);
+    // Isolate the conquest transfer from the common fair-start package;
+    // otherwise the conqueror's HQ may already be near its WOOD capacity.
+    p0Storage->buffers[ResourceType::WOOD].Clear();
     int conquerorBefore = static_cast<int>(p0Storage->buffers[ResourceType::WOOD].buffer.size());
 
     auto* p1HqComponent = p1Hq->GetComponent<HqComponent>();
