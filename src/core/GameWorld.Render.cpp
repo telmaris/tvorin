@@ -1,4 +1,5 @@
 #include "core/GameWorldInternal.h"
+#include "core/RoadTopology.h"
 #include "warfare/UnitMarchSystem.h"
 
 #include <algorithm>
@@ -85,40 +86,21 @@ namespace
 
     int GetRoadConnectionMask(const TileMap& tilemap, int x, int y)
     {
-        const auto isConnectionAt = [&](int checkX, int checkY)
-        {
-            if (checkX < 0 || checkY < 0 || checkX >= tilemap.params.sizeX || checkY >= tilemap.params.sizeY)
-                return false;
-            const auto& neighbour = tilemap.tilemap[checkY * tilemap.params.sizeX + checkX];
-            // Roads visually continue into an adjacent building's footprint.
-            // Otherwise an endpoint connected to (for example) HQ stops in
-            // the middle of its tile and leaves an artificial grass gap.
-            return neighbour.building != nullptr;
-        };
-
-        int mask = 0;
-        if (isConnectionAt(x - 1, y)) mask |= 1;
-        if (isConnectionAt(x + 1, y)) mask |= 2;
-        if (isConnectionAt(x, y - 1)) mask |= 4;
-        if (isConnectionAt(x, y + 1)) mask |= 8;
-        return mask;
+        return RoadTopology::GetCardinalMask(x, y, tilemap.params.sizeX, tilemap.params.sizeY,
+            [&](int checkX, int checkY)
+            {
+                const auto* neighbour = tilemap.tilemap[checkY * tilemap.params.sizeX + checkX].GetBuilding();
+                return neighbour != nullptr && IsRoadLike(neighbour->buildingType);
+            });
     }
 
     int GetMilitaryRoadConnectionMask(const TileMap& tilemap, int x, int y)
     {
-        const auto isTrackAt = [&](int checkX, int checkY)
-        {
-            if (checkX < 0 || checkY < 0 || checkX >= tilemap.params.sizeX || checkY >= tilemap.params.sizeY)
-                return false;
-            return tilemap.tilemap[checkY * tilemap.params.sizeX + checkX].isMilitaryRoad;
-        };
-
-        int mask = 0;
-        if (isTrackAt(x - 1, y)) mask |= 1;
-        if (isTrackAt(x + 1, y)) mask |= 2;
-        if (isTrackAt(x, y - 1)) mask |= 4;
-        if (isTrackAt(x, y + 1)) mask |= 8;
-        return mask;
+        return RoadTopology::GetCardinalMask(x, y, tilemap.params.sizeX, tilemap.params.sizeY,
+            [&](int checkX, int checkY)
+            {
+                return tilemap.tilemap[checkY * tilemap.params.sizeX + checkX].isMilitaryRoad;
+            });
     }
 
     bool IsRoadRecentlySaturated(const Building& building)
@@ -532,18 +514,12 @@ void GameWorld::DrawMap()
             if (building == nullptr || !IsRoadLike(building->buildingType))
                 continue;
             const Vec2i tilePosition = tilemap.GetCoordsFromId(building->positionId);
-            const auto isConnectionAt = [&](int checkX, int checkY)
-            {
-                if (checkX < 0 || checkY < 0 || checkX >= tilemap.params.sizeX || checkY >= tilemap.params.sizeY)
-                    return false;
-                const Tile& neighbor = tilemap.tilemap[checkY * tilemap.params.sizeX + checkX];
-                return neighbor.building != nullptr;
-            };
+            const int mask = GetRoadConnectionMask(tilemap, tilePosition.x, tilePosition.y);
             DrawRoadUtilizationOverlay(position, GetRoadUtilization(*building),
-                                       isConnectionAt(tilePosition.x - 1, tilePosition.y),
-                                       isConnectionAt(tilePosition.x + 1, tilePosition.y),
-                                       isConnectionAt(tilePosition.x, tilePosition.y - 1),
-                                       isConnectionAt(tilePosition.x, tilePosition.y + 1));
+                                       (mask & RoadTopology::West) != 0,
+                                       (mask & RoadTopology::East) != 0,
+                                       (mask & RoadTopology::North) != 0,
+                                       (mask & RoadTopology::South) != 0);
         }
         render->EndLayer();
     }

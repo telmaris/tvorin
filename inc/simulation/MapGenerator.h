@@ -6,6 +6,7 @@
 
 #include <map>
 #include <memory>
+#include <optional>
 #include <random>
 #include <vector>
 
@@ -122,7 +123,8 @@ class Tile
         Tile(int i) : id(i){}
 
         // Places an owning building anchor on this tile.
-        void CreateBuilding(std::unique_ptr<Building>&& building);
+        void CreateBuilding(std::unique_ptr<Building>&& building,
+                            std::optional<TileType> matchedTerrain = std::nullopt);
         // Removes the anchored building from this tile.
         void DestroyBuilding();
         // Returns true when this tile is occupied by a building anchor or footprint reference.
@@ -179,6 +181,22 @@ struct ResourceOverlayVariantSet
     std::vector<WeightedTileVariant> westEdges;
 };
 
+enum class TerrainPlacementFailure
+{
+    None,
+    OutsideMap,
+    NoAllowedTerrain,
+    InsufficientMatchingTerrain
+};
+
+struct TerrainPlacementEvaluation
+{
+    bool valid{true};
+    TileType matchedTerrainType{TileType::GRASS};
+    int matchingTiles{0};
+    TerrainPlacementFailure failure{TerrainPlacementFailure::None};
+};
+
 // Owns all map tiles and placement/pathing helpers that depend on tile layout.
 class TileMap
 {
@@ -221,6 +239,9 @@ class TileMap
         // callers placing generic terrain features (village, start roads) can
         // omit it and get today's behavior unchanged.
         bool CanBuildFootprint(Vec2i anchor, Vec2i footprint, Player* player, BuildingType type = BuildingType::Building) const;
+        // Returns the canonical terrain variant selected for a footprint.
+        TerrainPlacementEvaluation EvaluateTerrainPlacement(BuildingType type, Vec2i anchor,
+                                                            Vec2i footprint, int minimumTiles = 2) const;
         // Returns true when terrain requirements for a building type are satisfied.
         bool HasRequiredTerrainForBuilding(BuildingType type, Vec2i anchor, Vec2i footprint, int minimumTiles = 2) const;
         // Returns true when all gameplay placement rules are satisfied.

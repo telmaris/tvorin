@@ -1,5 +1,6 @@
 #include "core/GameWorldInternal.h"
 #include "core/Log.h"
+#include "core/RoadTopology.h"
 #include "economy/StockpileIndex.h"
 
 #include <algorithm>
@@ -10,11 +11,12 @@
 using namespace GameWorldInternal;
 
 // Creates and registers the requested runtime object.
-void Tile::CreateBuilding(std::unique_ptr<Building> &&bld)
+void Tile::CreateBuilding(std::unique_ptr<Building> &&bld,
+                          std::optional<TileType> matchedTerrain)
 {
     building = std::move(bld);
     building->placement = this;
-    building->InitBuilding(tileType);
+    building->InitBuilding(matchedTerrain.value_or(tileType));
 }
 
 // Clears the building anchored on this tile.
@@ -55,14 +57,25 @@ void TileMap::BuildOnTile(int id, Player *player, std::unique_ptr<Building> &&bu
 
     Vec2i anchor = GetCoordsFromId(id);
     Vec2i footprint = building->GetFootprint();
-    if (CanPlaceBuilding(building->buildingType, anchor, footprint, player))
+    if (!CanPlaceBuilding(building->buildingType, anchor, footprint, player))
+        return;
+    const TerrainPlacementEvaluation terrain = EvaluateTerrainPlacement(
+        building->buildingType, anchor, footprint);
+    if (!terrain.valid)
+        return;
+
     {
         Log::Msg(building->tag, building->id, " Created");
         building->owner = player;
         building->positionId = id;
 
         Tile &anchorTile = tilemap[id];
-        anchorTile.CreateBuilding(std::move(building));
+        std::optional<TileType> matchedTerrain;
+        const auto& definition = GetBuildingDefinition(building->buildingType);
+        if (!definition.terrainProductions.empty() ||
+            building->buildingType == BuildingType::Woodcutter)
+            matchedTerrain = terrain.matchedTerrainType;
+        anchorTile.CreateBuilding(std::move(building), matchedTerrain);
         Building* placed = anchorTile.building.get();
         if (player != nullptr)
             player->RegisterBuilding(placed);
@@ -78,7 +91,7 @@ void TileMap::BuildOnTile(int id, Player *player, std::unique_ptr<Building> &&bu
             }
         }
 
-        if (placed->buildingType == BuildingType::Road)
+        if (IsRoadLike(placed->buildingType))
             RefreshRoadTilesAround(anchor);
 
         buildingsDirty = true;
@@ -439,49 +452,66 @@ bool TileMap::IsWithinHqClearance(Vec2i anchor, Vec2i footprint, int radius) con
     return false;
 }
 
-// Returns whether this condition is currently true.
-bool TileMap::HasRequiredTerrainForBuilding(BuildingType type, Vec2i anchor, Vec2i footprint, int minimumTiles) const
+TerrainPlacementEvaluation TileMap::EvaluateTerrainPlacement(
+    BuildingType type, Vec2i anchor, Vec2i footprint, int minimumTiles) const
 {
     std::vector<TileType> allowedTypes;
-    if (type == BuildingType::Woodcutter)
-    {
+    const auto& definition = GetBuildingDefinition(type);
+    for (const auto& terrainProduction : definition.terrainProductions)
+        allowedTypes.push_back(terrainProduction.tileType);
+    if (allowedTypes.empty() && type == BuildingType::Woodcutter)
         allowedTypes.push_back(TileType::WOOD);
-    }
-    else
-    {
-        const auto& definition = GetBuildingDefinition(type);
-        for (const auto& terrainProduction : definition.terrainProductions)
-            allowedTypes.push_back(terrainProduction.tileType);
-    }
 
     if (allowedTypes.empty())
-        return true;
+        return {};
 
-    if (!IsInside(anchor))
-        return false;
+    TerrainPlacementEvaluation result;
+    result.valid = false;
+    result.failure = TerrainPlacementFailure::InsufficientMatchingTerrain;
+    if (!IsInsideFootprint(anchor, footprint))
+    {
+        result.failure = TerrainPlacementFailure::OutsideMap;
+        return result;
+    }
 
-    const Tile& anchorTile = tilemap[GetIdFromCoords(anchor)];
-    if (std::find(allowedTypes.begin(), allowedTypes.end(), anchorTile.tileType) == allowedTypes.end() ||
-        anchorTile.resourceRichness <= 0)
-        return false;
-
-    int matchingTiles = 0;
+    std::vector<int> matchingCounts(allowedTypes.size(), 0);
     for (int y = 0; y < footprint.y; y++)
     {
         for (int x = 0; x < footprint.x; x++)
         {
-            Vec2i pos{anchor.x + x, anchor.y + y};
-            if (!IsInside(pos))
+            const Tile& tile = tilemap[GetIdFromCoords({anchor.x + x, anchor.y + y})];
+            if (tile.resourceRichness <= 0)
                 continue;
-
-            const Tile& tile = tilemap[GetIdFromCoords(pos)];
-            bool matches = std::find(allowedTypes.begin(), allowedTypes.end(), tile.tileType) != allowedTypes.end();
-            if (matches && tile.resourceRichness > 0)
-                matchingTiles++;
+            auto it = std::find(allowedTypes.begin(), allowedTypes.end(), tile.tileType);
+            if (it != allowedTypes.end())
+                matchingCounts[static_cast<size_t>(std::distance(allowedTypes.begin(), it))]++;
         }
     }
 
-    return matchingTiles >= minimumTiles;
+    int bestIndex = -1;
+    for (size_t i = 0; i < matchingCounts.size(); i++)
+    {
+        if (matchingCounts[i] < minimumTiles)
+            continue;
+        // The definition order is the stable tie-break for multi-terrain
+        // producers such as Mine.
+        if (bestIndex < 0 || matchingCounts[i] > matchingCounts[static_cast<size_t>(bestIndex)])
+            bestIndex = static_cast<int>(i);
+    }
+    if (bestIndex < 0)
+        return result;
+
+    result.valid = true;
+    result.matchedTerrainType = allowedTypes[static_cast<size_t>(bestIndex)];
+    result.matchingTiles = matchingCounts[static_cast<size_t>(bestIndex)];
+    result.failure = TerrainPlacementFailure::None;
+    return result;
+}
+
+// Returns whether this condition is currently true.
+bool TileMap::HasRequiredTerrainForBuilding(BuildingType type, Vec2i anchor, Vec2i footprint, int minimumTiles) const
+{
+    return EvaluateTerrainPlacement(type, anchor, footprint, minimumTiles).valid;
 }
 
 // Returns whether this condition is currently true.
@@ -490,7 +520,7 @@ bool TileMap::CanPlaceBuilding(BuildingType type, Vec2i anchor, Vec2i footprint,
     if (!CanBuildFootprint(anchor, footprint, player, type))
         return false;
 
-    if (!HasRequiredTerrainForBuilding(type, anchor, footprint, 2))
+    if (!EvaluateTerrainPlacement(type, anchor, footprint, 2).valid)
         return false;
 
     return true;
@@ -626,28 +656,15 @@ bool TileMap::HasResourceOverlay(TileType type) const
            (!it->second.fillers.empty() || !it->second.northEdges.empty());
 }
 
-// Returns the road-neighborhood bitmask for autotiling.
+// Returns the canonical four-neighbour road mask used by both renderers.
 int TileMap::GetRoadAutotileMask(Vec2i pos) const
 {
-    int mask = 0;
-    const std::array<Vec2i, 9> offsets{
-        Vec2i{-1, -1}, Vec2i{0, -1}, Vec2i{1, -1},
-        Vec2i{-1, 0},  Vec2i{0, 0},  Vec2i{1, 0},
-        Vec2i{-1, 1},  Vec2i{0, 1},  Vec2i{1, 1}
-    };
-
-    for (int i = 0; i < offsets.size(); i++)
-    {
-        Vec2i check{pos.x + offsets[i].x, pos.y + offsets[i].y};
-        if (!IsInside(check))
-            continue;
-
-        auto* building = tilemap[GetIdFromCoords(check)].GetBuilding();
-        if (building != nullptr && building->buildingType == BuildingType::Road)
-            mask |= (1 << i);
-    }
-
-    return mask;
+    return RoadTopology::GetCardinalMask(pos.x, pos.y, params.sizeX, params.sizeY,
+        [&](int checkX, int checkY)
+        {
+            const Building* building = tilemap[GetIdFromCoords({checkX, checkY})].GetBuilding();
+            return building != nullptr && IsRoadLike(building->buildingType);
+        });
 }
 
 // Returns the texture id matching a road autotile mask.
@@ -669,7 +686,7 @@ void TileMap::RefreshRoadTilesAround(Vec2i pos)
                 continue;
 
             auto* building = GetBuilding(check);
-            if (building != nullptr && building->buildingType == BuildingType::Road)
+            if (building != nullptr && IsRoadLike(building->buildingType))
                 building->textureId = GetRoadTextureId(check);
         }
     }

@@ -1,6 +1,7 @@
 #include "ui/Renderer.h"
 #include "core/FogOfWar.h"
 #include "core/Log.h"
+#include "core/RoadTopology.h"
 #include "economy/Building.h"
 #include "economy/Player.h"
 #include "ui/UiText.h"
@@ -1698,17 +1699,11 @@ void Renderer::DrawSnapshot(const GameSnapshot& snapshot)
             // the track texture; it only adds its sprite on StaticObjects.
             if (tile.isMilitaryRoad)
             {
-                const auto isTrackAt = [&](int checkX, int checkY)
-                {
-                    if (checkX < 0 || checkY < 0 || checkX >= snapshot.mapSize.x || checkY >= snapshot.mapSize.y)
-                        return false;
-                    return snapshot.tiles[static_cast<size_t>(checkY * snapshot.mapSize.x + checkX)].isMilitaryRoad;
-                };
-                int mask = 0;
-                if (isTrackAt(x - 1, y)) mask |= 1;
-                if (isTrackAt(x + 1, y)) mask |= 2;
-                if (isTrackAt(x, y - 1)) mask |= 4;
-                if (isTrackAt(x, y + 1)) mask |= 8;
+                const int mask = RoadTopology::GetCardinalMask(x, y, snapshot.mapSize.x, snapshot.mapSize.y,
+                    [&](int checkX, int checkY)
+                    {
+                        return snapshot.tiles[static_cast<size_t>(checkY * snapshot.mapSize.x + checkX)].isMilitaryRoad;
+                    });
                 DrawMilitaryRoadTexture(
                     {static_cast<float>(x * TILE_SIZE), static_cast<float>(y * TILE_SIZE)}, mask);
             }
@@ -1770,18 +1765,19 @@ void Renderer::DrawSnapshot(const GameSnapshot& snapshot)
                 const auto& tile = snapshot.tiles[static_cast<size_t>(y * snapshot.mapSize.x + x)];
                 if (!tile.hasBuilding || !IsRoadLike(tile.buildingType))
                     continue;
-                const auto isConnectionAt = [&](int checkX, int checkY)
-                {
-                    if (checkX < 0 || checkY < 0 || checkX >= snapshot.mapSize.x || checkY >= snapshot.mapSize.y)
-                        return false;
-                    const auto& neighbor = snapshot.tiles[static_cast<size_t>(checkY * snapshot.mapSize.x + checkX)];
-                    return neighbor.hasBuilding;
-                };
+                const int mask = RoadTopology::GetCardinalMask(x, y, snapshot.mapSize.x, snapshot.mapSize.y,
+                    [&](int checkX, int checkY)
+                    {
+                        const auto& neighbor = snapshot.tiles[static_cast<size_t>(checkY * snapshot.mapSize.x + checkX)];
+                        return neighbor.hasBuilding && IsRoadLike(neighbor.buildingType);
+                    });
                 DrawRoadUtilizationOverlay(
                     {static_cast<float>(x * TILE_SIZE), static_cast<float>(y * TILE_SIZE)},
                     tile.roadUtilization,
-                    isConnectionAt(x - 1, y), isConnectionAt(x + 1, y),
-                    isConnectionAt(x, y - 1), isConnectionAt(x, y + 1));
+                    (mask & RoadTopology::West) != 0,
+                    (mask & RoadTopology::East) != 0,
+                    (mask & RoadTopology::North) != 0,
+                    (mask & RoadTopology::South) != 0);
             }
         }
         EndLayer();
@@ -1810,18 +1806,12 @@ void Renderer::DrawSnapshot(const GameSnapshot& snapshot)
             const float elapsedTime = static_cast<float>(snapshot.simulationTick) * SimulationTickSeconds;
             if (IsRoadLike(tile.buildingType))
             {
-                const auto isConnectionAt = [&](int checkX, int checkY)
-                {
-                    if (checkX < 0 || checkY < 0 || checkX >= snapshot.mapSize.x || checkY >= snapshot.mapSize.y)
-                        return false;
-                    const auto& neighbour = snapshot.tiles[static_cast<size_t>(checkY * snapshot.mapSize.x + checkX)];
-                    return neighbour.hasBuilding;
-                };
-                int mask = 0;
-                if (isConnectionAt(x - 1, y)) mask |= 1;
-                if (isConnectionAt(x + 1, y)) mask |= 2;
-                if (isConnectionAt(x, y - 1)) mask |= 4;
-                if (isConnectionAt(x, y + 1)) mask |= 8;
+                const int mask = RoadTopology::GetCardinalMask(x, y, snapshot.mapSize.x, snapshot.mapSize.y,
+                    [&](int checkX, int checkY)
+                    {
+                        const auto& neighbour = snapshot.tiles[static_cast<size_t>(checkY * snapshot.mapSize.x + checkX)];
+                        return neighbour.hasBuilding && IsRoadLike(neighbour.buildingType);
+                    });
                 DrawRoadTexture(tile.buildingType, pos, mask, tint);
             }
             else

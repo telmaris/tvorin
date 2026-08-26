@@ -200,6 +200,96 @@ namespace
         }
     };
 
+    struct StartingVillagePathField
+    {
+        std::vector<int> parent;
+        std::vector<int> distance;
+    };
+
+    // Builds one reusable multi-source BFS field from the HQ perimeter. Every
+    // village candidate can then inspect its own perimeter in O(perimeter)
+    // time and reconstruct only the winning path. This keeps world-generation
+    // cost proportional to players instead of running a map-sized BFS for
+    // every one of the 20 candidate anchors.
+    StartingVillagePathField BuildStartingVillagePathField(
+        TileMap& tilemap, Player* player, Vec2i hqAnchor, Vec2i hqFootprint,
+        int militaryRoadClearance)
+    {
+        const int tileCount = tilemap.params.sizeX * tilemap.params.sizeY;
+        StartingVillagePathField field{
+            std::vector<int>(tileCount, -1),
+            std::vector<int>(tileCount, -1)};
+        const auto& roadDefinition = GetBuildingDefinition(BuildingType::Road);
+        auto passable = [&](int tileId)
+        {
+            Vec2i pos = tilemap.GetCoordsFromId(tileId);
+            return tilemap.CanBuildFootprint(pos, roadDefinition.footprint, player,
+                                             BuildingType::Road) &&
+                   HasMilitaryRoadClearance(tilemap, pos, roadDefinition.footprint,
+                                             militaryRoadClearance);
+        };
+
+        std::queue<int> frontier;
+        for (int tileId : tilemap.GetAdjacentTileIds(hqAnchor, hqFootprint))
+        {
+            if (tileId < 0 || tileId >= tileCount || field.distance[tileId] >= 0 ||
+                !passable(tileId))
+                continue;
+            field.distance[tileId] = 0;
+            frontier.push(tileId);
+        }
+
+        while (!frontier.empty())
+        {
+            const int current = frontier.front();
+            frontier.pop();
+            const Vec2i pos = tilemap.GetCoordsFromId(current);
+            const std::array<Vec2i, 4> neighbours{
+                Vec2i{pos.x + 1, pos.y}, Vec2i{pos.x - 1, pos.y},
+                Vec2i{pos.x, pos.y + 1}, Vec2i{pos.x, pos.y - 1}};
+            for (Vec2i next : neighbours)
+            {
+                if (!tilemap.IsInside(next))
+                    continue;
+                const int nextId = tilemap.GetIdFromCoords(next);
+                if (field.distance[nextId] >= 0 || !passable(nextId))
+                    continue;
+                field.parent[nextId] = current;
+                field.distance[nextId] = field.distance[current] + 1;
+                frontier.push(nextId);
+            }
+        }
+        return field;
+    }
+
+    std::vector<int> FindPathFromStartingVillageField(
+        TileMap& tilemap, const StartingVillagePathField& field,
+        Vec2i candidateAnchor, Vec2i candidateFootprint)
+    {
+        const std::vector<int> adjacent = tilemap.GetAdjacentTileIds(
+            candidateAnchor, candidateFootprint);
+        int reached = -1;
+        int bestDistance = std::numeric_limits<int>::max();
+        for (int tileId : adjacent)
+        {
+            if (tileId < 0 || tileId >= static_cast<int>(field.distance.size()) ||
+                field.distance[tileId] < 0)
+                continue;
+            if (field.distance[tileId] < bestDistance)
+            {
+                reached = tileId;
+                bestDistance = field.distance[tileId];
+            }
+        }
+        if (reached < 0)
+            return {};
+
+        std::vector<int> path;
+        for (int cursor = reached; cursor >= 0; cursor = field.parent[cursor])
+            path.push_back(cursor);
+        return path;
+    }
+
     // Chooses the same plan during map-generation preflight and during actual
     // placement. The complete 4x5 candidate set is small; enumerating it
     // avoids proving one random offset safe and then choosing another one.
@@ -214,6 +304,9 @@ namespace
         const Vec2i villageFootprint = villagePreview.GetFootprint();
         const std::vector<Vec2i> exitDirections = GetMilitaryExitDirections(
             militaryRoads, tilemap, playerId, hqAnchor, hqFootprint);
+        const StartingVillagePathField pathField = BuildStartingVillagePathField(
+            tilemap, player, hqAnchor, hqFootprint,
+            kStartingVillageMilitaryRoadClearance);
 
         struct VillageCandidate
         {
@@ -286,9 +379,8 @@ namespace
             // Only a route with a one-tile military-track buffer is accepted.
             // If it does not fit the 20..30 tile budget, the whole map attempt
             // is rejected and GenerateWorldLayout regenerates the world.
-            std::vector<int> path = FindRoadPathBetweenFootprints(
-                tilemap, player, candidate.anchor, villageFootprint,
-                hqAnchor, hqFootprint, kStartingVillageMilitaryRoadClearance);
+            std::vector<int> path = FindPathFromStartingVillageField(
+                tilemap, pathField, candidate.anchor, villageFootprint);
             if (path.empty())
                 continue;
 
@@ -325,9 +417,13 @@ namespace
 
     bool ValidateStartingVillagePlans(TileMap& tilemap,
                                       const MilitaryRoadNetwork& militaryRoads,
-                                      const std::vector<Vec2i>& hqAnchors)
+                                      const std::vector<Vec2i>& hqAnchors,
+                                      int playerCount)
     {
-        for (int playerId = 0; playerId < static_cast<int>(hqAnchors.size()); playerId++)
+        if (playerCount <= 0 || hqAnchors.size() != static_cast<size_t>(playerCount))
+            return false;
+
+        for (int playerId = 0; playerId < playerCount; playerId++)
         {
             StartingVillagePlan plan = FindStartingVillagePlan(
                 tilemap, militaryRoads, nullptr, playerId, hqAnchors[playerId]);
@@ -428,48 +524,92 @@ namespace
 // B5 (docs/work_plan_2026-07-13.md): see the declaration comment in
 // GameWorld.h for the retry rationale (safe because nothing player-visible
 // exists yet at this point in InitWorld/InitMultiplayerWorld).
-Vec2i GameWorld::GenerateWorldLayout(MapParameters& params, int playerCount, std::vector<Vec2i>& outAnchors)
+GameWorld::WorldLayoutResult GameWorld::GenerateWorldLayout(MapParameters& params, int playerCount)
 {
     constexpr int kMaxAttempts = 32;
-    Vec2i hqFootprint = MapGenerator::HeadquartersFootprint();
-    unsigned int baseSeed = params.seed;
+    WorldLayoutResult result;
+    result.hqFootprint = MapGenerator::HeadquartersFootprint();
+    result.requestedSeed = params.seed;
+    result.finalSeed = params.seed;
+
+    if (playerCount <= 0)
+    {
+        result.failureReason = "invalid player count";
+        return result;
+    }
+
+    const unsigned int baseSeed = params.seed;
+
+    auto validAnchors = [&](const std::vector<Vec2i>& anchors)
+    {
+        if (anchors.size() != static_cast<size_t>(playerCount))
+            return false;
+        for (size_t i = 0; i < anchors.size(); i++)
+        {
+            if (!tilemap.IsInsideFootprint(anchors[i], result.hqFootprint))
+                return false;
+            for (size_t j = 0; j < i; j++)
+            {
+                if (anchors[i] == anchors[j])
+                    return false;
+            }
+        }
+        return true;
+    };
 
     for (int attempt = 0; attempt < kMaxAttempts; attempt++)
     {
         params.seed = attempt == 0 ? baseSeed : PerturbSeedForRetry(baseSeed, attempt);
+        result.finalSeed = params.seed;
+        result.attempts = attempt + 1;
 
         tilemap.generator.GenerateTileMap(tilemap, params);
-        outAnchors = MapGenerator::PickHeadquartersAnchors(params, playerCount);
+        const std::vector<Vec2i> anchors = MapGenerator::PickHeadquartersAnchors(params, playerCount);
+        if (!validAnchors(anchors))
+        {
+            result.failureReason = "headquarters anchors are incomplete or overlap";
+            Log::Msg("[MapGenerator]", "invalid HQ anchors on attempt ", attempt,
+                     " (seed ", params.seed, "), retrying");
+            continue;
+        }
 
         std::map<int, Vec2i> hqAnchorsByPlayer;
         for (int playerId = 0; playerId < playerCount; playerId++)
-            hqAnchorsByPlayer[playerId] = outAnchors[playerId];
+            hqAnchorsByPlayer[playerId] = anchors[playerId];
 
         militaryRoads = MilitaryRoadNetwork{};
         // Keep the route tie-break seed stable across village-layout retries.
         // The terrain and HQ layout still change with params.seed, while a
         // retry cannot introduce an unrelated gate-collapse variant merely
         // because the village check asked for another map attempt.
-        militaryRoads.Generate(tilemap, hqAnchorsByPlayer, hqFootprint,
+        militaryRoads.Generate(tilemap, hqAnchorsByPlayer, result.hqFootprint,
                                MapGenerator::HeadquartersTerritorySize(), baseSeed);
 
         if (ValidateMilitaryRing(militaryRoads, playerCount) &&
-            ValidateMilitaryGateSpread(militaryRoads, tilemap, playerCount, hqFootprint) &&
-            ValidateStartingVillagePlans(tilemap, militaryRoads, outAnchors))
+            ValidateMilitaryGateSpread(militaryRoads, tilemap, playerCount, result.hqFootprint) &&
+            ValidateStartingVillagePlans(tilemap, militaryRoads, anchors, playerCount))
         {
             if (attempt > 0)
                 Log::Msg("[MapGenerator]", "world generation succeeded on retry attempt ", attempt,
                           " (seed ", params.seed, ")");
-            return hqFootprint;
+            result.success = true;
+            result.anchors = anchors;
+            return result;
         }
 
         Log::Msg("[MapGenerator]", "world generation validation failed on attempt ", attempt,
-                  " (seed ", params.seed, "), retrying");
+                   " (seed ", params.seed, "), retrying");
+        result.failureReason = "military ring or starting village validation failed";
     }
 
-    Log::Msg("[MapGenerator]", "world generation validation still failing after ", kMaxAttempts,
-              " attempts — proceeding with the last attempt (seed ", params.seed, ")");
-    return hqFootprint;
+    Log::Msg("[MapGenerator]", "world generation failed after ", kMaxAttempts,
+              " attempts (requested seed ", result.requestedSeed,
+              ", last seed ", result.finalSeed, ")");
+    tilemap.tilemap.clear();
+    tilemap.terrainDirty = true;
+    tilemap.buildingsDirty = true;
+    militaryRoads = MilitaryRoadNetwork{};
+    return result;
 }
 
 // Creates and registers the requested runtime object.
@@ -703,8 +843,10 @@ void GameWorld::CreateStartingVillageAndResources(Player* player, Vec2i hqAnchor
 // could only route around bases by treating each one as a big blocked
 // rectangle — a real box, but the fallback above could still land on a
 // village or a resource-patch access road placed near that rectangle's edge.
-void GameWorld::InitWorld(std::string name, Renderer* r, AudioSystem* a, MapParameters params)
+bool GameWorld::InitWorld(std::string name, Renderer* r, AudioSystem* a, MapParameters params)
 {
+    initialized = false;
+    initializationError.clear();
     combatTelemetry.Clear();
     worldName = name;
     render = r;
@@ -715,8 +857,18 @@ void GameWorld::InitWorld(std::string name, Renderer* r, AudioSystem* a, MapPara
     // B1 (docs/work_plan_2026-07-13.md): every HQ — including the human
     // player's — sits on the same deterministic n-gon; no player is
     // special-cased to the exact map center anymore.
-    std::vector<Vec2i> anchors;
-    Vec2i hqFootprint = GenerateWorldLayout(params, playerCount, anchors);
+    WorldLayoutResult layout = GenerateWorldLayout(params, playerCount);
+    if (!layout.success)
+    {
+        initializationError = "World generation failed (seed " +
+            std::to_string(layout.requestedSeed) + ", last attempt seed " +
+            std::to_string(layout.finalSeed) + "): " +
+            (layout.failureReason.empty() ? "no valid layout" : layout.failureReason);
+        Log::Msg("[MapGenerator]", initializationError);
+        return false;
+    }
+    const std::vector<Vec2i>& anchors = layout.anchors;
+    const Vec2i hqFootprint = layout.hqFootprint;
 
     localPlayerId = 0;
     auto* human = CreatePlayer(0, PlayerControllerType::LocalHuman, "Player", PlayerSlotColor(0));
@@ -774,11 +926,15 @@ void GameWorld::InitWorld(std::string name, Renderer* r, AudioSystem* a, MapPara
         cachedCameraZoom = -1.0f;
     }
     UpdateFogOfWar();
+    initialized = true;
+    return true;
 }
 
 // Initializes deterministic multiplayer runtime state with server-assigned slots.
-void GameWorld::InitMultiplayerWorld(std::string name, Renderer* r, AudioSystem* a, MapParameters params, int localId, bool authoritativeHost)
+bool GameWorld::InitMultiplayerWorld(std::string name, Renderer* r, AudioSystem* a, MapParameters params, int localId, bool authoritativeHost)
 {
+    initialized = false;
+    initializationError.clear();
     combatTelemetry.Clear();
     worldName = name;
     render = r;
@@ -792,8 +948,18 @@ void GameWorld::InitMultiplayerWorld(std::string name, Renderer* r, AudioSystem*
     // deterministic n-gon, same as InitWorld. B5: terrain + anchors + the
     // military road ring are generated (and retried on validation failure)
     // together, before any player/building exists.
-    std::vector<Vec2i> anchors;
-    Vec2i hqFootprint = GenerateWorldLayout(params, playerCount, anchors);
+    WorldLayoutResult layout = GenerateWorldLayout(params, playerCount);
+    if (!layout.success)
+    {
+        initializationError = "World generation failed (seed " +
+            std::to_string(layout.requestedSeed) + ", last attempt seed " +
+            std::to_string(layout.finalSeed) + "): " +
+            (layout.failureReason.empty() ? "no valid layout" : layout.failureReason);
+        Log::Msg("[MapGenerator]", initializationError);
+        return false;
+    }
+    const std::vector<Vec2i>& anchors = layout.anchors;
+    const Vec2i hqFootprint = layout.hqFootprint;
 
     std::map<int, Vec2i> hqAnchorsByPlayer;
     std::map<int, Player*> playersById;
@@ -869,5 +1035,7 @@ void GameWorld::InitMultiplayerWorld(std::string name, Renderer* r, AudioSystem*
         cachedCameraZoom = -1.0f;
     }
     UpdateFogOfWar();
+    initialized = true;
+    return true;
 }
 

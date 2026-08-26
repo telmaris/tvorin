@@ -3,6 +3,8 @@
 
 #include <gtest/gtest.h>
 
+#include <array>
+
 namespace
 {
     // Creates a rectangular grass map fully owned by the supplied player.
@@ -35,6 +37,19 @@ namespace
                 tile.tileType = type;
                 tile.resourceRichness = richness;
             }
+        }
+    }
+
+    void PaintMineCells(TileMap& map, Vec2i anchor,
+                        const std::array<TileType, 4>& types,
+                        int richness = 10)
+    {
+        for (int index = 0; index < 4; index++)
+        {
+            Vec2i pos{anchor.x + index % 2, anchor.y + index / 2};
+            Tile& tile = map[pos];
+            tile.tileType = types[static_cast<size_t>(index)];
+            tile.resourceRichness = richness;
         }
     }
 }
@@ -127,6 +142,78 @@ TEST(BuildingPlacementTests, ResourceProducerRequiresMatchingTerrainAndRichness)
 
     map.tilemap[map.GetIdFromCoords({2, 2})].resourceRichness = 0;
     EXPECT_FALSE(map.CanPlaceBuilding(BuildingType::Woodcutter, {2, 2}, footprint, &player));
+}
+
+TEST(BuildingPlacementTests, MineSelectsTheMostAbundantTerrainFromItsWholeFootprint)
+{
+    const Vec2i anchor{4, 4};
+    const std::array<TileType, 6> mineTerrains{
+        TileType::IRON_ORE, TileType::COAL, TileType::STONE,
+        TileType::COPPER_ORE, TileType::CLAY, TileType::SAND};
+
+    for (TileType terrain : mineTerrains)
+    {
+        TileMap map;
+        Player player{0, map};
+        FillOwnedGrassMap(map, &player);
+        PaintMineCells(map, anchor, {terrain, terrain, TileType::GRASS, TileType::GRASS});
+
+        const TerrainPlacementEvaluation evaluation = map.EvaluateTerrainPlacement(
+            BuildingType::Mine, anchor, {2, 2});
+        EXPECT_TRUE(evaluation.valid);
+        EXPECT_EQ(evaluation.matchedTerrainType, terrain);
+        EXPECT_EQ(evaluation.matchingTiles, 2);
+    }
+}
+
+TEST(BuildingPlacementTests, MineRequiresTwoRichTilesOfOneTerrainAndFitsInsideMap)
+{
+    const Vec2i anchor{4, 4};
+    auto evaluate = [&](const std::array<TileType, 4>& types, int richness = 10)
+    {
+        TileMap map;
+        Player player{0, map};
+        FillOwnedGrassMap(map, &player);
+        PaintMineCells(map, anchor, types, richness);
+        return map.EvaluateTerrainPlacement(BuildingType::Mine, anchor, {2, 2});
+    };
+
+    EXPECT_FALSE(evaluate({TileType::GRASS, TileType::GRASS,
+                           TileType::GRASS, TileType::GRASS}).valid);
+    EXPECT_FALSE(evaluate({TileType::COAL, TileType::GRASS,
+                           TileType::GRASS, TileType::GRASS}).valid);
+    EXPECT_FALSE(evaluate({TileType::COAL, TileType::IRON_ORE,
+                           TileType::GRASS, TileType::GRASS}).valid);
+    EXPECT_FALSE(evaluate({TileType::COAL, TileType::COAL,
+                           TileType::GRASS, TileType::GRASS}, 0).valid);
+
+    TileMap edgeMap;
+    Player edgePlayer{0, edgeMap};
+    FillOwnedGrassMap(edgeMap, &edgePlayer);
+    EXPECT_EQ(edgeMap.EvaluateTerrainPlacement(BuildingType::Mine, {11, 11}, {2, 2}).failure,
+              TerrainPlacementFailure::OutsideMap);
+}
+
+TEST(BuildingPlacementTests, MineTieUsesDefinitionOrderAndInitializesThatVariant)
+{
+    TileMap map;
+    Player player{0, map};
+    FillOwnedGrassMap(map, &player);
+    const Vec2i anchor{4, 4};
+    PaintMineCells(map, anchor, {TileType::IRON_ORE, TileType::IRON_ORE,
+                                 TileType::COAL, TileType::COAL});
+
+    const TerrainPlacementEvaluation evaluation = map.EvaluateTerrainPlacement(
+        BuildingType::Mine, anchor, {2, 2});
+    ASSERT_TRUE(evaluation.valid);
+    EXPECT_EQ(evaluation.matchedTerrainType, TileType::IRON_ORE);
+
+    map.BuildOnTile(map.GetIdFromCoords(anchor), &player, std::make_unique<Mine>(7));
+    Building* building = map.GetBuilding(anchor);
+    ASSERT_NE(building, nullptr);
+    const auto* production = building->GetComponent<ProductionComponent>();
+    ASSERT_NE(production, nullptr);
+    EXPECT_EQ(production->terrainType, TileType::IRON_ORE);
 }
 
 TEST(BuildingPlacementTests, FootprintReferencesPointBackToAnchorBuilding)

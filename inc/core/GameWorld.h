@@ -50,9 +50,11 @@ class GameWorld
         GameWorld& operator=(GameWorld&&) noexcept = default;
 
         // Creates a new world with generated terrain and starting entities.
-        void InitWorld(std::string, Renderer*, AudioSystem* audio = nullptr, MapParameters params = {});
+        // Returns false when bounded world generation cannot produce a valid
+        // layout. In that case no playable session is started.
+        bool InitWorld(std::string, Renderer*, AudioSystem* audio = nullptr, MapParameters params = {});
         // Creates a deterministic multiplayer world with server-assigned player slots.
-        void InitMultiplayerWorld(std::string name, Renderer* renderer, AudioSystem* audio, MapParameters params, int localPlayerId, bool authoritativeHost);
+        bool InitMultiplayerWorld(std::string name, Renderer* renderer, AudioSystem* audio, MapParameters params, int localPlayerId, bool authoritativeHost);
         // Writes the current world state to a save file.
         bool SaveToFile(const std::string& path) const;
         // Rebuilds the world state from a save file.
@@ -107,6 +109,10 @@ class GameWorld
         void EliminatePlayer(int defeatedPlayerId, int conquerorPlayerId);
         // Returns the authoritative simulation tick counter.
         std::uint64_t GetSimulationTick() const { return simulationTick; }
+        // Generation status for callers that need to avoid starting a session
+        // after a bounded layout failure.
+        bool IsInitialized() const { return initialized; }
+        const std::string& GetInitializationError() const { return initializationError; }
         // Diagnostics for the resource lifecycle audit. These values are
         // derived from world-owned player/building state and are not gameplay
         // inputs.
@@ -162,9 +168,19 @@ class GameWorld
         // fails validation. Entirely before any Player/Building exists, so a
         // retry never needs to undo player-visible state — each attempt just
         // regenerates the tilemap terrain and ring from scratch. Returns the
-        // (fixed) HQ footprint and writes the accepted anchors (one per
-        // player id 0..playerCount-1) to `outAnchors`.
-        Vec2i GenerateWorldLayout(MapParameters& params, int playerCount, std::vector<Vec2i>& outAnchors);
+        // (fixed) HQ footprint and the accepted anchors (one per player id
+        // 0..playerCount-1). A failed result never represents a playable map.
+        struct WorldLayoutResult
+        {
+            bool success{false};
+            Vec2i hqFootprint{};
+            std::vector<Vec2i> anchors;
+            unsigned int requestedSeed{0};
+            unsigned int finalSeed{0};
+            int attempts{0};
+            std::string failureReason;
+        };
+        WorldLayoutResult GenerateWorldLayout(MapParameters& params, int playerCount);
         // Creates one player and initializes display/controller metadata.
         Player* CreatePlayer(int id, PlayerControllerType controllerType, const std::string& name, Color color);
         // Places just the Headquarters (and clears its starting area) — must
@@ -219,6 +235,8 @@ class GameWorld
         std::unique_ptr<PathingService> pathingService;
         std::uint64_t nextCommandId{1};
         std::uint64_t simulationTick{0};
+        bool initialized{false};
+        std::string initializationError;
         Vec2f cachedCameraTarget{std::numeric_limits<float>::max(), std::numeric_limits<float>::max()};
         float cachedCameraZoom{-1.0f};
 };

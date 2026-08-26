@@ -1,5 +1,6 @@
 #include "simulation/MapGenerator.h"
 #include "economy/Player.h"
+#include "core/RoadTopology.h"
 
 #include <gtest/gtest.h>
 
@@ -101,9 +102,7 @@ TEST(TileMapDomainTests, RoadAutotileMaskAndRefreshTrackNeighbors)
     ASSERT_NE(east, nullptr);
 
     int mask = map.GetRoadAutotileMask({2, 2});
-    EXPECT_NE(mask & (1 << 4), 0);
-    EXPECT_NE(mask & (1 << 1), 0);
-    EXPECT_NE(mask & (1 << 5), 0);
+    EXPECT_EQ(mask, RoadTopology::North | RoadTopology::East);
 
     map.RefreshRoadTilesAround({2, 2});
     EXPECT_EQ(center->textureId, map.GetRoadTextureId({2, 2}));
@@ -130,6 +129,44 @@ TEST(TileMapDomainTests, AutoConnectAndConnectReceiverToggleProductionLinks)
     EXPECT_FALSE(mill->HasReceiver(ResourceType::PLANKS));
     map.ConnectReceiver(mill, storage);
     EXPECT_TRUE(mill->HasReceiver(ResourceType::PLANKS));
+}
+
+TEST(TileMapDomainTests, CardinalRoadMaskCoversAllSixteenConfigurations)
+{
+    for (int expected = 0; expected < 16; expected++)
+    {
+        const int actual = RoadTopology::GetCardinalMask(2, 2, 5, 5,
+            [&](int x, int y)
+            {
+                if (x == 1 && y == 2) return (expected & RoadTopology::West) != 0;
+                if (x == 3 && y == 2) return (expected & RoadTopology::East) != 0;
+                if (x == 2 && y == 1) return (expected & RoadTopology::North) != 0;
+                if (x == 2 && y == 3) return (expected & RoadTopology::South) != 0;
+                return false;
+            });
+        EXPECT_EQ(actual, expected);
+    }
+}
+
+TEST(TileMapDomainTests, RoadMaskIgnoresAdjacentNonRoadBuildingsAndIncludesBridges)
+{
+    TileMap map;
+    Player player{0, map};
+    FillMap(map, &player, 8, 8);
+
+    auto* center = map.PlaceLoadedBuilding(map.GetIdFromCoords({3, 3}), &player, std::make_unique<Road>(1));
+    auto* north = map.PlaceLoadedBuilding(map.GetIdFromCoords({3, 2}), &player, std::make_unique<Road>(2));
+    auto* eastBuilding = map.PlaceLoadedBuilding(map.GetIdFromCoords({4, 3}), &player, std::make_unique<StorageBuilding>(3));
+    ASSERT_NE(center, nullptr);
+    ASSERT_NE(north, nullptr);
+    ASSERT_NE(eastBuilding, nullptr);
+
+    EXPECT_EQ(map.GetRoadAutotileMask({3, 3}), RoadTopology::North);
+
+    map.DestroyBuildingAt(eastBuilding->positionId);
+    auto* eastBridge = map.PlaceLoadedBuilding(map.GetIdFromCoords({4, 3}), &player, std::make_unique<Bridge>(4));
+    ASSERT_NE(eastBridge, nullptr);
+    EXPECT_EQ(map.GetRoadAutotileMask({3, 3}), RoadTopology::North | RoadTopology::East);
 }
 
 TEST(TileMapDomainTests, AutoConnectConsumerDoesNotChangeExistingProducerDestination)

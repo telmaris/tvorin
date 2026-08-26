@@ -136,6 +136,23 @@ TEST(MapGeneratorTests, PlacementIsDeterministicForSameSeed)
     EXPECT_EQ(anchorsA, anchorsB);
 }
 
+TEST(MapGeneratorTests, FailedWorldGenerationReturnsControlledErrorWithoutPartialWorld)
+{
+    MapParameters params = MakeParams(0xC0FFEEu);
+    params.sizeX = 1;
+    params.sizeY = 1;
+    params.aiOpponentCount = 5;
+
+    GameWorld world;
+    EXPECT_FALSE(world.InitWorld("invalid-layout", nullptr, nullptr, params));
+    EXPECT_FALSE(world.IsInitialized());
+    EXPECT_THAT(world.GetInitializationError(), testing::HasSubstr("seed"));
+    EXPECT_THAT(world.GetInitializationError(), testing::HasSubstr("last attempt seed"));
+    EXPECT_TRUE(world.GetPlayerHandler().players.empty());
+    EXPECT_TRUE(world.GetMilitaryRoads().GetRoutes().empty());
+    EXPECT_TRUE(world.GetTileMap().tilemap.empty());
+}
+
 TEST(MapGeneratorTests, StartingResourcePatchShapeIsRoundedIrregularAndSlightlyLarger)
 {
     std::set<std::set<std::pair<int, int>>> distinctShapes;

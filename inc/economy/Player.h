@@ -109,7 +109,7 @@ public:
         static_assert(std::is_base_of<Building, T>::value);
         T preview{0};
         Vec2i anchor = tilemap->GetCoordsFromId(tilePos);
-        if (!tilemap->CanBuildFootprint(anchor, preview.GetFootprint(), this, preview.buildingType))
+        if (!tilemap->CanPlaceBuilding(preview.buildingType, anchor, preview.GetFootprint(), this))
             return nullptr;
 
         const auto& definition = GetBuildingDefinition(preview.buildingType);

@@ -1246,6 +1246,8 @@ bool GameWorld::LoadFromStream(std::istream& in, Renderer* renderer, AudioSystem
         return false;
 
     UpdateFogOfWar();
+    initialized = true;
+    initializationError.clear();
     return true;
 }
 

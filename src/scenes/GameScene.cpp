@@ -662,7 +662,22 @@ void GameScene::StartNewGame(std::string name, MapParameters params)
     render.ClearLayers();
     game = std::make_unique<GameWorld>();
     std::string worldName = SanitizeSaveName(name);
-    game->InitWorld(worldName, &render, audioSystem, params);
+    if (!game->InitWorld(worldName, &render, audioSystem, params))
+    {
+        const std::string error = game->GetInitializationError();
+        Log::Msg("GameScene", "Could not start single-player world: ", error);
+        game.reset();
+        auto statusEvent = std::make_shared<NetworkStatusEvent>();
+        statusEvent->sender = this;
+        statusEvent->message = "Could not create world: " + error;
+        broker->Broadcast(statusEvent);
+        auto sceneEvent = std::make_shared<ChangeSceneEvent>();
+        sceneEvent->sender = this;
+        sceneEvent->sceneName = "MainScene";
+        sceneEvent->previousSceneName = name;
+        broker->Broadcast(sceneEvent);
+        return;
+    }
     runtimeLoop = std::make_unique<HostRuntimeLoop>(std::make_unique<HostSession>(*game));
     prevUnlockedTechCount  = 0;
     prevUnlockedFocusCount = 0;
@@ -678,7 +693,22 @@ void GameScene::StartMultiplayerHost(std::string name, MapParameters params, uns
     render.ClearLayers();
     game = std::make_unique<GameWorld>();
     std::string worldName = SanitizeSaveName(name);
-    game->InitMultiplayerWorld(worldName, &render, audioSystem, params, 0, true);
+    if (!game->InitMultiplayerWorld(worldName, &render, audioSystem, params, 0, true))
+    {
+        const std::string error = game->GetInitializationError();
+        Log::Msg("GameScene", "Could not start multiplayer host world: ", error);
+        game.reset();
+        auto statusEvent = std::make_shared<NetworkStatusEvent>();
+        statusEvent->sender = this;
+        statusEvent->message = "Could not create world: " + error;
+        broker->Broadcast(statusEvent);
+        auto sceneEvent = std::make_shared<ChangeSceneEvent>();
+        sceneEvent->sender = this;
+        sceneEvent->sceneName = "MainScene";
+        sceneEvent->previousSceneName = name;
+        broker->Broadcast(sceneEvent);
+        return;
+    }
     knownIncomingUnitIds.clear();
     if (transport == nullptr)
         transport = TcpGameTransport::CreateHost(port);
@@ -697,7 +727,22 @@ void GameScene::StartMultiplayerClient(std::string name, MapParameters params, c
     render.ClearLayers();
     game = std::make_unique<GameWorld>();
     std::string worldName = SanitizeSaveName(name);
-    game->InitMultiplayerWorld(worldName, &render, audioSystem, params, 1, false);
+    if (!game->InitMultiplayerWorld(worldName, &render, audioSystem, params, 1, false))
+    {
+        const std::string error = game->GetInitializationError();
+        Log::Msg("GameScene", "Could not start multiplayer client world: ", error);
+        game.reset();
+        auto statusEvent = std::make_shared<NetworkStatusEvent>();
+        statusEvent->sender = this;
+        statusEvent->message = "Could not create world: " + error;
+        broker->Broadcast(statusEvent);
+        auto sceneEvent = std::make_shared<ChangeSceneEvent>();
+        sceneEvent->sender = this;
+        sceneEvent->sceneName = "MainScene";
+        sceneEvent->previousSceneName = name;
+        broker->Broadcast(sceneEvent);
+        return;
+    }
     knownIncomingUnitIds.clear();
     if (transport == nullptr)
         transport = TcpGameTransport::CreateClient(address, port);
