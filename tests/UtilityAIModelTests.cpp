@@ -1063,6 +1063,29 @@ TEST(UtilityAIModelTests, AIStartsNextFocusAfterActionCadence)
         << "focus selection should resume when the shared action cadence is available";
 }
 
+TEST(UtilityAIModelTests, DecisionTraceReportsActionContextAndFocusPlan)
+{
+    MapParameters params;
+    params.sizeX = 101;
+    params.sizeY = 101;
+    params.aiOpponentCount = 1;
+    params.aiDifficulty = 3;
+    params.seed = 20260826;
+
+    GameWorld world;
+    world.InitWorld("ai-decision-trace", nullptr, nullptr, params);
+    for (int tick = 0; tick < 1000; tick++)
+        world.UpdateSimulation(0.01);
+
+    const std::string trace = world.GetAITrace(1);
+    EXPECT_NE(trace.find("topNeeds="), std::string::npos);
+    EXPECT_NE(trace.find("pressures="), std::string::npos);
+    EXPECT_NE(trace.find("rejected="), std::string::npos);
+    EXPECT_NE(trace.find("actionCooldown="), std::string::npos);
+    EXPECT_NE(trace.find("focuses="), std::string::npos);
+    EXPECT_LT(trace.size(), 64u * 4096u) << "AI trace must remain bounded";
+}
+
 // The per-player personality must be seeded, never wall-clock or unseeded.
 // Difficulty itself no longer changes decision quality.
 TEST(UtilityAIModelTests, TwoWorldsSameSeedAIStayInSync)

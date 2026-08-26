@@ -275,6 +275,9 @@ private:
     double decisionTraceTimer{0.0};
     std::string lastDecisionAction;
     std::string lastScoreSummary;
+    std::string lastRejectedActions;
+    std::string lastFocusSummary;
+    std::string lastFocusChoiceId;
     // Personality bias (user design 2026-07-20: "2 AI nie gra identycznie") —
     // a small, PERMANENT per-need skew (+/-2.5%, see AIModel.cpp for why that
     // exact bound) drawn once from noiseRng right after it's seeded. Sized to the tightest

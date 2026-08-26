@@ -35,6 +35,7 @@ namespace
     // an urgent direct benefit still beats a merely comparable distant one.
     constexpr int FocusLookAheadDepth = 3;
     constexpr double FocusFutureDiscount = 0.65;
+    constexpr double FocusHysteresisMargin = 3.0;
 
     // Deterministic opening build order that bootstraps the FOOD_PROVISIONS
     // (manpower) chain, a wood base, AND the iron chain before telemetry has
@@ -480,6 +481,26 @@ void UtilityAIModel::Update(GameWorld& world, Player* player, double dt)
     if (decisionTraceTimer <= 0.0)
     {
         decisionTraceTimer = 5.0;
+        std::array<std::pair<double, int>, static_cast<int>(AINeed::Count)> topNeeds{};
+        for (int i = 0; i < static_cast<int>(AINeed::Count); i++)
+            topNeeds[i] = {ScoreNeed(static_cast<AINeed>(i), situation) *
+                               (1.0 + personalityNeedBias[i]), i};
+        std::stable_sort(topNeeds.begin(), topNeeds.end(),
+                         [](const auto& lhs, const auto& rhs)
+                         {
+                             return lhs.first > rhs.first;
+                         });
+        const AIFocusPriorities focusPriorities = BuildFocusPriorities(situation);
+        const char* posture = focusPriorities.defense >= focusPriorities.mobilization &&
+                focusPriorities.defense >= focusPriorities.economy
+            ? "defense"
+            : focusPriorities.mobilization >= focusPriorities.economy
+                ? "mobilization"
+                : focusPriorities.logistics > focusPriorities.economy
+                    ? "logistics"
+                    : focusPriorities.offense > focusPriorities.economy
+                        ? "offense"
+                        : "economy";
         std::ostringstream trace;
         trace << "tick=" << world.GetSimulationTick()
               << " buildings=" << player->GetTrackedBuildings().size()
@@ -503,6 +524,17 @@ void UtilityAIModel::Update(GameWorld& world, Player* player, double dt)
               << " actionCooldown=" << std::max(0.0, actionCadenceTimer)
               << " action=" << (lastDecisionAction.empty() ? "none" : lastDecisionAction)
               << " scores=" << (lastScoreSummary.empty() ? "none" : lastScoreSummary)
+              << " topNeeds=" << topNeeds[0].second << ':' << topNeeds[0].first
+              << ',' << topNeeds[1].second << ':' << topNeeds[1].first
+              << ',' << topNeeds[2].second << ':' << topNeeds[2].first
+              << " rejected=" << (lastRejectedActions.empty() ? "none" : lastRejectedActions)
+              << " pressures={threat:" << situation.Threat()
+              << ",hq:" << (1.0 - situation.hqHpRatio)
+              << ",economy:" << focusPriorities.economy
+              << ",logistics:" << focusPriorities.logistics
+              << ",mobilization:" << focusPriorities.mobilization << '} '
+              << " posture=" << posture
+              << " focuses=" << (lastFocusSummary.empty() ? "none" : lastFocusSummary)
               << " stored={wood:" << AIActions::CountStoredResource(player, ResourceType::WOOD)
               << ",stone:" << AIActions::CountStoredResource(player, ResourceType::STONE)
               << ",planks:" << AIActions::CountStoredResource(player, ResourceType::PLANKS)
@@ -650,6 +682,7 @@ void UtilityAIModel::Update(GameWorld& world, Player* player, double dt)
             ConsumeActionCadence();
             return;
         }
+        lastRejectedActions = "barracks=not_feasible";
         return;
     }
 
@@ -679,6 +712,7 @@ void UtilityAIModel::Update(GameWorld& world, Player* player, double dt)
     }
 
     lastDecisionAction = "none";
+    lastRejectedActions.clear();
     for (int index : order)
     {
         if (scores[index] < MinActionableScore)
@@ -689,7 +723,12 @@ void UtilityAIModel::Update(GameWorld& world, Player* player, double dt)
             ConsumeActionCadence();
             return;
         }
+        if (!lastRejectedActions.empty())
+            lastRejectedActions += ',';
+        lastRejectedActions += std::to_string(index) + "=not_feasible";
     }
+    if (lastRejectedActions.empty())
+        lastRejectedActions = "none";
 }
 
 void UtilityAIModel::ConsumeActionCadence()
@@ -2382,32 +2421,68 @@ bool UtilityAIModel::TryStartBestFocus(GameWorld& world, Player* player, const A
         return false;
 
     const auto& definitions = GetFocusDefinitions();
-    const TechnologyDefinition* best = nullptr;
-    double bestScore = -1e18;
+    struct FocusCandidate
+    {
+        const TechnologyDefinition* definition{nullptr};
+        double choiceScore{0.0};
+        double planScore{0.0};
+    };
+    std::vector<FocusCandidate> candidates;
 
     for (const auto& definition : definitions)
     {
         if (!player->CanUnlockFocus(definition.id))
             continue;
 
-        double score = ScoreFocusPlan(
+        const double choiceScore = ScoreFocusChoice(definition, s);
+        const double planScore = ScoreFocusPlan(
             definition, definitions, player->focuses.GetUnlocked(), s, FocusLookAheadDepth);
+        candidates.push_back({&definition, choiceScore, planScore});
+    }
 
-        // Strict comparison preserves catalog order as a deterministic final
-        // tie-break for lockstep.
-        if (score > bestScore)
+    if (candidates.empty())
+    {
+        lastFocusSummary = "none";
+        return false;
+    }
+
+    // Stable sort preserves catalog order as the deterministic final tie
+    // break. A previously chosen branch stays preferred while it remains
+    // close to the current best; a clear change in pressure can still switch
+    // strategy immediately.
+    std::stable_sort(candidates.begin(), candidates.end(),
+                     [](const FocusCandidate& lhs, const FocusCandidate& rhs)
+                     {
+                         return lhs.planScore > rhs.planScore;
+                     });
+
+    const double bestScore = candidates.front().planScore;
+    const FocusCandidate* best = &candidates.front();
+    for (const FocusCandidate& candidate : candidates)
+    {
+        if (candidate.definition->id == lastFocusChoiceId &&
+            candidate.planScore + FocusHysteresisMargin >= bestScore)
         {
-            bestScore = score;
-            best = &definition;
+            best = &candidate;
+            break;
         }
     }
 
-    if (best == nullptr)
-        return false;
+    std::ostringstream focusSummary;
+    const std::size_t count = std::min<std::size_t>(3, candidates.size());
+    for (std::size_t i = 0; i < count; i++)
+    {
+        if (i != 0)
+            focusSummary << ',';
+        focusSummary << candidates[i].definition->id << ':'
+                     << candidates[i].choiceScore << '/' << candidates[i].planScore;
+    }
+    lastFocusSummary = focusSummary.str();
+    lastFocusChoiceId = best->definition->id;
     // Controllers run before ProcessCommands, so current-tick targeting is
     // still command-only mutation while avoiding a pending-command gap (and
     // duplicate submissions on the next tick).
-    world.SubmitCommand(GameCommand::StartFocus(player->id, best->id),
+    world.SubmitCommand(GameCommand::StartFocus(player->id, best->definition->id),
                         world.GetSimulationTick());
     return true;
 }
