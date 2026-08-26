@@ -744,6 +744,16 @@ const std::vector<BuildingDefinition>& GetBuildingDefinitions()
     return definitions;
 }
 
+int GetMaximumBuildingFootprintOverhang()
+{
+    int overhang = 0;
+    for (const auto& definition : GetBuildingDefinitions())
+    {
+        overhang = std::max(overhang, std::max(definition.footprint.x, definition.footprint.y) - 1);
+    }
+    return overhang;
+}
+
 // Returns the definition for one building type, or fallback data.
 const BuildingDefinition& GetBuildingDefinition(BuildingType type)
 {

@@ -1,5 +1,7 @@
 #include "core/GameWorldInternal.h"
 #include "core/RoadTopology.h"
+#include "core/VisibleTileBounds.h"
+#include "economy/BuildingConfig.h"
 #include "warfare/UnitMarchSystem.h"
 
 #include <algorithm>
@@ -403,15 +405,13 @@ void GameWorld::DrawMap()
 
     Vec2f worldA = render->RenderToWorld({0.0f, 0.0f});
     Vec2f worldB = render->RenderToWorld({static_cast<float>(RENDER_WIDTH), static_cast<float>(RENDER_HEIGHT)});
-    float minWorldX = std::min(worldA.x, worldB.x);
-    float maxWorldX = std::max(worldA.x, worldB.x);
-    float minWorldY = std::min(worldA.y, worldB.y);
-    float maxWorldY = std::max(worldA.y, worldB.y);
-
-    int minTileX = std::clamp(static_cast<int>(std::floor(minWorldX / TILE_SIZE)) - 2, 0, tilemap.params.sizeX - 1);
-    int maxTileX = std::clamp(static_cast<int>(std::ceil(maxWorldX / TILE_SIZE)) + 2, 0, tilemap.params.sizeX - 1);
-    int minTileY = std::clamp(static_cast<int>(std::floor(minWorldY / TILE_SIZE)) - 2, 0, tilemap.params.sizeY - 1);
-    int maxTileY = std::clamp(static_cast<int>(std::ceil(maxWorldY / TILE_SIZE)) + 2, 0, tilemap.params.sizeY - 1);
+    const VisibleTileBounds visibleBounds = ComputeVisibleTileBounds(
+        worldA, worldB, {tilemap.params.sizeX, tilemap.params.sizeY},
+        GetMaximumBuildingFootprintOverhang());
+    const int minTileX = visibleBounds.minX;
+    const int maxTileX = visibleBounds.maxX;
+    const int minTileY = visibleBounds.minY;
+    const int maxTileY = visibleBounds.maxY;
 
     render->ClearDynamicLights();
     render->ClearFogReveals();

@@ -1,6 +1,7 @@
 #include "ui/Renderer.h"
 #include "core/FogOfWar.h"
 #include "data/TextureConfig.h"
+#include "core/VisibleTileBounds.h"
 #include "ui/TerrainRenderGeometry.h"
 
 #include <cmath>
@@ -60,6 +61,18 @@ TEST(RendererLifecycleTests, TerrainTileRenderPixelBoundsShareEdgesAtAllowedZoom
             EXPECT_EQ(tile.top, north.bottom);
         }
     }
+}
+
+TEST(RendererLifecycleTests, VisibleTileBoundsAreClampedAndUseTheConfiguredMargin)
+{
+    const VisibleTileBounds bounds = ComputeVisibleTileBounds(
+        {130.0f, 190.0f}, {390.0f, 450.0f}, {20, 20}, 4);
+
+    EXPECT_EQ(bounds.minX, 0);
+    EXPECT_EQ(bounds.maxX, 11);
+    EXPECT_EQ(bounds.minY, 0);
+    EXPECT_EQ(bounds.maxY, 12);
+    EXPECT_GE(GetMaximumBuildingFootprintOverhang(), 4);
 }
 
 TEST(RendererLifecycleTests, RenderSettingsAreVisualOnlyAndConfigurableWithoutGpuResources)

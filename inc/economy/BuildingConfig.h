@@ -150,6 +150,9 @@ struct BuildingDefinition
 // Returns all configured building definitions.
 const std::vector<BuildingDefinition>& GetBuildingDefinitions();
 
+// Returns the largest configured footprint overhang used by render culling.
+int GetMaximumBuildingFootprintOverhang();
+
 // Loads building definitions from a specific data file.
 std::vector<BuildingDefinition> LoadBuildingDefinitionsFromFile(const std::string& path);
 
