@@ -15,6 +15,8 @@ struct DemolitionResourceLine
     ResourceType type{ResourceType::Null};
     int bufferedAmount{0};
     int refundAmount{0};
+    int returnedAmount{0};
+    int lostAmount{0};
 };
 
 struct DemolitionPreview

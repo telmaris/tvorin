@@ -168,7 +168,13 @@ void DemolitionTooltipWidget::Update(double dt)
     UiText::Draw(building->name, static_cast<int>(box.x + 10), static_cast<int>(box.y + 7),
                  17, UiTheme::Parchment);
     int y = static_cast<int>(box.y + 29.0f);
-    UiText::Draw(preview.allowed ? "Click to demolish" : preview.reason,
+    bool hasLostResources = false;
+    for (const auto& line : preview.resources)
+        hasLostResources = hasLostResources || line.lostAmount > 0;
+    const char* actionText = preview.allowed
+        ? (hasLostResources ? "Click to demolish; overflow lost" : "Click to demolish")
+        : preview.reason.c_str();
+    UiText::Draw(actionText,
                  static_cast<int>(box.x + 10), y, 14,
                  preview.allowed ? Color{255, 120, 112, 255} : Color{225, 170, 150, 255});
     y += 20;
@@ -181,7 +187,9 @@ void DemolitionTooltipWidget::Update(double dt)
         {
             std::string text = rt2s(line.type) + ": " + std::to_string(line.bufferedAmount);
             if (line.refundAmount > 0)
-                text += " +" + std::to_string(line.refundAmount);
+                text += " +" + std::to_string(line.refundAmount) + " refund";
+            if (line.lostAmount > 0)
+                text += " (" + std::to_string(line.lostAmount) + " lost)";
             UiText::Draw(text, static_cast<int>(box.x + 10), y, 13, UiTheme::Parchment);
             y += 20;
         }

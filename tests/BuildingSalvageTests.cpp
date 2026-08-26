@@ -56,7 +56,7 @@ TEST(BuildingSalvageTests, MovesBuffersAndRefundsRecordedPayment)
     EXPECT_EQ(StockpileIndex::GetTotal(player, ResourceType::PLANKS), 1);
 }
 
-TEST(BuildingSalvageTests, RejectsWhenEvacuationCapacityIsInsufficient)
+TEST(BuildingSalvageTests, DropsOverflowButStillDemolishesWhenEvacuationCapacityIsInsufficient)
 {
     TileMap map;
     Player player{0, map};
@@ -76,10 +76,45 @@ TEST(BuildingSalvageTests, RejectsWhenEvacuationCapacityIsInsufficient)
 
     const int positionId = producer->positionId;
     const auto preview = BuildDemolitionPreview(map, *producer, player);
-    EXPECT_FALSE(preview.allowed);
-    EXPECT_NE(preview.reason.find("PLANKS"), std::string::npos);
-    EXPECT_FALSE(ExecuteDemolition(map, player, *producer));
-    EXPECT_NE(map.GetBuilding(positionId), nullptr);
-    EXPECT_EQ(map.GetBuilding(positionId)->GetComponent<ProductionComponent>()
-                  ->outputBuffers[ResourceType::PLANKS].buffer.size(), 1u);
+    ASSERT_TRUE(preview.allowed) << preview.reason;
+    ASSERT_EQ(preview.resources.size(), 1u);
+    EXPECT_EQ(preview.resources.front().returnedAmount, 0);
+    EXPECT_EQ(preview.resources.front().lostAmount, 1);
+    EXPECT_TRUE(ExecuteDemolition(map, player, *producer));
+    EXPECT_EQ(map.GetBuilding(positionId), nullptr);
+}
+
+TEST(BuildingSalvageTests, HeadquartersReceivesRefundBeforeACloserAlternativeWarehouse)
+{
+    TileMap map;
+    Player player{0, map};
+    MakeGrassMap(map, 16, 16);
+
+    auto* headquarters = dynamic_cast<Headquarters*>(map.PlaceLoadedBuilding(
+        map.GetIdFromCoords({4, 4}), &player, std::make_unique<Headquarters>(30)));
+    auto* warehouse = dynamic_cast<StorageBuilding*>(map.PlaceLoadedBuilding(
+        map.GetIdFromCoords({10, 10}), &player, std::make_unique<StorageBuilding>(31)));
+    auto* producer = dynamic_cast<Woodcutter*>(map.PlaceLoadedBuilding(
+        map.GetIdFromCoords({1, 1}), &player, std::make_unique<Woodcutter>(32)));
+    ASSERT_NE(headquarters, nullptr);
+    ASSERT_NE(warehouse, nullptr);
+    ASSERT_NE(producer, nullptr);
+
+    headquarters->storage.buffers.clear();
+    headquarters->storage.buffers[ResourceType::PLANKS] = ResourceBuffer{ResourceType::PLANKS, 1};
+    warehouse->storage.buffers.clear();
+    warehouse->storage.buffers[ResourceType::PLANKS] = ResourceBuffer{ResourceType::PLANKS, 5};
+    producer->production.outputBuffers[ResourceType::PLANKS] = ResourceBuffer{ResourceType::PLANKS, 3};
+    for (int i = 0; i < 3; ++i)
+        producer->production.outputBuffers[ResourceType::PLANKS].GenerateResource(ResourceType::PLANKS);
+
+    const auto preview = BuildDemolitionPreview(map, *producer, player);
+    ASSERT_TRUE(preview.allowed) << preview.reason;
+    ASSERT_EQ(preview.resources.size(), 1u);
+    EXPECT_EQ(preview.resources.front().returnedAmount, 3);
+    EXPECT_EQ(preview.resources.front().lostAmount, 0);
+
+    ASSERT_TRUE(ExecuteDemolition(map, player, *producer));
+    EXPECT_EQ(headquarters->storage.buffers[ResourceType::PLANKS].buffer.size(), 1u);
+    EXPECT_EQ(warehouse->storage.buffers[ResourceType::PLANKS].buffer.size(), 2u);
 }

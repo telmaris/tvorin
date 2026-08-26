@@ -84,7 +84,7 @@ std::vector<Building*> OrderedWarehouses(const Player& owner, const Building& so
             continue;
         std::vector<int> path;
         const RoadNetwork* roadNetwork = owner.GetRoadNetwork();
-    const int expectedMapArea = owner.tilemap->params.sizeX * owner.tilemap->params.sizeY;
+        const int expectedMapArea = owner.tilemap->params.sizeX * owner.tilemap->params.sizeY;
         if (roadNetwork != nullptr && roadNetwork->navMap != nullptr &&
             static_cast<int>(roadNetwork->navMap->map.size()) == expectedMapArea)
         {
@@ -102,10 +102,12 @@ std::vector<Building*> OrderedWarehouses(const Player& owner, const Building& so
 
     std::sort(candidates.begin(), candidates.end(), [](const Candidate& a, const Candidate& b)
     {
+        // The HQ is always the first destination, even when another warehouse
+        // has a shorter reachable road path.
+        if (a.headquarters != b.headquarters)
+            return a.headquarters > b.headquarters;
         if (a.reachable != b.reachable)
             return a.reachable > b.reachable;
-        if (!a.reachable && a.headquarters != b.headquarters)
-            return a.headquarters > b.headquarters;
         if (a.reachable && a.pathLength != b.pathLength)
             return a.pathLength < b.pathLength;
         if (a.tileDistance != b.tileDistance)
@@ -151,6 +153,9 @@ DemolitionPreview BuildDemolitionPreview(const TileMap& tilemap,
     const auto warehouses = OrderedWarehouses(owner, building);
     const auto required = RequiredCapacity(building, owner);
 
+    std::map<ResourceType, int> refundByType;
+    for (const auto& line : refund)
+        refundByType[line.type] += line.amount;
     for (const auto& [type, amount] : required)
     {
         int free = 0;
@@ -163,20 +168,13 @@ DemolitionPreview BuildDemolitionPreview(const TileMap& tilemap,
             if (it != storage->buffers.end())
                 free += std::max(0, it->second.bufferSize - static_cast<int>(it->second.buffer.size()));
         }
-        if (free < amount)
-        {
-            preview.reason = "Missing storage capacity: " + rt2s(type) + " " +
-                             std::to_string(amount - free);
-            return preview;
-        }
+        const int returned = std::min(amount, free);
+        preview.resources.push_back({type,
+                                     buffered.contains(type) ? buffered.at(type) : 0,
+                                     refundByType.contains(type) ? refundByType.at(type) : 0,
+                                     returned,
+                                     amount - returned});
     }
-
-    std::map<ResourceType, int> refundByType;
-    for (const auto& line : refund)
-        refundByType[line.type] += line.amount;
-    for (const auto& [type, amount] : required)
-        preview.resources.push_back({type, buffered.contains(type) ? buffered.at(type) : 0,
-                                     refundByType.contains(type) ? refundByType.at(type) : 0});
     preview.allowed = true;
     preview.reason = "ok";
     return preview;
@@ -199,8 +197,15 @@ bool ExecuteDemolition(TileMap& tilemap, Player& owner, Building& building)
             targets[type].push_back(&buffer);
     }
 
-    auto place = [&targets](ResourceType type, Resource* resource) -> bool
+    std::map<ResourceType, int> remainingReturn;
+    for (const auto& line : preview.resources)
+        remainingReturn[line.type] = line.returnedAmount;
+
+    auto place = [&targets, &remainingReturn](ResourceType type, Resource* resource) -> bool
     {
+        auto remaining = remainingReturn.find(type);
+        if (remaining == remainingReturn.end() || remaining->second <= 0)
+            return false;
         auto it = targets.find(type);
         if (it == targets.end())
             return false;
@@ -214,6 +219,7 @@ bool ExecuteDemolition(TileMap& tilemap, Player& owner, Building& building)
             resource->map = nullptr;
             resource->originatingOwner = nullptr;
             target->AddResource(resource);
+            remaining->second--;
             return true;
         }
         return false;
@@ -232,21 +238,17 @@ bool ExecuteDemolition(TileMap& tilemap, Player& owner, Building& building)
             {
                 if (resource != nullptr)
                     Resource::DestroyOwned(resource);
-                return false;
             }
         }
     }
 
     for (const auto& line : preview.resources)
     {
-        for (int i = 0; i < line.refundAmount; ++i)
+        for (int i = 0; i < line.refundAmount && remainingReturn[line.type] > 0; ++i)
         {
             Resource* resource = Resource::CreateOwned(line.type);
             if (!place(line.type, resource))
-            {
                 Resource::DestroyOwned(resource);
-                return false;
-            }
         }
     }
 
