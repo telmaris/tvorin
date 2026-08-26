@@ -17,9 +17,9 @@ namespace
 
     constexpr std::array<LightingKeyframe, 6> Keyframes{{
         {0.0f,       {0.58f, 0.64f, 0.80f}, 0.58f, 0.84f, 1.00f}, // Night
-        {5.5f / 24,  {1.00f, 0.70f, 0.54f}, 0.78f, 0.94f, 0.75f}, // Dawn
-        {9.0f / 24,  {1.00f, 0.98f, 0.94f}, 1.00f, 1.00f, 0.15f}, // Day
-        {18.5f / 24, {1.00f, 0.64f, 0.44f}, 0.72f, 0.92f, 0.80f}, // Dusk
+        {5.5f / 24,  {1.00f, 0.70f, 0.54f}, 0.78f, 0.94f, 0.00f}, // Dawn
+        {9.0f / 24,  {1.00f, 0.98f, 0.94f}, 1.00f, 1.00f, 0.00f}, // Day
+        {18.5f / 24, {1.00f, 0.64f, 0.44f}, 0.72f, 0.92f, 0.00f}, // Dusk
         {21.0f / 24, {0.58f, 0.64f, 0.80f}, 0.58f, 0.84f, 1.00f}, // Night
         {1.0f,       {0.58f, 0.64f, 0.80f}, 0.58f, 0.84f, 1.00f}, // Wrap
     }};
@@ -73,10 +73,16 @@ WorldLightingFrame ComputeWorldLighting(std::uint64_t simulationTick, const DayN
     frame.saturation = Lerp(left->saturation, right->saturation, blend);
     frame.localLightVisibility = Lerp(left->localLightVisibility, right->localLightVisibility, blend);
 
-    // Kept deliberately stable and limited to daylight. The future directional
-    // shadow pass can use this without making the sun spin through the night.
+    // Building lamps are presentation-only night lights. Keep them fully on
+    // through the night and fully off as soon as daylight starts; interpolating
+    // their visibility through dawn/day made the whole map look milky even
+    // when the sun was already up.
     constexpr float DawnPhase = 5.5f / 24.0f;
     constexpr float NightPhase = 21.0f / 24.0f;
+    frame.localLightVisibility = (phase < DawnPhase || phase >= NightPhase) ? 1.0f : 0.0f;
+
+    // Kept deliberately stable and limited to daylight. The future directional
+    // shadow pass can use this without making the sun spin through the night.
     float daylight = SmoothStep((phase - DawnPhase) / (NightPhase - DawnPhase));
     float sunHeight = std::sin(daylight * 3.14159265358979323846f);
     Vector2 rawDirection{-0.7f + daylight * 1.4f, 0.7f};

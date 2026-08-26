@@ -412,6 +412,20 @@ class UiImage : public UiWidget
         bool cover{false};
 };
 
+// Decorative surface rendered behind a group of menu controls. It deliberately
+// does not handle input, so the widgets drawn after it keep their normal hit
+// testing and focus behaviour.
+class UiPanel : public UiWidget
+{
+public:
+    void Update(double dt) override;
+
+    Color fill{8, 10, 13, 228};
+    Color border{103, 107, 113, 235};
+    float cornerRadius{0.045f};
+    float borderThickness{1.5f};
+};
+
 // Layered menu background with a gently scrolling second layer. The widget
 // owns the textures so scenes only need to provide their asset directory.
 class UiParallaxBackground : public UiWidget

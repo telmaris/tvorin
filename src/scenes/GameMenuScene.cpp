@@ -24,8 +24,8 @@ void MenuNavSystem::UpdateUiWidgets(Vec2i size)
 // Initializes GameMenuScene::GameMenuScene.
 GameMenuScene::GameMenuScene()
 {
-    vbox.ChangeSizeAnchor(Vec2f{0.3f, 0.3f});
-    vbox.ChangePositionAnchor(Vec2f{0.1f, 0.1f});
+    vbox.ChangeSizeAnchor(Vec2f{0.3f, 0.60f});
+    vbox.ChangePositionAnchor(Vec2f{0.35f, 0.19f});
 
     auto saveButton = std::make_shared<UiButton>();
     saveButton->ChangeText("Save Game");

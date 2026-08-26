@@ -11,6 +11,9 @@ NewGameScene::NewGameScene()
     menuBackground.ChangeSizeAnchor({1.0f, 1.0f});
     menuBackground.LoadFromDirectory("assets/ui/menu/newgame");
 
+    menuPanel.ChangePositionAnchor(Vec2f{0.16f, 0.07f});
+    menuPanel.ChangeSizeAnchor(Vec2f{0.68f, 0.86f});
+
     backButton.ChangeText("Back");
     backButton.ChangePositionAnchor(Vec2f{0.63f, 0.84f});
     backButton.ChangeSizeAnchor(Vec2f{0.18f, 0.065f});
@@ -117,6 +120,7 @@ void NewGameScene::Update(double dt)
     RefreshOptionLabels();
 
     render.Draw({&menuBackground,
+                 &menuPanel,
                  &gameName,
                  &sizeButton,
                  &difficultyButton,
@@ -227,6 +231,7 @@ void NewGameScene::HandleEvent(std::shared_ptr<Event> e)
     if (ptr != nullptr)
     {
         menuBackground.UpdateSize(ptr->windowSize);
+        menuPanel.UpdateSize(ptr->windowSize);
         backButton.UpdateSize(ptr->windowSize);
         gameName.UpdateSize(ptr->windowSize);
         startGame.UpdateSize(ptr->windowSize);

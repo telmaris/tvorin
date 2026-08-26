@@ -117,6 +117,7 @@ class OptionsScene : public Scene, public IGuiHandler
 
         UiButton backButton;
         UiParallaxBackground menuBackground;
+        UiPanel menuPanel;
         CheckBox fullScreenCheckBox;
         SliderBar masterVolume;
         SliderBar musicVolume;
@@ -159,6 +160,7 @@ class NewGameScene : public Scene, public IGuiHandler
 
         UiButton backButton;
         UiParallaxBackground menuBackground;
+        UiPanel menuPanel;
         TextBox gameName;
         UiButton sizeButton;
         UiButton difficultyButton;

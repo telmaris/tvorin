@@ -1973,6 +1973,21 @@ bool UiImage::LoadTextureFromFile(const std::string& path)
 
 UiImage::~UiImage() = default;
 
+// Draws a decorative menu surface behind the controls.
+void UiPanel::Update(double dt)
+{
+    (void)dt;
+    const Rectangle bounds = WidgetBounds(*this);
+    if (bounds.width <= 0.0f || bounds.height <= 0.0f)
+        return;
+
+    DrawRectangleRounded(
+        Rectangle{bounds.x + 4.0f, bounds.y + 5.0f, bounds.width, bounds.height},
+        cornerRadius, 10, Color{0, 0, 0, 120});
+    DrawRectangleRounded(bounds, cornerRadius, 10, fill);
+    DrawRectangleRoundedLines(bounds, cornerRadius, 10, borderThickness, border);
+}
+
 UiParallaxBackground::~UiParallaxBackground() = default;
 
 bool UiParallaxBackground::LoadFromDirectory(const std::string& directory)

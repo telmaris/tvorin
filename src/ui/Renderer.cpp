@@ -633,13 +633,15 @@ void Renderer::QueueBuildingLight(BuildingType type, Vec2i footprint, Vec2f pos,
     switch (type)
     {
         case BuildingType::Foundry:
-            light = {center, Color{255, 115, 35, 255}, 272.0f, 0.74f, 0.70f, 0.0f, stableId, 30};
+            // A tighter ember-red pool keeps the furnace readable without
+            // turning its entire plot into a flat yellow wash.
+            light = {center, Color{232, 92, 34, 255}, 232.0f, 0.56f, 0.70f, 0.0f, stableId, 30};
             break;
         case BuildingType::Smith:
-            light = {center, Color{255, 135, 45, 255}, 208.0f, 0.58f, 0.68f, 0.0f, stableId, 20};
+            light = {center, Color{242, 126, 58, 255}, 208.0f, 0.58f, 0.68f, 0.0f, stableId, 20};
             break;
         case BuildingType::Inn:
-            light = {center, Color{255, 165, 75, 255}, 192.0f, 0.50f, 0.65f, 0.0f, stableId, 10};
+            light = {center, Color{255, 178, 94, 255}, 192.0f, 0.50f, 0.65f, 0.0f, stableId, 10};
             break;
         default:
         {
@@ -650,8 +652,8 @@ void Renderer::QueueBuildingLight(BuildingType type, Vec2i footprint, Vec2f pos,
             // start appearing to blink.
             const float largestDimension = static_cast<float>(std::max(footprint.x, footprint.y));
             light = {center,
-                     Color{255, 200, 132, 255}, 96.0f + largestDimension * 40.0f,
-                     0.36f, 0.64f, 0.0f, stableId, 5};
+                     Color{255, 166, 84, 255}, 104.0f + largestDimension * 42.0f,
+                     0.52f, 0.64f, 0.0f, stableId, 5};
             break;
         }
     }
@@ -755,7 +757,7 @@ void Renderer::DrawDynamicLightsToActiveTarget(const WorldLightingFrame& lightin
     };
 
     if (bloomEnabled)
-        drawPass(1.20f, 0.08f);
+        drawPass(1.15f, 0.045f);
     drawPass(1.0f, 1.0f);
 
     EndMode2D();

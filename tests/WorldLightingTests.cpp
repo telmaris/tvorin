@@ -80,6 +80,33 @@ TEST(WorldLightingTests, InterpolatesSmoothlyAcrossDawn)
     EXPECT_LT(std::abs(after.ambientColor.y - before.ambientColor.y), 0.002f);
 }
 
+TEST(WorldLightingTests, BuildingLightsAreOnlyVisibleAtNight)
+{
+    DayNightConfig config;
+    config.ticksPerDay = 24000;
+    config.startPhase = 0.0f;
+
+    const WorldLightingFrame night = ComputeWorldLighting(0, config);
+    const WorldLightingFrame day = ComputeWorldLighting(12000, config);
+    const WorldLightingFrame dusk = ComputeWorldLighting(20000, config);
+
+    EXPECT_FLOAT_EQ(night.localLightVisibility, 1.0f);
+    EXPECT_FLOAT_EQ(day.localLightVisibility, 0.0f);
+    EXPECT_FLOAT_EQ(dusk.localLightVisibility, 0.0f);
+}
+
+TEST(WorldLightingTests, DaylightDoesNotUseNightLightSaturationBoost)
+{
+    DayNightConfig config;
+    config.ticksPerDay = 24000;
+    config.startPhase = 0.0f;
+
+    const WorldLightingFrame day = ComputeWorldLighting(12000, config);
+
+    EXPECT_LE(day.saturation, 1.0f);
+    EXPECT_FLOAT_EQ(day.localLightVisibility, 0.0f);
+}
+
 TEST(WorldLightingTests, EssentialLightKeepsItsScreenFootprintWhenZoomedOut)
 {
     LightEmitterView light;
