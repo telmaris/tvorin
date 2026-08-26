@@ -447,8 +447,8 @@ TEST(TowerAttackSystemTests, SaveAndLoadPreservesTowerAmmoAndAttackTimer)
     // v33 stored this exact private tower buffer under STOR. Preserve old
     // saves by routing that legacy block into LocalResourceBufferComponent.
     std::string legacyState = world.SerializeSimulationState();
-    ASSERT_NE(legacyState.find("RTS_SAVE 35"), std::string::npos);
-    legacyState.replace(legacyState.find("RTS_SAVE 35"), 11, "RTS_SAVE 33");
+    ASSERT_NE(legacyState.find("RTS_SAVE 36"), std::string::npos);
+    legacyState.replace(legacyState.find("RTS_SAVE 36"), 11, "RTS_SAVE 33");
     // v35 adds the build-cost state/count after the legacy B fields. Strip
     // those two fields when constructing this v33 compatibility payload.
     {
