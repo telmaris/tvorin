@@ -274,6 +274,60 @@ TEST(MapGeneratorTests, EveryHqGetsStartingCoalAndIronOrePatches)
     }
 }
 
+TEST(MapGeneratorTests, StartingResourceLayoutIsDeterministicButNotCardinal)
+{
+    MapParameters params = MakeParams(1234);
+    params.sizeX = 401;
+    params.sizeY = 401;
+    TileMap map;
+    MapGenerator generator;
+    generator.GenerateTileMap(map, params);
+    for (auto& tile : map.tilemap)
+    {
+        tile.tileType = TileType::GRASS;
+        tile.resourceRichness = 0;
+        tile.resourceOverlayTextureId = -1;
+        tile.isMilitaryRoad = false;
+    }
+
+    const Vec2i hqAnchor{198, 198};
+    const Vec2i hqFootprint{4, 4};
+    const Vec2i villageAnchor{20, 20};
+    const Vec2i villageFootprint{4, 4};
+    std::mt19937 rngA(77);
+    std::mt19937 rngB(77);
+    std::mt19937 rngC(78);
+    const auto layoutA = GameWorldInternal::PlanStartingResourceLayout(
+        map, hqAnchor, hqFootprint, villageAnchor, villageFootprint, rngA);
+    const auto layoutB = GameWorldInternal::PlanStartingResourceLayout(
+        map, hqAnchor, hqFootprint, villageAnchor, villageFootprint, rngB);
+    const auto layoutC = GameWorldInternal::PlanStartingResourceLayout(
+        map, hqAnchor, hqFootprint, villageAnchor, villageFootprint, rngC);
+
+    ASSERT_TRUE(layoutA.valid);
+    ASSERT_TRUE(layoutB.valid);
+    ASSERT_TRUE(layoutC.valid);
+    for (size_t index = 0; index < layoutA.patches.size(); index++)
+    {
+        EXPECT_EQ(layoutA.patches[index].type, layoutB.patches[index].type);
+        EXPECT_EQ(layoutA.patches[index].center, layoutB.patches[index].center);
+        const Vec2i delta{
+            layoutA.patches[index].center.x - (hqAnchor.x + hqFootprint.x / 2),
+            layoutA.patches[index].center.y - (hqAnchor.y + hqFootprint.y / 2)};
+        const int distanceSquared = delta.x * delta.x + delta.y * delta.y;
+        EXPECT_GE(distanceSquared,
+                  layoutA.patches[index].minCenterDist * layoutA.patches[index].minCenterDist);
+        EXPECT_LE(distanceSquared,
+                  layoutA.patches[index].maxCenterDist * layoutA.patches[index].maxCenterDist);
+    }
+
+    bool changed = false;
+    for (size_t index = 0; index < layoutA.patches.size(); index++)
+        changed = changed || layoutA.patches[index].type != layoutC.patches[index].type ||
+                  layoutA.patches[index].center != layoutC.patches[index].center;
+    EXPECT_TRUE(changed);
+}
+
 // Playtest report (2026-07-20): the starting Village's actual ROAD path to
 // HQ (not straight-line distance) could end up much longer than intended
 // once BuildStartRoad detours around the military track. Village placement

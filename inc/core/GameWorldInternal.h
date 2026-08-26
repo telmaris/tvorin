@@ -7,7 +7,9 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <limits>
 #include <queue>
+#include <random>
 #include <set>
 
 namespace GameWorldInternal
@@ -365,6 +367,263 @@ namespace GameWorldInternal
         if (painted == 0)
             Log::Msg("[MapGenerator]", "Starting resource patch failed for tile type ", static_cast<int>(type));
         tilemap.terrainDirty = true;
+    }
+
+    struct StartingResourcePatchPlan
+    {
+        TileType type{TileType::GRASS};
+        Vec2i center{-1, -1};
+        std::vector<Vec2i> offsets;
+        Vec2i minOffset{};
+        Vec2i maxOffset{};
+        int minCenterDist{0};
+        int maxCenterDist{0};
+    };
+
+    struct StartingResourceLayout
+    {
+        bool valid{false};
+        std::array<StartingResourcePatchPlan, 4> patches{};
+    };
+
+    // Plans all four starting fields together. This keeps the randomized
+    // centres collision-free and prevents one already-painted patch from
+    // changing the answer for the next independent greedy search.
+    inline StartingResourceLayout PlanStartingResourceLayout(
+        const TileMap& tilemap, Vec2i hqAnchor, Vec2i hqFootprint,
+        Vec2i villageAnchor, Vec2i villageFootprint, std::mt19937& rng)
+    {
+        StartingResourceLayout layout;
+        const Vec2i hqCenter{hqAnchor.x + hqFootprint.x / 2,
+                             hqAnchor.y + hqFootprint.y / 2};
+
+        std::vector<bool> sameSideAsHq(tilemap.tilemap.size(), false);
+        std::queue<int> frontier;
+        if (tilemap.IsInside(hqCenter))
+        {
+            const int startId = tilemap.GetIdFromCoords(hqCenter);
+            if (!tilemap.tilemap[startId].isMilitaryRoad)
+            {
+                sameSideAsHq[startId] = true;
+                frontier.push(startId);
+            }
+        }
+        while (!frontier.empty())
+        {
+            const int current = frontier.front();
+            frontier.pop();
+            const Vec2i pos = tilemap.GetCoordsFromId(current);
+            const std::array<Vec2i, 4> neighbours{
+                Vec2i{pos.x + 1, pos.y}, Vec2i{pos.x - 1, pos.y},
+                Vec2i{pos.x, pos.y + 1}, Vec2i{pos.x, pos.y - 1}};
+            for (Vec2i next : neighbours)
+            {
+                if (!tilemap.IsInside(next))
+                    continue;
+                const int nextId = tilemap.GetIdFromCoords(next);
+                if (sameSideAsHq[nextId] || tilemap.tilemap[nextId].isMilitaryRoad)
+                    continue;
+                sameSideAsHq[nextId] = true;
+                frontier.push(nextId);
+            }
+        }
+
+        std::array<TileType, 4> resourceTypes{
+            TileType::WOOD, TileType::STONE, TileType::COAL, TileType::IRON_ORE};
+        std::shuffle(resourceTypes.begin(), resourceTypes.end(), rng);
+        const std::array<int, 4> minDistances{17, 17, 26, 26};
+        const std::array<int, 4> maxDistances{23, 23, 32, 32};
+        for (int index = 0; index < 4; index++)
+        {
+            auto& patch = layout.patches[index];
+            patch.type = resourceTypes[index];
+            patch.minCenterDist = minDistances[index];
+            patch.maxCenterDist = maxDistances[index];
+            patch.offsets = BuildStartingResourcePatchOffsets(rng);
+            patch.minOffset = patch.offsets.front();
+            patch.maxOffset = patch.offsets.front();
+            for (Vec2i offset : patch.offsets)
+            {
+                patch.minOffset.x = std::min(patch.minOffset.x, offset.x);
+                patch.minOffset.y = std::min(patch.minOffset.y, offset.y);
+                patch.maxOffset.x = std::max(patch.maxOffset.x, offset.x);
+                patch.maxOffset.y = std::max(patch.maxOffset.y, offset.y);
+            }
+        }
+
+        struct Candidate
+        {
+            Vec2i center{};
+            Vec2i anchor{};
+            Vec2i size{};
+            int paintable{0};
+            double angle{0.0};
+        };
+        std::array<std::vector<Candidate>, 4> candidates;
+        for (int index = 0; index < 4; index++)
+        {
+            const auto& patch = layout.patches[index];
+            const Vec2i patchSize{patch.maxOffset.x - patch.minOffset.x + 1,
+                                  patch.maxOffset.y - patch.minOffset.y + 1};
+            for (int y = -patch.maxCenterDist; y <= patch.maxCenterDist; y++)
+            {
+                for (int x = -patch.maxCenterDist; x <= patch.maxCenterDist; x++)
+                {
+                    const int distanceSquared = x * x + y * y;
+                    if (distanceSquared < patch.minCenterDist * patch.minCenterDist ||
+                        distanceSquared > patch.maxCenterDist * patch.maxCenterDist)
+                        continue;
+
+                    const Vec2i centre{hqCenter.x + x, hqCenter.y + y};
+                    const Vec2i anchor{centre.x + patch.minOffset.x,
+                                       centre.y + patch.minOffset.y};
+                    if (!tilemap.IsInside(centre) || !tilemap.IsInsideFootprint(anchor, patchSize) ||
+                        FootprintsOverlap(anchor, patchSize, hqAnchor, hqFootprint, 1) ||
+                        FootprintsOverlap(anchor, patchSize, villageAnchor, villageFootprint, 1))
+                        continue;
+
+                    int paintable = 0;
+                    bool validSide = true;
+                    for (Vec2i offset : patch.offsets)
+                    {
+                        const Vec2i pos{centre.x + offset.x, centre.y + offset.y};
+                        if (!tilemap.IsInside(pos))
+                        {
+                            validSide = false;
+                            break;
+                        }
+                        const int tileId = tilemap.GetIdFromCoords(pos);
+                        const Tile& tile = tilemap.tilemap[tileId];
+                        if (!sameSideAsHq[tileId] || tile.isMilitaryRoad || tile.HasBuilding() ||
+                            tile.tileType != TileType::GRASS)
+                        {
+                            validSide = false;
+                            break;
+                        }
+                        paintable++;
+                    }
+                    if (!validSide || paintable == 0)
+                        continue;
+
+                    candidates[index].push_back({centre, anchor, patchSize, paintable,
+                                                std::atan2(static_cast<double>(y), static_cast<double>(x))});
+                }
+            }
+        }
+
+        std::uniform_real_distribution<double> angleDistribution(
+            -3.14159265358979323846, 3.14159265358979323846);
+        constexpr double minAngularSeparation = 0.55;
+        constexpr int maxTrials = 64;
+        int bestScore = std::numeric_limits<int>::min();
+        for (int trial = 0; trial < maxTrials; trial++)
+        {
+            std::array<double, 4> targetAngles{};
+            for (int index = 0; index < 4; index++)
+            {
+                bool accepted = false;
+                for (int attempt = 0; attempt < 16 && !accepted; attempt++)
+                {
+                    targetAngles[index] = angleDistribution(rng);
+                    accepted = true;
+                    for (int prior = 0; prior < index; prior++)
+                    {
+                        double difference = std::abs(targetAngles[index] - targetAngles[prior]);
+                        difference = std::min(difference, 6.28318530717958647692 - difference);
+                        if (difference < minAngularSeparation)
+                        {
+                            accepted = false;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            std::array<int, 4> selected{};
+            selected.fill(-1);
+            bool complete = true;
+            int totalScore = 0;
+            for (int index = 0; index < 4 && complete; index++)
+            {
+                int selectedScore = std::numeric_limits<int>::min();
+                for (int candidateIndex = 0;
+                     candidateIndex < static_cast<int>(candidates[index].size()); candidateIndex++)
+                {
+                    const Candidate& candidate = candidates[index][candidateIndex];
+                    bool overlaps = false;
+                    for (int prior = 0; prior < index; prior++)
+                    {
+                        if (selected[prior] < 0)
+                            continue;
+                        const Candidate& previous = candidates[prior][selected[prior]];
+                        overlaps = overlaps || FootprintsOverlap(
+                            candidate.anchor, candidate.size, previous.anchor, previous.size, 1);
+                    }
+                    if (overlaps)
+                        continue;
+
+                    double angleDifference = std::abs(candidate.angle - targetAngles[index]);
+                    angleDifference = std::min(angleDifference, 6.28318530717958647692 - angleDifference);
+                    const int score = candidate.paintable * 1000 -
+                                      static_cast<int>(angleDifference * 100.0);
+                    if (score > selectedScore)
+                    {
+                        selectedScore = score;
+                        selected[index] = candidateIndex;
+                    }
+                }
+                if (selected[index] < 0)
+                    complete = false;
+                else
+                    totalScore += selectedScore;
+            }
+
+            if (!complete || totalScore <= bestScore)
+                continue;
+            bestScore = totalScore;
+            layout.valid = true;
+            for (int index = 0; index < 4; index++)
+                layout.patches[index].center = candidates[index][selected[index]].center;
+        }
+
+        return layout;
+    }
+
+    inline bool PlaceStartingResourceLayout(TileMap& tilemap, const StartingResourceLayout& layout,
+                                            std::mt19937& rng)
+    {
+        if (!layout.valid)
+            return false;
+
+        for (const auto& patch : layout.patches)
+        {
+            int painted = 0;
+            for (Vec2i offset : patch.offsets)
+            {
+                const Vec2i pos{patch.center.x + offset.x, patch.center.y + offset.y};
+                if (!tilemap.IsInside(pos))
+                    continue;
+                Tile& tile = tilemap[pos];
+                if (tile.HasBuilding() || tile.isMilitaryRoad || tile.tileType != TileType::GRASS)
+                    continue;
+
+                tile.tileType = patch.type;
+                const bool usesOverlay = tilemap.HasResourceOverlay(patch.type);
+                tile.terrainTextureId = tilemap.PickTerrainTexture(
+                    usesOverlay ? TileType::GRASS : patch.type, rng);
+                tile.resourceOverlayTextureId = usesOverlay
+                    ? tilemap.PickResourceOverlayTexture(patch.type,
+                        ResourceOverlayEdgeDirection::None, rng)
+                    : -1;
+                tile.resourceRichness = std::max(1, tilemap.params.resourceRichness);
+                painted++;
+            }
+            if (painted == 0)
+                return false;
+        }
+
+        tilemap.terrainDirty = true;
+        return true;
     }
 
     // Builds an orthogonal road between two starting buildings, routing

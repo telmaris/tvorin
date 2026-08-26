@@ -808,18 +808,10 @@ void GameWorld::CreateStartingVillageAndResources(Player* player, Vec2i hqAnchor
         BuildStartRoad(player, villageAnchor, villageFootprint, hqAnchor, hqFootprint,
                        bestRoadClearance);
 
-    // WOOD/STONE stay on the original ring (17..23); COAL/IRON_ORE (user
-    // request 2026-07-19: iron is often missing near spawn) sit on a wider
-    // ring (26..32) so all four patches fit around the HQ without collisions
-    // — four spread directions, one per patch.
-    PlaceStartingResourcePatch(tilemap, hqAnchor, hqFootprint, villageAnchor, villageFootprint,
-                               TileType::WOOD, resourceRng, 17, 23, Vec2i{-1, 0});
-    PlaceStartingResourcePatch(tilemap, hqAnchor, hqFootprint, villageAnchor, villageFootprint,
-                               TileType::STONE, resourceRng, 17, 23, Vec2i{1, 0});
-    PlaceStartingResourcePatch(tilemap, hqAnchor, hqFootprint, villageAnchor, villageFootprint,
-                               TileType::COAL, resourceRng, 26, 32, Vec2i{0, -1});
-    PlaceStartingResourcePatch(tilemap, hqAnchor, hqFootprint, villageAnchor, villageFootprint,
-                               TileType::IRON_ORE, resourceRng, 26, 32, Vec2i{0, 1});
+    const auto resourceLayout = GameWorldInternal::PlanStartingResourceLayout(
+        tilemap, hqAnchor, hqFootprint, villageAnchor, villageFootprint, resourceRng);
+    if (!GameWorldInternal::PlaceStartingResourceLayout(tilemap, resourceLayout, resourceRng))
+        Log::Msg("[MapGenerator]", "Starting resource layout failed for player ", player->id);
 }
 
 // Initializes runtime state for this object.
