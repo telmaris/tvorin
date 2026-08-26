@@ -1,6 +1,7 @@
 #include "ui/Renderer.h"
 #include "core/FogOfWar.h"
 #include "data/TextureConfig.h"
+#include "ui/TerrainRenderGeometry.h"
 
 #include <cmath>
 
@@ -33,6 +34,32 @@ TEST(RendererLifecycleTests, RenderTargetOrientationDependsOnlyOnDestinationBoun
     EXPECT_FLOAT_EQ(offscreen.height, -1080.0f);
     EXPECT_FLOAT_EQ(window.width, 1920.0f);
     EXPECT_FLOAT_EQ(window.height, 1080.0f);
+}
+
+TEST(RendererLifecycleTests, TerrainTileRenderPixelBoundsShareEdgesAtAllowedZooms)
+{
+    const Vec2f tileSize{static_cast<float>(TILE_SIZE), static_cast<float>(TILE_SIZE)};
+    for (int zoomStep = 1; zoomStep <= 160; zoomStep++)
+    {
+        const float zoom = static_cast<float>(zoomStep) / static_cast<float>(TILE_SIZE);
+        for (int index = 0; index < 100; index++)
+        {
+            const int x = index % 10;
+            const int y = index / 10;
+            const RenderPixelBounds tile = CalculateTerrainRenderPixelBounds(
+                {static_cast<float>(x * TILE_SIZE), static_cast<float>(y * TILE_SIZE)},
+                tileSize, zoom, static_cast<float>(RENDER_HEIGHT));
+            const RenderPixelBounds east = CalculateTerrainRenderPixelBounds(
+                {static_cast<float>((x + 1) * TILE_SIZE), static_cast<float>(y * TILE_SIZE)},
+                tileSize, zoom, static_cast<float>(RENDER_HEIGHT));
+            const RenderPixelBounds north = CalculateTerrainRenderPixelBounds(
+                {static_cast<float>(x * TILE_SIZE), static_cast<float>((y + 1) * TILE_SIZE)},
+                tileSize, zoom, static_cast<float>(RENDER_HEIGHT));
+
+            EXPECT_EQ(tile.right, east.left);
+            EXPECT_EQ(tile.top, north.bottom);
+        }
+    }
 }
 
 TEST(RendererLifecycleTests, RenderSettingsAreVisualOnlyAndConfigurableWithoutGpuResources)

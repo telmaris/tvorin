@@ -4,6 +4,7 @@
 #include "core/RoadTopology.h"
 #include "economy/Building.h"
 #include "economy/Player.h"
+#include "ui/TerrainRenderGeometry.h"
 #include "ui/UiText.h"
 #include "rlgl.h"
 
@@ -67,9 +68,6 @@ namespace
                        {0.0f, 0.0f}, 0.0f, tint);
     }
 
-    // Terrain is composed from individual TILE_SIZE-square quads. Keeping a
-    // tile an integral number of render pixels wide prevents adjacent quads
-    // from falling on opposite sides of a pixel when zoomed out.
     float SnapZoomToTileGrid(float zoom)
     {
         const float pixelsPerTile = std::max(1.0f,
@@ -1145,17 +1143,15 @@ void Renderer::DrawAtlasTile(int atlas, int tex, Vec2f pos, Vec2f drawSize)
     Rectangle dest = {pos.x, RENDER_HEIGHT - drawSize.y - pos.y, drawSize.x, drawSize.y};
     if (atlas == 0 && camera.zoom > 0.0f)
     {
-        // At a distant zoom a tile can cover only a few render pixels. Two
-        // adjacent quads may then round to neighbouring pixel columns/rows
-        // and leave a transparent (black after composition) seam between
-        // them. Extend only the right and top edges by one render pixel. The
-        // next tile is drawn later and owns the overlap, so this closes the
-        // raster gap without shifting the tile grid or changing atlas
-        // sampling. Resource overlays deliberately do not use this because
-        // their transparent edges must not spill into neighbouring tiles.
-        const float renderPixelInWorld = 1.0f / camera.zoom;
-        dest.width += renderPixelInWorld;
-        dest.height += renderPixelInWorld;
+        // Terrain uses shared render-pixel boundaries; resource overlays keep
+        // their transparent atlas edges and therefore use the original quad.
+        const RenderPixelBounds bounds = CalculateTerrainRenderPixelBounds(
+            pos, drawSize, camera.zoom, static_cast<float>(RENDER_HEIGHT));
+        const float worldPerRenderPixel = 1.0f / camera.zoom;
+        dest = {bounds.left * worldPerRenderPixel,
+                bounds.top * worldPerRenderPixel,
+                (bounds.right - bounds.left) * worldPerRenderPixel,
+                (bounds.bottom - bounds.top) * worldPerRenderPixel};
     }
     DrawTexturePro(at.tex.Get(), src, dest, {0,0}, 0, WHITE);
 }
