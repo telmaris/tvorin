@@ -311,12 +311,11 @@ void Player::ApplyUpgradeLevelModifiers(Building& building)
     balanceModifiers.ClearSourcePrefix(sourcePrefix);
 
     const auto& definition = GetBuildingDefinition(building.buildingType);
-    auto it = std::find_if(definition.upgradeLevels.begin(), definition.upgradeLevels.end(),
-        [&](const BuildingUpgradeLevelDefinition& levelDef) { return levelDef.level == upgrade->level; });
-    if (it == definition.upgradeLevels.end())
+    const auto* levelDefinition = FindUpgradeLevelDefinition(definition, upgrade->level);
+    if (levelDefinition == nullptr)
         return;
 
-    for (BalanceModifier modifier : it->modifiers)
+    for (BalanceModifier modifier : levelDefinition->modifiers)
     {
         modifier.scope = BalanceModifierScope::BuildingAtPosition(building.positionId);
         modifier.source = sourcePrefix + std::to_string(upgrade->level);

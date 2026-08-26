@@ -243,19 +243,18 @@ bool GameWorld::ExecuteCommand(const GameCommand& command)
 
         const auto& definition = GetBuildingDefinition(building->buildingType);
         int targetLevel = upgrade->level + 1;
-        auto it = std::find_if(definition.upgradeLevels.begin(), definition.upgradeLevels.end(),
-            [&](const BuildingUpgradeLevelDefinition& levelDef) { return levelDef.level == targetLevel; });
-        if (it == definition.upgradeLevels.end())
+        const auto* levelDefinition = FindUpgradeLevelDefinition(definition, targetLevel);
+        if (levelDefinition == nullptr)
             return false;
 
-        if (!player->TryPayBuildCost(it->cost))
+        if (!player->TryPayBuildCost(levelDefinition->cost))
         {
             Log::Msg("[GameWorld]", "Command rejected: not enough resources to upgrade ", building->name);
             return false;
         }
 
         upgrade->isUpgrading = true;
-        upgrade->upgradeRemaining = it->buildTime;
+        upgrade->upgradeRemaining = levelDefinition->buildTime;
         return acceptCommand();
     }
 

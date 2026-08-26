@@ -64,6 +64,15 @@ struct BuildingUpgradeLevelDefinition
     std::optional<double> manpowerRate;
 };
 
+struct BuildingDefinition;
+
+// Shared validation/lookup for UI previews and authoritative commands. A
+// building's maxLevel is only a hint; the exact next record must exist and be
+// well-formed before an upgrade can be presented or started.
+bool IsValidUpgradeLevelDefinition(const BuildingUpgradeLevelDefinition& definition);
+const BuildingUpgradeLevelDefinition* FindUpgradeLevelDefinition(
+    const BuildingDefinition& definition, int level);
+
 struct VillageDefinition
 {
     double manpowerRate{5.0};

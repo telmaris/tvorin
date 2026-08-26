@@ -2,6 +2,7 @@
 #include "data/RtsDataFile.h"
 
 #include <algorithm>
+#include <cmath>
 #include <functional>
 
 namespace
@@ -742,6 +743,39 @@ const std::vector<BuildingDefinition>& GetBuildingDefinitions()
 {
     static const std::vector<BuildingDefinition> definitions = LoadBuildingDefinitionsFromFile(buildingDataPath);
     return definitions;
+}
+
+bool IsValidUpgradeLevelDefinition(const BuildingUpgradeLevelDefinition& definition)
+{
+    if (definition.level <= 1 || !std::isfinite(definition.buildTime) || definition.buildTime < 0.0)
+        return false;
+
+    for (const auto& cost : definition.cost)
+        if (cost.type == ResourceType::Null || cost.amount <= 0)
+            return false;
+
+    for (const auto& modifier : definition.modifiers)
+        if (!std::isfinite(modifier.additive) || !std::isfinite(modifier.multiplier) ||
+            modifier.multiplier < 0.0)
+            return false;
+
+    if (definition.populationCap.has_value() && definition.populationCap.value() <= 0)
+        return false;
+    if (definition.manpowerRate.has_value() &&
+        (!std::isfinite(definition.manpowerRate.value()) || definition.manpowerRate.value() < 0.0))
+        return false;
+    return true;
+}
+
+const BuildingUpgradeLevelDefinition* FindUpgradeLevelDefinition(
+    const BuildingDefinition& definition, int level)
+{
+    auto it = std::find_if(definition.upgradeLevels.begin(), definition.upgradeLevels.end(),
+        [level](const BuildingUpgradeLevelDefinition& candidate)
+        {
+            return candidate.level == level && IsValidUpgradeLevelDefinition(candidate);
+        });
+    return it != definition.upgradeLevels.end() ? &*it : nullptr;
 }
 
 int GetMaximumBuildingFootprintOverhang()

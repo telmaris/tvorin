@@ -310,3 +310,16 @@ TEST(BuildingConfigTests, MissingBuildingDataUsesBuiltInDefaults)
         return definition.type == BuildingType::Headquarters;
     }), definitions.end());
 }
+
+TEST(BuildingConfigTests, UpgradeLookupRequiresAnExactValidNextLevel)
+{
+    BuildingDefinition definition;
+    definition.type = BuildingType::Road;
+    definition.upgradeLevels = {
+        BuildingUpgradeLevelDefinition{2, {{ResourceType::STONE, 2}}, 5.0, {}, {}, {}},
+        BuildingUpgradeLevelDefinition{3, {{ResourceType::STONE, 3}}, -1.0, {}, {}, {}}};
+
+    ASSERT_NE(FindUpgradeLevelDefinition(definition, 2), nullptr);
+    EXPECT_EQ(FindUpgradeLevelDefinition(definition, 3), nullptr);
+    EXPECT_FALSE(IsValidUpgradeLevelDefinition(definition.upgradeLevels[1]));
+}

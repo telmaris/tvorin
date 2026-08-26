@@ -1,5 +1,6 @@
 #include "ui/Gui.h"
 #include "ui/ControlIcons.h"
+#include "ui/BuildingUpgradeView.h"
 #include "ui/UiTheme.h"
 #include "economy/Building.h"
 #include "economy/BuildingConfig.h"
@@ -1244,6 +1245,71 @@ namespace
         std::ostringstream stream;
         stream << std::fixed << std::setprecision(precision) << value;
         return stream.str();
+    }
+
+    std::string FormatUpgradeEffect(const BalanceModifier& modifier)
+    {
+        std::string value;
+        if (std::abs(modifier.additive) > 0.0001)
+        {
+            value = (modifier.additive > 0.0 ? "+" : "") + FormatDecimal(modifier.additive);
+        }
+        else if (std::abs(modifier.multiplier - 1.0) > 0.0001)
+        {
+            const double percent = (modifier.multiplier - 1.0) * 100.0;
+            value = (percent > 0.0 ? "+" : "") + FormatDecimal(percent, 0) + "%";
+        }
+        else
+        {
+            value = "no change";
+        }
+        return std::string(BalanceStatLabel(modifier.stat)) + ": " + value;
+    }
+
+    void DrawUpgradeTooltip(Rectangle anchor, int targetLevel,
+                            const BuildingUpgradeLevelDefinition& levelDefinition,
+                            const std::vector<std::string>& effects,
+                            const Player* owner)
+    {
+        const int rowCount = static_cast<int>(levelDefinition.cost.size()) +
+                             static_cast<int>(effects.size()) +
+                             (levelDefinition.buildTime > 0.0 ? 1 : 0) + 1;
+        constexpr float rowH = 22.0f;
+        const float boxW = std::clamp(anchor.width, 300.0f, 380.0f);
+        const float boxH = std::max(1, rowCount) * rowH + 12.0f;
+        Rectangle box{anchor.x, anchor.y - boxH - 6.0f, boxW, boxH};
+        box.x = std::clamp(box.x, 8.0f, static_cast<float>(GetScreenWidth()) - box.width - 8.0f);
+        box.y = std::clamp(box.y, 8.0f, static_cast<float>(GetScreenHeight()) - box.height - 8.0f);
+        if (!UiControlIcons::DrawPixelHudPanelFrame(box))
+        {
+            DrawRectangleRounded(box, 0.08f, 8, UiTheme::Inset);
+            DrawRectangleRoundedLines(box, 0.08f, 8, 1.0f, UiTheme::Iron);
+        }
+
+        float rowY = box.y + 6.0f;
+        for (const auto& cost : levelDefinition.cost)
+        {
+            Rectangle icon{box.x + 8.0f, rowY, 18.0f, 18.0f};
+            GuiPanel::DrawResourceIcon(cost.type, icon);
+            const bool affordable = owner == nullptr || owner->HasBuildResources({cost});
+            UiText::Draw(ResourceDisplayName(cost.type) + " x" + std::to_string(cost.amount),
+                box.x + 34.0f, rowY + 1.0f, 14,
+                affordable ? UiTheme::Parchment : Color{238, 184, 84, 255});
+            rowY += rowH;
+        }
+        for (const auto& effect : effects)
+        {
+            UiText::Draw(effect, box.x + 8.0f, rowY + 1.0f, 14, UiTheme::SageBright);
+            rowY += rowH;
+        }
+        if (levelDefinition.buildTime > 0.0)
+        {
+            UiText::Draw("Upgrade time: " + FormatSeconds(levelDefinition.buildTime),
+                box.x + 8.0f, rowY + 1.0f, 14, UiTheme::ParchmentDim);
+            rowY += rowH;
+        }
+        UiText::Draw("Target level: " + std::to_string(targetLevel),
+            box.x + 8.0f, rowY + 1.0f, 14, UiTheme::AmberBright);
     }
 
     // Draws all categorized university research trees.
@@ -2641,60 +2707,74 @@ void GuiPanel::Update(double dt)
             // (UpgradeComponent never touches constructionRemaining, see
             // GameWorld.Commands.cpp), so this button only disappears once
             // maxed out, never while mid-upgrade elsewhere on the road.
-            if (!upgrade->isUpgrading && upgrade->level < upgrade->maxLevel)
+            const BuildingUpgradeView upgradeView = MakeBuildingUpgradeView(*building);
+            if (upgradeView.CanStart())
             {
-                const auto& definition = GetBuildingDefinition(building->buildingType);
-                int targetLevel = upgrade->level + 1;
-                auto levelIt = std::find_if(definition.upgradeLevels.begin(), definition.upgradeLevels.end(),
-                    [&](const BuildingUpgradeLevelDefinition& d) { return d.level == targetLevel; });
-
-                if (levelIt != definition.upgradeLevels.end())
+                const int targetLevel = upgradeView.targetLevel;
+                const auto& levelDefinition = *upgradeView.target;
+                Building* self = building;
+                GameScene* panelScene = scene;
+                Rectangle upgradeRect{static_cast<float>(contentX), static_cast<float>(y), static_cast<float>(contentW), 32.0f};
+                UiButton upgradeButton;
+                upgradeButton.pos = Vec2i{contentX, y};
+                upgradeButton.size = Vec2i{contentW, 32};
+                upgradeButton.ChangeText("Upgrade to level " + std::to_string(targetLevel));
+                upgradeButton.func = [self, panelScene]()
                 {
-                    Building* self = building;
-                    GameScene* panelScene = scene;
-                    Rectangle upgradeRect{static_cast<float>(contentX), static_cast<float>(y), static_cast<float>(contentW), 32.0f};
-                    UiButton upgradeButton;
-                    upgradeButton.pos = Vec2i{contentX, y};
-                    upgradeButton.size = Vec2i{contentW, 32};
-                    upgradeButton.ChangeText("Upgrade to level " + std::to_string(targetLevel));
-                    upgradeButton.func = [self, panelScene, targetLevel]()
-                    {
-                        if (self == nullptr || panelScene == nullptr || panelScene->game == nullptr)
-                            return;
-                        panelScene->SubmitLocalCommand(GameCommand::UpgradeBuilding(
-                            panelScene->game->GetLocalPlayerId(), self->positionId));
-                    };
-                    upgradeButton.Update(dt);
+                    if (self == nullptr || panelScene == nullptr || panelScene->game == nullptr)
+                        return;
+                    panelScene->SubmitLocalCommand(GameCommand::UpgradeBuilding(
+                        panelScene->game->GetLocalPlayerId(), self->positionId));
+                };
+                upgradeButton.Update(dt);
 
-                    // Custom hover box (not the generic text-only Tooltip::Draw)
-                    // so the cost can show an actual small resource icon per
-                    // the user's request, not just a text amount.
-                    if (CheckCollisionPointRec(GetMousePosition(), upgradeRect))
+                // Keep the tooltip shared with every upgradeable building: the
+                // button remains data-driven, while the renderer only consumes
+                // the validated next-level view.
+                if (CheckCollisionPointRec(GetMousePosition(), upgradeRect))
+                {
+                    std::vector<std::string> effects;
+                    const auto& definition = GetBuildingDefinition(building->buildingType);
+                    const auto* currentLevelDefinition =
+                        FindUpgradeLevelDefinition(definition, upgrade->level);
+                    const auto levelModifierValue = [](const BuildingUpgradeLevelDefinition* level,
+                                                        BalanceStat stat, bool multiplier)
                     {
-                        float rowH = 22.0f;
-                        int rowCount = static_cast<int>(levelIt->cost.size()) + (levelIt->buildTime > 0.0 ? 1 : 0);
-                        float boxH = std::max(1, rowCount) * rowH + 12.0f;
-                        Rectangle box{upgradeRect.x, upgradeRect.y - boxH - 6.0f, upgradeRect.width, boxH};
-                        if (!UiControlIcons::DrawPixelHudPanelFrame(box))
+                        if (level == nullptr)
+                            return multiplier ? 1.0 : 0.0;
+                        for (const auto& modifier : level->modifiers)
+                            if (modifier.stat == stat)
+                                return multiplier ? modifier.multiplier : modifier.additive;
+                        return multiplier ? 1.0 : 0.0;
+                    };
+                    for (const auto& modifier : levelDefinition.modifiers)
+                    {
+                        if (modifier.stat == BalanceStat::RoadCapacity)
                         {
-                            DrawRectangleRounded(box, 0.08f, 8, UiTheme::Inset);
-                            DrawRectangleRoundedLines(box, 0.08f, 8, 1.0f, UiTheme::Iron);
+                            const double currentAdd = levelModifierValue(
+                                currentLevelDefinition, modifier.stat, false);
+                            const double targetCapacity = road->GetModifiedMaxCapacity(*building) +
+                                modifier.additive - currentAdd;
+                            effects.push_back("Road capacity: " +
+                                std::to_string(road->GetModifiedMaxCapacity(*building)) + " -> " +
+                                std::to_string(static_cast<int>(std::round(targetCapacity))));
                         }
-                        float rowY = box.y + 6.0f;
-                        for (const auto& cost : levelIt->cost)
+                        else if (modifier.stat == BalanceStat::RoadSpeed)
                         {
-                            Rectangle icon{box.x + 8.0f, rowY, 18.0f, 18.0f};
-                            GuiPanel::DrawResourceIcon(cost.type, icon);
-                            UiText::Draw(ResourceDisplayName(cost.type) + " x" + std::to_string(cost.amount),
-                                box.x + 34.0f, rowY + 1.0f, 14, UiTheme::Parchment);
-                            rowY += rowH;
+                            const double currentMultiplier = levelModifierValue(
+                                currentLevelDefinition, modifier.stat, true);
+                            const double targetSpeed = road->GetModifiedSpeedModifier(*building) *
+                                modifier.multiplier / std::max(0.0001, currentMultiplier);
+                            effects.push_back("Road speed: " +
+                                FormatDecimal(road->GetModifiedSpeedModifier(*building) * 100.0, 0) +
+                                "% -> " + FormatDecimal(targetSpeed * 100.0, 0) + "%");
                         }
-                        if (levelIt->buildTime > 0.0)
-                            UiText::Draw("Build time: " + FormatSeconds(levelIt->buildTime),
-                                box.x + 8.0f, rowY + 1.0f, 14, UiTheme::ParchmentDim);
+                        else
+                            effects.push_back(FormatUpgradeEffect(modifier));
                     }
-                    y += 32 + 8;
+                    DrawUpgradeTooltip(upgradeRect, targetLevel, levelDefinition, effects, building->owner);
                 }
+                y += 32 + 8;
             }
 
             y += 8;
@@ -2800,14 +2880,15 @@ void GuiPanel::Update(double dt)
             DrawTextFit(stat, Rectangle{static_cast<float>(contentX), static_cast<float>(y), static_cast<float>(contentW), static_cast<float>(line)}, line - 3, color);
             y += line + 4;
         }
-        if (auto* upgrade = building->GetComponent<UpgradeComponent>();
-            upgrade != nullptr && !upgrade->isUpgrading && upgrade->level < upgrade->maxLevel)
+        const BuildingUpgradeView upgradeView = MakeBuildingUpgradeView(*building);
+        if (upgradeView.CanStart())
         {
-            int targetLevel = upgrade->level + 1;
+            const int targetLevel = upgradeView.targetLevel;
+            const auto& levelDefinition = *upgradeView.target;
             UiButton settlementUpgradeButton;
             settlementUpgradeButton.pos = Vec2i{contentX, y};
             settlementUpgradeButton.size = Vec2i{contentW, 32};
-            settlementUpgradeButton.ChangeText(targetLevel == 2 ? "Upgrade to Town" : "Upgrade to City");
+            settlementUpgradeButton.ChangeText("Upgrade to level " + std::to_string(targetLevel));
             Building* self = building;
             GameScene* panelScene = scene;
             settlementUpgradeButton.func = [self, panelScene]()
@@ -2818,6 +2899,24 @@ void GuiPanel::Update(double dt)
                     panelScene->game->GetLocalPlayerId(), self->positionId));
             };
             settlementUpgradeButton.Update(dt);
+
+            Rectangle upgradeRect{static_cast<float>(contentX), static_cast<float>(y),
+                                  static_cast<float>(contentW), 32.0f};
+            if (CheckCollisionPointRec(GetMousePosition(), upgradeRect))
+            {
+                const int currentPopulationCap = populationCap;
+                const double currentManpowerRate = manpowerRate;
+                std::vector<std::string> effects;
+                if (levelDefinition.populationCap.has_value())
+                    effects.push_back("Population cap: " + std::to_string(currentPopulationCap) +
+                                      " -> " + std::to_string(levelDefinition.populationCap.value()));
+                if (levelDefinition.manpowerRate.has_value())
+                    effects.push_back("Manpower growth: " + FormatDecimal(currentManpowerRate, 2) +
+                                      " -> " + FormatDecimal(levelDefinition.manpowerRate.value(), 2));
+                for (const auto& modifier : levelDefinition.modifiers)
+                    effects.push_back(FormatUpgradeEffect(modifier));
+                DrawUpgradeTooltip(upgradeRect, targetLevel, levelDefinition, effects, building->owner);
+            }
         }
         drawDestroyButton();
         return;
