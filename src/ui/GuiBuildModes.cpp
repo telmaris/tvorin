@@ -47,6 +47,7 @@ namespace
     {
         std::vector<ResourceAmountDefinition> inputs;
         std::vector<ResourceAmountDefinition> outputs;
+        std::vector<TileType> terrainTypes;
         double cycleTime{0.0};
     };
 
@@ -64,6 +65,9 @@ namespace
 
         for (const auto& terrain : definition.terrainProductions)
         {
+            if (std::find(summary.terrainTypes.begin(), summary.terrainTypes.end(), terrain.tileType) ==
+                summary.terrainTypes.end())
+                summary.terrainTypes.push_back(terrain.tileType);
             for (const auto& output : terrain.production.outputs)
             {
                 bool alreadyListed = std::any_of(summary.outputs.begin(), summary.outputs.end(),
@@ -75,6 +79,21 @@ namespace
                 summary.cycleTime = terrain.production.cycleTime;
         }
         return summary;
+    }
+
+    float MeasureRecipeIconRow(const std::vector<ResourceAmountDefinition>& items,
+                               int fontSize = 22)
+    {
+        constexpr float iconSize = 36.0f;
+        constexpr float gap = 13.0f;
+        float width = 0.0f;
+        for (const auto& item : items)
+        {
+            const float amountWidth = static_cast<float>(UiText::Measure(
+                "x" + std::to_string(item.amount), fontSize));
+            width += iconSize + 5.0f + amountWidth + gap;
+        }
+        return std::max(0.0f, width - gap);
     }
 
     // Draws a clear, one-line material summary. Cost rows retain quantities;
@@ -111,6 +130,55 @@ namespace
             x += itemWidth + gap;
         }
         return x;
+    }
+
+    int DrawRecipeFlow(const RecipeSummary& recipe, float x, float y, float maxX)
+    {
+        constexpr float rowHeight = 38.0f;
+        constexpr float arrowWidth = 25.0f;
+        const float inputWidth = MeasureRecipeIconRow(recipe.inputs);
+        const float outputWidth = MeasureRecipeIconRow(recipe.outputs);
+        const bool hasInputs = !recipe.inputs.empty();
+        const bool hasOutputs = !recipe.outputs.empty();
+        const bool oneRow = hasInputs && hasOutputs &&
+            x + inputWidth + arrowWidth + outputWidth <= maxX;
+        int rows = 0;
+
+        if (oneRow)
+        {
+            float cursor = DrawRecipeIconRow(recipe.inputs, x, y, maxX, 6, true);
+            UiText::Draw("→", cursor + 1.0f, y + 7.0f, 22, UiTheme::ParchmentDim);
+            DrawRecipeIconRow(recipe.outputs, cursor + arrowWidth, y, maxX, 6, true);
+            return 1;
+        }
+
+        if (!recipe.terrainTypes.empty() && !hasInputs)
+        {
+            std::string terrainText = "Terrain: ";
+            for (size_t index = 0; index < recipe.terrainTypes.size(); ++index)
+            {
+                if (index > 0)
+                    terrainText += "/";
+                terrainText += TileTypeLabel(recipe.terrainTypes[index]);
+            }
+            UiText::Draw(terrainText, x, y + 8.0f, 16, UiTheme::Parchment);
+            y += rowHeight;
+            rows++;
+        }
+
+        if (hasInputs)
+        {
+            DrawRecipeIconRow(recipe.inputs, x, y, maxX, 6, true);
+            y += rowHeight;
+            rows++;
+        }
+        if (hasOutputs)
+        {
+            UiText::Draw("→", x, y + 7.0f, 22, UiTheme::ParchmentDim);
+            DrawRecipeIconRow(recipe.outputs, x + arrowWidth, y, maxX, 6, true);
+            rows++;
+        }
+        return std::max(1, rows);
     }
 
     void DrawBuildingPreviewIcon(GameScene* scene, BuildingType type, Rectangle iconBox, Color tint = WHITE)
@@ -314,14 +382,27 @@ namespace
         const float infoRowH = 26.0f;
         const float labelWidth = 96.0f;
         const float detailWidth = width - padding * 2.0f - labelWidth - 8.0f;
-        const bool showProduction = !recipe.outputs.empty();
+        const bool showProduction = !recipe.inputs.empty() || !recipe.outputs.empty() ||
+                                    !recipe.terrainTypes.empty();
+        int productionRows = 0;
+        if (showProduction)
+        {
+            productionRows = 1;
+            const bool flowNeedsWrap = !recipe.inputs.empty() && !recipe.outputs.empty() &&
+                MeasureRecipeIconRow(recipe.inputs) + MeasureRecipeIconRow(recipe.outputs) +
+                25.0f > detailWidth;
+            const bool terrainNeedsOwnRow = recipe.inputs.empty() &&
+                !recipe.terrainTypes.empty() && !recipe.outputs.empty();
+            if (flowNeedsWrap || terrainNeedsOwnRow)
+                productionRows = 2;
+        }
         const bool showFunction = !showProduction && !purpose.empty();
         const std::vector<std::string> purposeLines = showFunction
             ? UiText::Wrap(purpose, 20, detailWidth)
             : std::vector<std::string>{};
         const float bodyHeight =
                                  (showFunction ? static_cast<float>(purposeLines.size()) * infoRowH : 0.0f) +
-                                 (showProduction ? materialRowH : 0.0f) +
+                                 (showProduction ? materialRowH * std::max(1, productionRows) : 0.0f) +
                                  infoRowH +
                                  (!terrainLabel.empty() ? infoRowH : 0.0f) +
                                  (lockReasons.empty() ? 0.0f :
@@ -412,9 +493,10 @@ namespace
         if (showProduction)
         {
             UiText::Draw("Production", box.x + padding, y + 9.0f, 18, muted);
-            DrawRecipeIconRow(recipe.outputs, box.x + padding + labelWidth, y,
-                              box.x + box.width - padding, 6, false);
-            y += materialRowH;
+            const int drawnRows = DrawRecipeFlow(recipe,
+                box.x + padding + labelWidth, y,
+                box.x + box.width - padding);
+            y += materialRowH * drawnRows;
         }
 
         std::string timings = "Build: " + FormatOneDecimal(option.buildTime) + "s";
