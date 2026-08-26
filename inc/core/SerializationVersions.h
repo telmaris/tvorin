@@ -6,11 +6,11 @@
 // literals in individual message/state classes.
 struct SerializationVersion
 {
-    static constexpr int GameCommandVersion = 16; // added authoritative production-block intent
+    static constexpr int GameCommandVersion = 17; // added road product-priority intent
     static constexpr int GameCommandResultVersion = 4;
     static constexpr int GameServerFrameVersion = 1;
     static constexpr int GameSnapshotVersion = 14;
-    static constexpr int GameWorldSaveVersion = 35;
+    static constexpr int GameWorldSaveVersion = 36; // persisted RoadComponent priority
 };
 
 #endif

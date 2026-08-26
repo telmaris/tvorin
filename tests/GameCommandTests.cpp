@@ -75,6 +75,73 @@ TEST(GameCommandTests, SerializesAndDeserializesProductionBlock)
     }
 }
 
+TEST(GameCommandTests, SerializesAndDeserializesRoadPriority)
+{
+    for (ResourceType resource : {ResourceType::WOOD, ResourceType::IRON_SWORD, ResourceType::Null})
+    {
+        GameCommand original = GameCommand::SetRoadPriority(2, 123, resource);
+        GameCommand parsed;
+        ASSERT_TRUE(GameCommand::TryDeserialize(original.Serialize(), parsed));
+        EXPECT_EQ(parsed.type, GameCommandType::SetRoadPriority);
+        EXPECT_EQ(parsed.playerId, 2);
+        EXPECT_EQ(parsed.sourceTileId, 123);
+        EXPECT_EQ(parsed.targetTileId, static_cast<int>(resource));
+    }
+}
+
+TEST(GameCommandTests, RejectsUnknownCommandType)
+{
+    GameCommand parsed;
+    GameCommand malformed = GameCommand::SetRoadPriority(0, 1, ResourceType::WOOD);
+    malformed.type = static_cast<GameCommandType>(999);
+    EXPECT_FALSE(GameCommand::TryDeserialize(malformed.Serialize(), parsed));
+}
+
+TEST(GameCommandTests, RoadPriorityRequiresFinishedOwnedRoadAndPhysicalResource)
+{
+    GameWorld world;
+    MapParameters params;
+    params.sizePreset = MapSizePreset::S;
+    params.aiOpponentCount = 1;
+    params.seed = 4242;
+    ASSERT_TRUE(world.InitWorld("road-priority", nullptr, nullptr, params));
+
+    Player* player = world.GetPlayerHandler().players.at(0).get();
+    ASSERT_NE(player, nullptr);
+    Road* road = nullptr;
+    for (Building* building : player->GetTrackedBuildings())
+        if (auto* candidate = dynamic_cast<Road*>(building); candidate != nullptr)
+        {
+            road = candidate;
+            break;
+        }
+    ASSERT_NE(road, nullptr);
+
+    const auto commandId = world.SubmitCommand(
+        GameCommand::SetRoadPriority(player->id, road->positionId, ResourceType::WOOD));
+    world.UpdateSimulation(FixedSimulationClock::FixedDt);
+    auto results = world.ConsumeCommandResults();
+    auto resultIt = std::find_if(results.begin(), results.end(), [commandId](const GameCommandResult& result)
+    {
+        return result.commandId == commandId;
+    });
+    ASSERT_NE(resultIt, results.end());
+    EXPECT_TRUE(resultIt->accepted);
+    EXPECT_EQ(road->road.priorityResource, ResourceType::WOOD);
+
+    const auto rejectedId = world.SubmitCommand(
+        GameCommand::SetRoadPriority(player->id, road->positionId, static_cast<ResourceType>(23)));
+    world.UpdateSimulation(FixedSimulationClock::FixedDt);
+    results = world.ConsumeCommandResults();
+    resultIt = std::find_if(results.begin(), results.end(), [rejectedId](const GameCommandResult& result)
+    {
+        return result.commandId == rejectedId;
+    });
+    ASSERT_NE(resultIt, results.end());
+    EXPECT_FALSE(resultIt->accepted);
+    EXPECT_EQ(road->road.priorityResource, ResourceType::WOOD);
+}
+
 TEST(GameCommandTests, SerializesDebugEnemyDeployment)
 {
     GameCommand original = GameCommand::DebugDeployEnemyUnits(2, 4);

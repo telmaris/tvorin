@@ -54,6 +54,7 @@ std::string GameWorld::SerializeSimulationState() const
 bool GameWorld::SaveToStream(std::ostream& out) const
 {
 
+    // Save v36: RoadComponent product-priority state.
     // Save v35: exact construction payment records for deterministic salvage.
     // Save v34: private Barracks/tower buffers separated from StorageComponent.
     // Save v33: independent household/urban Village upkeep timers.
@@ -307,6 +308,9 @@ bool GameWorld::SaveToStream(std::ostream& out) const
                 << upgrade->upgradeRemaining << '\n';
         }
 
+        if (const auto* road = building->GetComponent<RoadComponent>())
+            out << "ROADPRIORITY " << static_cast<int>(road->priorityResource) << '\n';
+
         out << "ENDB\n";
     }
 
@@ -433,7 +437,7 @@ bool GameWorld::LoadFromStream(std::istream& in, Renderer* renderer, AudioSystem
     // v28: added the UPG block (UpgradeComponent).
     if (tag != "RTS_SAVE" ||
         (version != 30 && version != 31 && version != 32 && version != 33 &&
-         version != 34 && version != 35))
+         version != 34 && version != 35 && version != 36))
         return false;
 
     render = renderer;
@@ -1097,6 +1101,20 @@ bool GameWorld::LoadFromStream(std::istream& in, Renderer* renderer, AudioSystem
                 upgrade->isUpgrading = isUpgrading != 0;
                 if (auto* population = placed->GetComponent<PopulationComponent>())
                     population->SetSettlementLevel(upgrade->level);
+            }
+            else if (tag == "ROADPRIORITY")
+            {
+                auto* road = placed->GetComponent<RoadComponent>();
+                if (road == nullptr)
+                    return false;
+                int resourceType = 0;
+                in >> resourceType;
+                if (!in || resourceType < 0 || resourceType > 255)
+                    return false;
+                const ResourceType resource = static_cast<ResourceType>(resourceType);
+                if (!RoadComponent::IsValidPriorityResource(resource))
+                    return false;
+                road->SetPriorityResource(resource);
             }
             else
             {

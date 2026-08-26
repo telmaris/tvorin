@@ -2703,6 +2703,83 @@ void GuiPanel::Update(double dt)
                 y += 22;
             }
 
+            // Product priority is a command-backed intent. The compact picker
+            // deliberately lists only the physical resource catalog; Null is
+            // exposed as Clear and strategic resources never enter this UI.
+            UiText::Draw("Admission priority", contentX, y, 18, UiTheme::Parchment);
+            y += 24;
+            Rectangle priorityButton{static_cast<float>(contentX), static_cast<float>(y),
+                                     static_cast<float>(contentW), 30.0f};
+            const bool priorityHovered = CheckCollisionPointRec(GetMousePosition(), priorityButton);
+            DrawRectangleRounded(priorityButton, 0.12f, 6,
+                                 priorityHovered ? Color{48, 76, 98, 255} : UiTheme::Inset);
+            DrawRectangleRoundedLines(priorityButton, 0.12f, 6, 1.0f,
+                                      priorityHovered ? UiTheme::Cyan : UiTheme::Iron);
+            if (road->priorityResource == ResourceType::Null)
+                DrawTextFit("None (FIFO)", {priorityButton.x + 8.0f, priorityButton.y + 7.0f,
+                                             priorityButton.width - 16.0f, 17.0f}, 14, UiTheme::ParchmentDim);
+            else
+            {
+                GuiPanel::DrawResourceIcon(road->priorityResource,
+                    {priorityButton.x + 6.0f, priorityButton.y + 4.0f, 22.0f, 22.0f});
+                DrawTextFit(ResourceDisplayName(road->priorityResource),
+                    {priorityButton.x + 36.0f, priorityButton.y + 7.0f,
+                     priorityButton.width - 44.0f, 17.0f}, 14, UiTheme::Parchment);
+            }
+            if (priorityHovered && InputManager::IsMouseButtonPressed(MOUSE_BUTTON_LEFT))
+                roadPriorityPickerOpen = !roadPriorityPickerOpen;
+            y += 36;
+
+            if (roadPriorityPickerOpen)
+            {
+                const int columns = 8;
+                const int cellWidth = std::max(1, contentW / columns);
+                const int cellHeight = 30;
+                const int rowCount = (static_cast<int>(std::size(resourceTypes)) + columns - 1) / columns;
+                Rectangle picker{static_cast<float>(contentX), static_cast<float>(y),
+                                 static_cast<float>(contentW), static_cast<float>(rowCount * cellHeight + 42)};
+                DrawRectangleRounded(picker, 0.06f, 6, Color{22, 34, 49, 248});
+                DrawRectangleRoundedLines(picker, 0.06f, 6, 1.0f, UiTheme::Cyan);
+                DrawTextFit("Strict priority: matching goods enter first; no aging",
+                    {picker.x + 6.0f, picker.y + 4.0f, picker.width - 12.0f, 16.0f}, 12, UiTheme::ParchmentDim);
+
+                for (int index = 0; index < static_cast<int>(std::size(resourceTypes)); ++index)
+                {
+                    const int row = index / columns;
+                    const int column = index % columns;
+                    Rectangle cell{picker.x + column * cellWidth + 2.0f,
+                                   picker.y + 22.0f + row * cellHeight,
+                                   static_cast<float>(cellWidth - 4),
+                                   static_cast<float>(cellHeight - 2)};
+                    const bool hovered = CheckCollisionPointRec(GetMousePosition(), cell);
+                    if (hovered)
+                        DrawRectangleRounded(cell, 0.14f, 4, Color{48, 76, 98, 255});
+                    GuiPanel::DrawResourceIcon(resourceTypes[index],
+                        {cell.x + 4.0f, cell.y + 3.0f, 22.0f, 22.0f});
+                    if (hovered && InputManager::IsMouseButtonPressed(MOUSE_BUTTON_LEFT))
+                    {
+                        if (scene != nullptr && scene->game != nullptr)
+                            scene->SubmitLocalCommand(GameCommand::SetRoadPriority(
+                                scene->game->GetLocalPlayerId(), building->positionId, resourceTypes[index]));
+                        roadPriorityPickerOpen = false;
+                    }
+                }
+
+                Rectangle clearRect{picker.x + 6.0f, picker.y + picker.height - 18.0f,
+                                    picker.width - 12.0f, 14.0f};
+                const bool clearHovered = CheckCollisionPointRec(GetMousePosition(), clearRect);
+                DrawTextFit("Clear priority", clearRect, 12,
+                            clearHovered ? UiTheme::Cyan : UiTheme::ParchmentDim);
+                if (clearHovered && InputManager::IsMouseButtonPressed(MOUSE_BUTTON_LEFT))
+                {
+                    if (scene != nullptr && scene->game != nullptr)
+                        scene->SubmitLocalCommand(GameCommand::SetRoadPriority(
+                            scene->game->GetLocalPlayerId(), building->positionId, ResourceType::Null));
+                    roadPriorityPickerOpen = false;
+                }
+                y += static_cast<int>(picker.height) + 6;
+            }
+
             // Upgrade button — road keeps transporting while upgrading
             // (UpgradeComponent never touches constructionRemaining, see
             // GameWorld.Commands.cpp), so this button only disappears once
@@ -3337,6 +3414,7 @@ void GuiPanel::SetBuilding(Building* ptr)
     maxContentScrollOffset = 0.0f;
     contentScrollbarDragging = false;
     contentScrollbarDragOffset = 0.0f;
+    roadPriorityPickerOpen = false;
     ChangeText(building != nullptr ? building->name : "Gui Panel");
     UpdateSize({GetScreenWidth(), GetScreenHeight()});
 }

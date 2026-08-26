@@ -24,7 +24,8 @@ enum class GameCommandType
     SetRecipe,
     SetTowerTargetMode,
     SetProductionBlocked,
-    DebugDeployEnemyUnits
+    DebugDeployEnemyUnits,
+    SetRoadPriority
 };
 
 struct GameCommand
@@ -107,6 +108,18 @@ struct GameCommand
         command.type = GameCommandType::SetProductionBlocked;
         command.sourceTileId = buildingTileId;
         command.targetTileId = blocked ? 1 : 0;
+        return command;
+    }
+
+    // Reuses sourceTileId for the road tile and targetTileId for the physical
+    // ResourceType. ResourceType::Null clears the priority.
+    static GameCommand SetRoadPriority(int playerId, int roadTileId, ResourceType resource)
+    {
+        GameCommand command;
+        command.playerId = playerId;
+        command.type = GameCommandType::SetRoadPriority;
+        command.sourceTileId = roadTileId;
+        command.targetTileId = static_cast<int>(resource);
         return command;
     }
 
@@ -290,6 +303,7 @@ struct GameCommand
             case GameCommandType::SetTowerTargetMode:
             case GameCommandType::SetProductionBlocked:
             case GameCommandType::DebugDeployEnemyUnits:
+            case GameCommandType::SetRoadPriority:
                 return true;
         }
         return false;

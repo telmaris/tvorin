@@ -43,6 +43,7 @@ add_executable(tvorin_tests
     ResourceShipmentTests.cpp
     RtsDataFileTests.cpp
     RoadNetworkTests.cpp
+    RoadPriorityArbitrationTests.cpp
     SceneUtilsTests.cpp
     GameSessionPauseTests.cpp
     GameplayClockTests.cpp

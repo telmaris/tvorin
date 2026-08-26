@@ -629,6 +629,7 @@ class GuiPanel : public UiWidget
         float maxContentScrollOffset{0.0f};
         bool contentScrollbarDragging{false};
         float contentScrollbarDragOffset{0.0f};
+        bool roadPriorityPickerOpen{false};
 
         // ESC closes this panel (ETAP 6.1): the wrapped subscriber
         // (de)registers itself with InputManager via RAII, so a panel that

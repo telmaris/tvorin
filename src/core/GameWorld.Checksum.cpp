@@ -177,6 +177,8 @@ std::uint64_t GameWorld::BuildChecksum() const
                 HashInt(hash, upgrade->isUpgrading ? 1 : 0);
                 HashDouble(hash, upgrade->upgradeRemaining);
             }
+            if (const auto* road = building->GetComponent<RoadComponent>(); road != nullptr)
+                HashInt(hash, static_cast<int>(road->priorityResource));
 
             // TD(etap-6): HQ HP/thorns cadence — mutated every tick under siege.
             if (const auto* hq = building->GetComponent<HqComponent>(); hq != nullptr)

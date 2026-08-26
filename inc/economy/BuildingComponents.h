@@ -70,6 +70,10 @@ struct RoadComponent : IBuildingComponent
     int upgradeLevel{1};
     Stat<int> maxCapacity{BalanceStat::RoadCapacity, 5};
     Stat<double> speedModifier{BalanceStat::RoadSpeed, 1.0};
+    // v1 product priority. Null means that the road keeps the historical
+    // first-come admission policy. It is deliberately a resource value, not
+    // a speed/capacity modifier: priority may reorder admission only.
+    ResourceType priorityResource{ResourceType::Null};
     // Visual/diagnostic telemetry. The EMA describes sustained utilization,
     // while the short hold makes a momentary capacity jam visible long enough
     // to notice. Neither value affects transport simulation.
@@ -82,6 +86,16 @@ struct RoadComponent : IBuildingComponent
     double GetModifiedSpeedModifier(const Building& self) const;
     double GetTrafficUtilizationTrend() const;
     bool HasRecentSaturation() const;
+
+    ResourceType GetPriorityResource() const { return priorityResource; }
+    void SetPriorityResource(ResourceType resource) { priorityResource = IsValidPriorityResource(resource) ? resource : ResourceType::Null; }
+    static bool IsValidPriorityResource(ResourceType resource)
+    {
+        if (resource == ResourceType::Null)
+            return true;
+        return ResourcePresentationRank(resource) < static_cast<int>(std::size(resourceTypes)) &&
+               resourceTypes[ResourcePresentationRank(resource)] == resource;
+    }
 };
 
 // --- UpgradeComponent ---

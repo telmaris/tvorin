@@ -302,6 +302,24 @@ bool GameWorld::ExecuteCommand(const GameCommand& command)
         return acceptCommand();
     }
 
+    if (command.type == GameCommandType::SetRoadPriority)
+    {
+        Building* building = tilemap.GetBuilding(command.sourceTileId);
+        if (building == nullptr || building->owner != player || building->IsUnderConstruction() ||
+            !IsRoadLike(building->buildingType))
+            return false;
+
+        if (command.targetTileId < 0 || command.targetTileId > 255)
+            return false;
+        const ResourceType resource = static_cast<ResourceType>(command.targetTileId);
+        auto* road = building->GetComponent<RoadComponent>();
+        if (road == nullptr || !RoadComponent::IsValidPriorityResource(resource))
+            return false;
+
+        road->SetPriorityResource(resource);
+        return acceptCommand();
+    }
+
     if (command.type == GameCommandType::SetReceiver)
     {
         Building* source = tilemap.GetBuilding(command.sourceTileId);

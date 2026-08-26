@@ -684,6 +684,7 @@ TEST(BuildingDomainTests, SaveAndLoadPreservesRoadUpgradeLevelAndReappliesModifi
     // Simulate a completed upgrade to level 2 (same end state UpgradeComponent::Update
     // reaches, without waiting out the real timer).
     road->upgrade.level = 2;
+    road->road.SetPriorityResource(ResourceType::IRON_SWORD);
     player->ApplyUpgradeLevelModifiers(*road);
     int expectedCapacity = road->GetModifiedMaxCapacity();
     ASSERT_GT(expectedCapacity, road->road.maxCapacity.GetBase());
@@ -707,6 +708,7 @@ TEST(BuildingDomainTests, SaveAndLoadPreservesRoadUpgradeLevelAndReappliesModifi
 
     EXPECT_EQ(loadedRoad->upgrade.level, 2);
     EXPECT_FALSE(loadedRoad->upgrade.isUpgrading);
+    EXPECT_EQ(loadedRoad->road.priorityResource, ResourceType::IRON_SWORD);
     EXPECT_EQ(loadedRoad->GetModifiedMaxCapacity(), expectedCapacity);
 }
 
