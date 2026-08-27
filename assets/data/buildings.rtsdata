@@ -646,7 +646,7 @@ building Road
     texture_id 5
     transport_time 1.0
     road upgrade_level 1 max_capacity 5 speed_modifier 1.0
-    upgrade level 2 cost STONE 2 build_time 5 capacity_additive 2
+    upgrade level 2 cost STONE 2 build_time 5 capacity_additive 2 speed_multiplier 1.1
     upgrade level 3 cost STONE 3 cost HORSE 1 build_time 8 capacity_additive 4 speed_multiplier 1.1
     upgrade level 4 cost STONE 4 cost HORSE 1 cost MECHANICAL_PARTS 2 build_time 12 capacity_additive 6 speed_multiplier 1.2
 end
@@ -663,7 +663,7 @@ building Bridge
     texture_id 5
     transport_time 1.0
     road upgrade_level 1 max_capacity 5 speed_modifier 1.0
-    upgrade level 2 cost STONE 2 build_time 5 capacity_additive 2
+    upgrade level 2 cost STONE 2 build_time 5 capacity_additive 2 speed_multiplier 1.1
     upgrade level 3 cost STONE 3 cost HORSE 1 build_time 8 capacity_additive 4 speed_multiplier 1.1
     upgrade level 4 cost STONE 4 cost HORSE 1 cost MECHANICAL_PARTS 2 build_time 12 capacity_additive 6 speed_multiplier 1.2
 end

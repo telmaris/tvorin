@@ -96,6 +96,28 @@ TEST(BuildingConfigTests, BridgeUsesTheSameUpgradeTiersAsRoad)
     }
 }
 
+TEST(BuildingConfigTests, RoadUpgradeTiersExposeCapacityAndTransportSpeedEffects)
+{
+    const auto& road = GetBuildingDefinition(BuildingType::Road);
+    const auto levelTwo = std::find_if(road.upgradeLevels.begin(), road.upgradeLevels.end(),
+        [](const BuildingUpgradeLevelDefinition& level)
+        {
+            return level.level == 2;
+        });
+
+    ASSERT_NE(levelTwo, road.upgradeLevels.end());
+    EXPECT_TRUE(std::any_of(levelTwo->modifiers.begin(), levelTwo->modifiers.end(),
+        [](const BalanceModifier& modifier)
+        {
+            return modifier.stat == BalanceStat::RoadCapacity && modifier.additive > 0.0;
+        }));
+    EXPECT_TRUE(std::any_of(levelTwo->modifiers.begin(), levelTwo->modifiers.end(),
+        [](const BalanceModifier& modifier)
+        {
+            return modifier.stat == BalanceStat::RoadSpeed && modifier.multiplier > 1.0;
+        }));
+}
+
 TEST(BuildingConfigTests, WeaponAndMetalBuildingsUseRequestedDefaultRecipes)
 {
     const auto& foundry = GetBuildingDefinition(BuildingType::Foundry);

@@ -135,7 +135,7 @@ namespace
     int DrawRecipeFlow(const RecipeSummary& recipe, float x, float y, float maxX)
     {
         constexpr float rowHeight = 38.0f;
-        constexpr float arrowWidth = 25.0f;
+        constexpr float arrowWidth = 29.0f;
         const float inputWidth = MeasureRecipeIconRow(recipe.inputs);
         const float outputWidth = MeasureRecipeIconRow(recipe.outputs);
         const bool hasInputs = !recipe.inputs.empty();
@@ -147,7 +147,7 @@ namespace
         if (oneRow)
         {
             float cursor = DrawRecipeIconRow(recipe.inputs, x, y, maxX, 6, true);
-            UiText::Draw("→", cursor + 1.0f, y + 7.0f, 22, UiTheme::ParchmentDim);
+            UiText::Draw("->", cursor + 1.0f, y + 7.0f, 22, UiTheme::ParchmentDim);
             DrawRecipeIconRow(recipe.outputs, cursor + arrowWidth, y, maxX, 6, true);
             return 1;
         }
@@ -174,7 +174,7 @@ namespace
         }
         if (hasOutputs)
         {
-            UiText::Draw("→", x, y + 7.0f, 22, UiTheme::ParchmentDim);
+            UiText::Draw("->", x, y + 7.0f, 22, UiTheme::ParchmentDim);
             DrawRecipeIconRow(recipe.outputs, x + arrowWidth, y, maxX, 6, true);
             rows++;
         }
@@ -390,7 +390,7 @@ namespace
             productionRows = 1;
             const bool flowNeedsWrap = !recipe.inputs.empty() && !recipe.outputs.empty() &&
                 MeasureRecipeIconRow(recipe.inputs) + MeasureRecipeIconRow(recipe.outputs) +
-                25.0f > detailWidth;
+                29.0f > detailWidth;
             const bool terrainNeedsOwnRow = recipe.inputs.empty() &&
                 !recipe.terrainTypes.empty() && !recipe.outputs.empty();
             if (flowNeedsWrap || terrainNeedsOwnRow)

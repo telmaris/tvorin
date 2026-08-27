@@ -2747,15 +2747,19 @@ void GuiPanel::Update(double dt)
                 {
                     const int row = index / columns;
                     const int column = index % columns;
-                    Rectangle cell{picker.x + column * cellWidth + 2.0f,
-                                   picker.y + 22.0f + row * cellHeight,
-                                   static_cast<float>(cellWidth - 4),
-                                   static_cast<float>(cellHeight - 2)};
+                    const float cellSize = std::max(1.0f,
+                        std::min(static_cast<float>(cellWidth - 4), static_cast<float>(cellHeight - 2)));
+                    Rectangle cell{picker.x + column * cellWidth +
+                                       (static_cast<float>(cellWidth) - cellSize) * 0.5f,
+                                   picker.y + 22.0f + row * cellHeight +
+                                       (static_cast<float>(cellHeight) - cellSize) * 0.5f,
+                                   cellSize, cellSize};
                     const bool hovered = CheckCollisionPointRec(GetMousePosition(), cell);
                     if (hovered)
                         DrawRectangleRounded(cell, 0.14f, 4, Color{48, 76, 98, 255});
                     GuiPanel::DrawResourceIcon(resourceTypes[index],
-                        {cell.x + 4.0f, cell.y + 3.0f, 22.0f, 22.0f});
+                        {cell.x + (cell.width - 22.0f) * 0.5f,
+                         cell.y + (cell.height - 22.0f) * 0.5f, 22.0f, 22.0f});
                     if (hovered && InputManager::IsMouseButtonPressed(MOUSE_BUTTON_LEFT))
                     {
                         if (scene != nullptr && scene->game != nullptr)
@@ -2842,7 +2846,7 @@ void GuiPanel::Update(double dt)
                                 currentLevelDefinition, modifier.stat, true);
                             const double targetSpeed = road->GetModifiedSpeedModifier(*building) *
                                 modifier.multiplier / std::max(0.0001, currentMultiplier);
-                            effects.push_back("Road speed: " +
+                            effects.push_back("Transport speed: " +
                                 FormatDecimal(road->GetModifiedSpeedModifier(*building) * 100.0, 0) +
                                 "% -> " + FormatDecimal(targetSpeed * 100.0, 0) + "%");
                         }
