@@ -5,6 +5,8 @@
 #include "simulation/ResourceShipment.h"
 #include "simulation/ShipmentRenderState.h"
 
+#include <deque>
+
 class TileMap;
 
 struct NavigationNode
@@ -44,6 +46,10 @@ class RoadNetwork
 
     // Advances road network state.
     void Update(double);
+    // Grants admission to a prioritized road tile. The grant order is
+    // deterministic for all ready shipments targeting the same tile; callers
+    // must invoke this before handing the shipment off to that road.
+    bool TryAdmitRoadEntry(Transportable* transportable, Building* road);
     // Starts a resource transport if a valid path exists.
     bool BeginTransport(Building* src, Building* dest, Transportable* res);
     // Removes a completed/cancelled transport from the world-owned registry.
@@ -96,6 +102,7 @@ class RoadNetwork
         std::map<ShipmentId, Transportable*> activeShipments;
         ResourceShipmentIndex shipmentRecords;
         ShipmentId nextShipmentId{1};
+        std::map<int, std::deque<ShipmentId>> prioritizedAdmissionGrants;
 };
 
 #endif

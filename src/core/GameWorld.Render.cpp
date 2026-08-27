@@ -202,6 +202,12 @@ void GameWorld::UpdateSimulation(double dt)
     for (auto& [id, player] : playerHandler.players)
         if (player != nullptr && !player->defeated)
             player->construction.Refresh(*player);
+    // Task 12: reset per-tick road admission grants before buildings attempt
+    // to dispatch or advance shipments. With no priority configured the
+    // transport path does not consult this state and keeps the old order.
+    for (auto& [id, player] : playerHandler.players)
+        if (player != nullptr && !player->defeated && player->roadNetwork != nullptr)
+            player->roadNetwork->Update(dt);
     // Update buildings by iterating through Player registries instead of tilemap scan.
     // Avoids O(1M) tilemap iteration every tick; now O(n_buildings) which is typically ~100-1000.
     //

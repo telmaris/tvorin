@@ -249,6 +249,73 @@ TEST(RoadNetworkTests, DispatchDelaySerializesResourcesCreatedInTheSameTick)
     roadA->transportables.clear();
 }
 
+TEST(RoadNetworkTests, PrioritizedRoadAdmissionWinsAcrossConvergingSources)
+{
+    TileMap map;
+    Player player{0, map};
+    FillOwnedMap(map, &player, 12, 8);
+    RoadNetwork network{map};
+
+    auto* ordinarySource = PlaceAndRegister<StorageBuilding>(map, network, &player, {0, 1}, 1);
+    auto* prioritySource = PlaceAndRegister<StorageBuilding>(map, network, &player, {0, 5}, 2);
+    auto* destination = PlaceAndRegister<StorageBuilding>(map, network, &player, {8, 3}, 3);
+    ASSERT_NE(ordinarySource, nullptr);
+    ASSERT_NE(prioritySource, nullptr);
+    ASSERT_NE(destination, nullptr);
+
+    int roadId = 100;
+    for (int x = 2; x <= 7; ++x)
+    {
+        ASSERT_NE(PlaceAndRegister<Road>(map, network, &player, {x, 2}, roadId++), nullptr);
+        ASSERT_NE(PlaceAndRegister<Road>(map, network, &player, {x, 6}, roadId++), nullptr);
+    }
+    for (int y = 3; y <= 5; ++y)
+        ASSERT_NE(PlaceAndRegister<Road>(map, network, &player, {7, y}, roadId++), nullptr);
+
+    const int sharedRoadId = map.GetIdFromCoords({7, 3});
+    auto* sharedRoad = map.GetBuilding(sharedRoadId);
+    ASSERT_NE(sharedRoad, nullptr);
+    sharedRoad->GetComponent<RoadComponent>()->maxCapacity.SetBase(1);
+    sharedRoad->GetComponent<RoadComponent>()->SetPriorityResource(ResourceType::WOOD);
+
+    destination->storage.buffers.clear();
+    destination->storage.buffers[ResourceType::STONE] = ResourceBuffer{ResourceType::STONE, 2};
+    destination->storage.buffers[ResourceType::WOOD] = ResourceBuffer{ResourceType::WOOD, 2};
+
+    Resource ordinary{ResourceType::STONE};
+    Resource priority{ResourceType::WOOD};
+    ASSERT_TRUE(network.BeginTransport(ordinarySource, destination, &ordinary));
+    ASSERT_TRUE(network.BeginTransport(prioritySource, destination, &priority));
+
+    // Pin both shipments at the same ready-to-enter boundary. The ordinary
+    // source is updated first to prove building order cannot beat priority.
+    for (Resource* resource : {&ordinary, &priority})
+    {
+        resource->transportPath = {resource->sourceBuilding->positionId,
+                                   sharedRoadId, destination->positionId};
+        resource->currentPathStep = 0;
+        resource->elapsedTime = 0.0;
+        resource->transportTime = 0.0;
+    }
+
+    network.Update(0.0);
+    ordinarySource->UpdateTransportables(0.0);
+    EXPECT_EQ(ordinarySource->transportables.size(), 1u);
+    EXPECT_TRUE(prioritySource->transportables.size() == 1u);
+
+    prioritySource->UpdateTransportables(0.0);
+    EXPECT_TRUE(ordinarySource->transportables.size() == 1u);
+    EXPECT_TRUE(prioritySource->transportables.empty());
+    ASSERT_EQ(sharedRoad->transportables.size(), 1u);
+    EXPECT_EQ(sharedRoad->transportables.front(), &priority);
+
+    ordinary.ReleaseShipment();
+    priority.ReleaseShipment();
+    ordinarySource->transportables.clear();
+    prioritySource->transportables.clear();
+    sharedRoad->transportables.clear();
+}
+
 TEST(RoadNetworkTests, ProjectsInFlightResourceForRenderingWithoutPointers)
 {
     TileMap map;

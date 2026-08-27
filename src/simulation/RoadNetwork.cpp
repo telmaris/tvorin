@@ -4,6 +4,7 @@
 #include "simulation/MapGenerator.h"
 #include "economy/Player.h"
 #include "core/Log.h"
+#include "simulation/RoadPriorityArbitration.h"
 
 namespace
 {
@@ -134,6 +135,10 @@ TransportUpdateResult Transportable::Update(double dt)
                 }
                 return TransportUpdateResult::Waiting;
             }
+
+            if (road != nullptr && road->GetPriorityResource() != ResourceType::Null &&
+                shipmentNetwork != nullptr && !shipmentNetwork->TryAdmitRoadEntry(this, next))
+                return TransportUpdateResult::Waiting;
         }
 
         const bool reachedDestination = next == targetBuilding;
@@ -182,6 +187,7 @@ RoadNetwork::~RoadNetwork()
     }
     activeShipments.clear();
     shipmentRecords.Clear();
+    prioritizedAdmissionGrants.clear();
 }
 
 void RoadNetwork::RebindWorld(TileMap& map)
@@ -212,6 +218,74 @@ void Transportable::ReleaseShipment()
 // Advances this object's state for one frame.
 void RoadNetwork::Update(double dt)
 {
+    (void)dt;
+    // Admission grants are scoped to one fixed simulation tick. Rebuilding
+    // them lets a newly-ready shipment participate in the next tick without
+    // allowing a stale grant to cross a tick boundary.
+    prioritizedAdmissionGrants.clear();
+}
+
+bool RoadNetwork::TryAdmitRoadEntry(Transportable* transportable, Building* road)
+{
+    if (transportable == nullptr || road == nullptr ||
+        !road->HasComponent<RoadComponent>() || transportable->shipmentId == 0)
+        return true;
+
+    const auto* roadComponent = road->GetComponent<RoadComponent>();
+    if (roadComponent == nullptr || roadComponent->GetPriorityResource() == ResourceType::Null)
+        return true;
+
+    const int roadTileId = road->positionId;
+    auto& grants = prioritizedAdmissionGrants[roadTileId];
+    auto isReadyCandidate = [this, roadTileId](ShipmentId shipmentId)
+    {
+        auto shipmentIt = activeShipments.find(shipmentId);
+        if (shipmentIt == activeShipments.end() || shipmentIt->second == nullptr)
+            return false;
+
+        const Transportable* candidate = shipmentIt->second;
+        if (candidate->currentPathStep < 0 ||
+            candidate->currentPathStep + 1 >= static_cast<int>(candidate->transportPath.size()) ||
+            candidate->transportPath[candidate->currentPathStep + 1] != roadTileId ||
+            candidate->elapsedTime < candidate->transportTime)
+            return false;
+
+        const auto* resource = dynamic_cast<const Resource*>(candidate);
+        return resource != nullptr && resource->type != ResourceType::Null;
+    };
+
+    while (!grants.empty() && !isReadyCandidate(grants.front()))
+        grants.pop_front();
+
+    if (grants.empty())
+    {
+        const int capacity = std::max(0, roadComponent->GetModifiedMaxCapacity(*road));
+        const int occupied = static_cast<int>(road->transportables.size());
+        const int available = std::max(0, capacity - occupied);
+        if (available <= 0)
+            return false;
+
+        std::vector<RoadPriorityCandidate> candidates;
+        candidates.reserve(activeShipments.size());
+        for (const auto& [shipmentId, candidate] : activeShipments)
+        {
+            if (candidate == nullptr || !isReadyCandidate(shipmentId))
+                continue;
+            const auto* resource = dynamic_cast<const Resource*>(candidate);
+            candidates.push_back({resource->type, shipmentId});
+        }
+        SortRoadPriorityCandidates(roadComponent->GetPriorityResource(), candidates);
+        for (int index = 0; index < available && index < static_cast<int>(candidates.size()); ++index)
+            grants.push_back(candidates[index].shipmentId);
+    }
+
+    if (grants.empty() || grants.front() != transportable->shipmentId)
+        return false;
+
+    grants.pop_front();
+    if (grants.empty())
+        prioritizedAdmissionGrants.erase(roadTileId);
+    return true;
 }
 
 // Initializes RoadNetwork::BeginTransport.
