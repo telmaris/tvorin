@@ -145,6 +145,8 @@ TEST(BridgeTests, TransportCrossesBridgeOverMilitaryRoadTrack)
     ASSERT_NE(roadA, nullptr);
     ASSERT_NE(bridge, nullptr);
     ASSERT_NE(destination, nullptr);
+    bridge->road.SetPriorityResource(ResourceType::WOOD);
+    EXPECT_EQ(bridge->road.GetPriorityResource(), ResourceType::WOOD);
 
     std::vector<int> path = player.roadNetwork->CalculatePath(source, destination);
     ASSERT_FALSE(path.empty());

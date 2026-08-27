@@ -140,6 +140,18 @@ TEST(GameCommandTests, RoadPriorityRequiresFinishedOwnedRoadAndPhysicalResource)
     ASSERT_NE(resultIt, results.end());
     EXPECT_FALSE(resultIt->accepted);
     EXPECT_EQ(road->road.priorityResource, ResourceType::WOOD);
+
+    const auto clearId = world.SubmitCommand(
+        GameCommand::SetRoadPriority(player->id, road->positionId, ResourceType::Null));
+    world.UpdateSimulation(FixedSimulationClock::FixedDt);
+    results = world.ConsumeCommandResults();
+    resultIt = std::find_if(results.begin(), results.end(), [clearId](const GameCommandResult& result)
+    {
+        return result.commandId == clearId;
+    });
+    ASSERT_NE(resultIt, results.end());
+    EXPECT_TRUE(resultIt->accepted);
+    EXPECT_EQ(road->road.priorityResource, ResourceType::Null);
 }
 
 TEST(GameCommandTests, SerializesDebugEnemyDeployment)

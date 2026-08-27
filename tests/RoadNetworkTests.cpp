@@ -309,6 +309,19 @@ TEST(RoadNetworkTests, PrioritizedRoadAdmissionWinsAcrossConvergingSources)
     ASSERT_EQ(sharedRoad->transportables.size(), 1u);
     EXPECT_EQ(sharedRoad->transportables.front(), &priority);
 
+    // Drain the granted shipment, then let the ordinary shipment use the
+    // same newly-free slot. This also guards against duplication or loss under
+    // strict priority while the tile is congested.
+    network.Update(0.0);
+    sharedRoad->Update(1.0);
+    ASSERT_EQ(destination->storage.buffers[ResourceType::WOOD].buffer.size(), 1u);
+    ordinarySource->UpdateTransportables(0.0);
+    ASSERT_EQ(sharedRoad->transportables.size(), 1u);
+    EXPECT_EQ(sharedRoad->transportables.front(), &ordinary);
+    network.Update(0.0);
+    sharedRoad->Update(1.0);
+    EXPECT_EQ(destination->storage.buffers[ResourceType::STONE].buffer.size(), 1u);
+
     ordinary.ReleaseShipment();
     priority.ReleaseShipment();
     ordinarySource->transportables.clear();
