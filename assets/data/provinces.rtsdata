@@ -1,0 +1,78 @@
+# Province definitions. Runtime instances save selected values, not ranges.
+
+province frontier_buildable
+archetype Buildable
+display_name "Frontier Province"
+weight 55
+size_x 201 501
+size_y 201 501
+resource_wealth 0.70 1.30
+resource_density 0.40 0.85
+resource_field_size 0.35 0.80
+resource_richness 0.60 1.25
+water_amount 0.05 0.30
+mountain_amount 0.05 0.35
+ruggedness 0.10 0.45
+trait fertile_frontier "Fertile frontier"
+effect Self ProductionOutputAmount 0.0 1.10 wheat
+end
+
+province neutral_city
+archetype NeutralCity
+display_name "Neutral City"
+weight 20
+size_x 201 401
+size_y 201 401
+resource_wealth 0.40 0.90
+resource_density 0.20 0.60
+resource_field_size 0.20 0.60
+resource_richness 0.40 1.00
+water_amount 0.10 0.50
+mountain_amount 0.00 0.25
+ruggedness 0.05 0.35
+city_wealth 1 3
+city_stock COINS 50 150
+trade_price WOOD 1.0 2.0
+trade_price BREAD 1.0 2.5
+buy_price WOOD 0.6 1.3
+buy_price BREAD 0.6 1.7
+barter_penalty 1.25
+trait market_hub "Market hub"
+effect Connection TransportTime 0.0 0.95 trade
+end
+
+province bandit_camp
+archetype BanditCamp
+display_name "Bandit Camp"
+weight 15
+size_x 201 401
+size_y 201 401
+resource_wealth 0.20 0.80
+resource_density 0.10 0.50
+resource_field_size 0.10 0.50
+resource_richness 0.20 0.90
+water_amount 0.00 0.30
+mountain_amount 0.15 0.55
+ruggedness 0.25 0.75
+bandit_strength 10 35
+loot_table bandit_common
+raid_weight 20
+trait ambush_country "Ambush country"
+effect Connection ProvinceDefenseReadiness 0.0 0.85 bandit_raid
+end
+
+province ancient_event_site
+archetype EventSite
+display_name "Ancient Event Site"
+weight 10
+size_x 201 401
+size_y 201 401
+resource_wealth 0.10 0.70
+resource_density 0.05 0.40
+resource_field_size 0.05 0.40
+resource_richness 0.20 0.80
+water_amount 0.00 0.60
+mountain_amount 0.00 0.60
+ruggedness 0.00 0.80
+event_pool ruins_and_relics
+end

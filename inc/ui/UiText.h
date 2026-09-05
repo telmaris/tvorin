@@ -71,11 +71,31 @@ public:
 class UiText
 {
 public:
+    struct DebugInfo
+    {
+        UiFontRole role{UiFontRole::Display};
+        int logicalPx{0};
+        int rasterPx{0};
+        int atlasBaseSize{0};
+        const char* textureFilter{"POINT"};
+        int cachedAtlasCount{0};
+    };
+
+    // Maps logical layout pixels to the closest physical raster size. Kept
+    // pure so DPI/font-cache behavior can be tested without a graphics context.
+    static int ResolveRasterSize(int logicalPx, Vector2 dpiScale);
+    // UI text is always point-sampled: the atlas is already rasterized for the
+    // target physical size, so linear filtering would only soften glyph edges.
+    static int ResolveTextureFilter(int logicalPx, Vector2 dpiScale);
+    // Aligns a logical coordinate to the physical pixel grid used by the
+    // current DPI scale, avoiding half-pixel placement blur.
+    static float SnapToPhysicalPixel(float logicalPosition, float dpiScale);
     // Switches the face used by every subsequent call, returning the previous
     // role so callers can restore it. The game never calls this, so it stays on
     // Display and renders exactly as before.
     static UiFontRole SetRole(UiFontRole role);
     static UiFontRole GetRole();
+    static DebugInfo GetDebugInfo();
 
     // Measures text width using the shared UI font.
     static int Measure(const std::string& text, int fontSize);
@@ -115,13 +135,25 @@ namespace Utf8
 class Tooltip
 {
 public:
+    // Starts the one-request tooltip queue for a new rendered frame.
+    static void BeginFrame();
+    // Queues a value-owned tooltip request. A later request replaces the
+    // earlier one from the same frame.
+    static void Queue(const std::string& title, const std::vector<std::string>& lines,
+                      float preferredWidth = 0.0f,
+                      const std::function<void(Rectangle)>& titleIcon = {},
+                      int titleFontSize = 24,
+                      float titleIconWidth = 0.0f);
+    // Draws the last queued request, if any, and clears the queue.
+    static void Flush();
     // Renders a tooltip near the mouse using the shared UI style. Lines
     // prefixed "{bonus}"/"{penalty}" are colored; the literal "{separator}"
-    // draws a divider rule.
+    // draws a divider rule. This remains a compatibility frontend for Queue.
     static void Draw(const std::string& title, const std::vector<std::string>& lines,
                      float preferredWidth = 0.0f,
                      const std::function<void(Rectangle)>& titleIcon = {},
-                     int titleFontSize = 24);
+                     int titleFontSize = 24,
+                     float titleIconWidth = 0.0f);
 };
 
 #endif

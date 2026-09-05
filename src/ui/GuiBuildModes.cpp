@@ -221,58 +221,16 @@ namespace
         return result;
     }
 
-    // Returns the build panel category for a building type.
-    std::string BuildCategory(BuildingType type)
+    // Returns the data-driven build-panel category label.
+    std::string BuildCategoryLabel(BuildingBuildCategory category)
     {
-        switch (type)
+        switch (category)
         {
-            case BuildingType::Woodcutter:
-            case BuildingType::LumberMill:
-            case BuildingType::Paperworks:
-                return "Wood";
-            case BuildingType::Mine:
-            case BuildingType::Foundry:
-            case BuildingType::Smith:
-            case BuildingType::Copperworks:
-                return "Metals";
-            case BuildingType::HuntersHut:
-            case BuildingType::Well:
-            case BuildingType::WheatFarm:
-            case BuildingType::Windmill:
-            case BuildingType::Bakery:
-            case BuildingType::Inn:
-            case BuildingType::AnimalFarm:
-            case BuildingType::Butcher:
-            case BuildingType::HorseStable:
-            case BuildingType::HempFarm:
-                return "Food";
-            case BuildingType::Tannery:
-            case BuildingType::Tailor:
-            case BuildingType::Kiln:
-            case BuildingType::HouseholdWorkshop:
-            case BuildingType::Soapworks:
-            case BuildingType::Inkworks:
-            case BuildingType::Scriptorium:
-            case BuildingType::UrbanWorkshop:
-            case BuildingType::Ropery:
-            case BuildingType::Weaver:
-                return "Crafts";
-            case BuildingType::Barracks:
-            case BuildingType::Armorer:
-            case BuildingType::Bowyer:
-            case BuildingType::SpearWorkshop:
-            case BuildingType::SiegeWorkshop:
-                return "Military";
-            case BuildingType::DefenseTower:
-                return "Defense";
-            case BuildingType::StorageBuilding:
-            case BuildingType::Village:
-                return "Logistics";
-            case BuildingType::University:
-                return "Science";
-            case BuildingType::Road:
-            case BuildingType::Bridge:
-                return "Roads";
+            case BuildingBuildCategory::Materials: return "Materials";
+            case BuildingBuildCategory::Food: return "Food";
+            case BuildingBuildCategory::Goods: return "Goods";
+            case BuildingBuildCategory::Military: return "Military";
+            case BuildingBuildCategory::Science: return "Science";
             default:
                 return "Other";
         }
@@ -294,14 +252,10 @@ namespace
                        " population capacity and generates manpower when supplied with food provisions.";
             case BuildingType::Barracks:
                 return "Trains military units using manpower and delivered food, weapons and equipment.";
-            case BuildingType::DefenseTower:
-                return "Claims territory, protects the border and uses delivered ammunition to fight enemies.";
             case BuildingType::University:
                 return "Researches technologies that improve your economy, logistics and military.";
             case BuildingType::Road:
                 return "Connects buildings so resources can travel through your logistics network.";
-            case BuildingType::Bridge:
-                return "Extends roads across water so logistics can reach the far bank.";
             case BuildingType::Headquarters:
                 return "The core of your settlement: stores shared resources and must be defended.";
             default:
@@ -320,7 +274,7 @@ namespace
     // Returns category display order for build panel grouping.
     int BuildCategoryOrder(const std::string& category)
     {
-        static const std::vector<std::string> order{"Wood", "Metals", "Food", "Crafts", "Logistics", "Military", "Defense", "Science", "Roads", "Other"};
+        static const std::vector<std::string> order{"Materials", "Food", "Goods", "Military", "Science", "Other"};
         auto it = std::find(order.begin(), order.end(), category);
         return it != order.end() ? static_cast<int>(std::distance(order.begin(), it)) : static_cast<int>(order.size());
     }
@@ -535,14 +489,15 @@ namespace
         option.buildingType = definition.type;
         option.footprint = definition.footprint;
         option.buildTime = definition.buildTime;
-        option.category = BuildCategory(definition.type);
+        option.category = BuildCategoryLabel(definition.buildCategory);
         option.previewFactory = []()
         {
             return std::make_unique<T>(0);
         };
         option.buildAt = [scene, type = definition.type](Vec2i tilePos)
         {
-            scene->SubmitLocalCommand(GameCommand::BuildBuilding(scene->game->GetLocalPlayerId(), type, tilePos));
+            scene->SubmitLocalCommand(GameCommand::BuildBuilding(
+                scene->game->GetLocalPlayerId(), scene->game->GetLocalActiveProvinceId(), type, tilePos));
         };
 
         return option;
@@ -573,9 +528,9 @@ namespace
             case BuildingType::StorageBuilding: return MakeBuildOption<StorageBuilding>(scene, definition);
             case BuildingType::Village: return MakeBuildOption<Village>(scene, definition);
             case BuildingType::Barracks: return MakeBuildOption<Barracks>(scene, definition);
-            case BuildingType::DefenseTower: return MakeBuildOption<DefenseTower>(scene, definition);
+            case BuildingType::GuardTower: return MakeBuildOption<GuardTower>(scene, definition);
+            case BuildingType::Fortress: return MakeBuildOption<Fortress>(scene, definition);
             case BuildingType::Road: return MakeBuildOption<Road>(scene, definition);
-            case BuildingType::Bridge: return MakeBuildOption<Bridge>(scene, definition);
             case BuildingType::AnimalFarm:
             case BuildingType::Butcher:
             case BuildingType::Tannery:
@@ -603,14 +558,15 @@ namespace
                 option.buildingType = type;
                 option.footprint = definition.footprint;
                 option.buildTime = definition.buildTime;
-                option.category = BuildCategory(type);
+                option.category = BuildCategoryLabel(definition.buildCategory);
                 option.previewFactory = [type]()
                 {
                     return std::make_unique<ConfiguredProductionBuilding>(0, type);
                 };
                 option.buildAt = [scene, type](Vec2i tilePos)
                 {
-                    scene->SubmitLocalCommand(GameCommand::BuildBuilding(scene->game->GetLocalPlayerId(), type, tilePos));
+                    scene->SubmitLocalCommand(GameCommand::BuildBuilding(
+                        scene->game->GetLocalPlayerId(), scene->game->GetLocalActiveProvinceId(), type, tilePos));
                 };
                 return option;
             }
@@ -691,11 +647,23 @@ Vec2i RoadDragStabilizer::Constrain(Vec2i rawTile, Vector2 mousePosition, double
 
 // ─── BuildPanelWidget ────────────────────────────────────────────────────────
 
-// Draws available build options grouped by category.
+// Draws available build options in the currently selected category tab.
 void BuildPanelWidget::Update(double dt)
 {
     if (scene == nullptr || options == nullptr)
         return;
+
+    RefreshCategoryTabs();
+    if (categoryTabs.empty())
+        return;
+
+    if (std::find(categoryTabs.begin(), categoryTabs.end(), activeCategory) == categoryTabs.end())
+        activeCategory = categoryTabs.front();
+    if (const auto savedOffset = categoryScrollOffsets.find(activeCategory);
+        savedOffset != categoryScrollOffsets.end())
+        scrollOffset = savedOffset->second;
+    else
+        categoryScrollOffsets.emplace(activeCategory, scrollOffset);
 
     Rectangle bounds{static_cast<float>(pos.x), static_cast<float>(pos.y), static_cast<float>(size.x), static_cast<float>(size.y)};
     Vector2 mouse = GetMousePosition();
@@ -738,9 +706,39 @@ void BuildPanelWidget::Update(double dt)
     int columns = 3;
     float gap = 7.0f;
     float scrollbarW = 8.0f;
-    float viewportTop = bounds.y + titleBar + margin;
+    const float tabBarHeight = 38.0f;
+    const float tabBarGap = 7.0f;
+    float tabBarTop = bounds.y + titleBar + margin;
+    float viewportTop = tabBarTop + tabBarHeight + tabBarGap;
     const float bottomPadding = std::max(22.0f, margin * 2.0f);
     float viewportBottom = bounds.y + bounds.height - bottomPadding;
+
+    Rectangle tabBar{bounds.x + margin, tabBarTop,
+                     bounds.width - margin * 2.0f, tabBarHeight};
+    UiControlIcons::DrawPixelHudPanelFrame(tabBar);
+    const float tabGap = 4.0f;
+    const float tabWidth = (tabBar.width - tabGap * static_cast<float>(categoryTabs.size() - 1)) /
+                           static_cast<float>(categoryTabs.size());
+    for (size_t tabIndex = 0; tabIndex < categoryTabs.size(); ++tabIndex)
+    {
+        Rectangle tab{tabBar.x + static_cast<float>(tabIndex) * (tabWidth + tabGap),
+                      tabBar.y + 3.0f, tabWidth, tabBar.height - 6.0f};
+        const bool active = categoryTabs[tabIndex] == activeCategory;
+        const bool hovered = CheckCollisionPointRec(mouse, tab);
+        const Color fallbackFill = active ? UiTheme::SelectedFill : (hovered ? UiTheme::Surface : UiTheme::Inset);
+        const Color fallbackLine = active ? UiTheme::SageBright : (hovered ? UiTheme::ParchmentDim : UiTheme::Iron);
+        if (!UiControlIcons::DrawPixelHudWidgetFrame(tab, active, hovered ? UiTheme::Parchment : WHITE))
+        {
+            DrawRectangleRounded(tab, 0.08f, 6, fallbackFill);
+            DrawRectangleRoundedLines(tab, 0.08f, 6, active ? 2.0f : 1.0f, fallbackLine);
+        }
+        UiText::DrawFit(categoryTabs[tabIndex],
+                        Rectangle{tab.x + 6.0f, tab.y + 3.0f, tab.width - 12.0f, tab.height - 6.0f},
+                        16, active ? UiTheme::Parchment : UiTheme::ParchmentDim);
+    }
+
+    if (viewportBottom <= viewportTop)
+        return;
     // The scroll widget is deliberately inset from the outer panel chrome.
     // Keeping this separate from the grid's inner gutters prevents the frame
     // from looking glued to the panel edge even when a scrollbar is present.
@@ -756,47 +754,20 @@ void BuildPanelWidget::Update(double dt)
     float contentW = scrollBox.width - gridLeftInset - gridRightInset;
     float cardW = (contentW - gap * (columns - 1)) / columns;
     float cardH = std::max(108.0f, cardW * 0.92f);
-    float headerH = 32.0f;
-    float categoryGap = 5.0f;
     float startY = viewportTop - scrollOffset;
     int hoveredOption = -1;
 
     BeginScissorMode(static_cast<int>(gridX), static_cast<int>(viewportTop),
                      static_cast<int>(contentW),
                      static_cast<int>(viewportBottom - viewportTop));
-    std::string currentCategory;
     float yCursor = startY;
     int col = 0;
     float contentBottom = viewportTop;
     for (size_t i = 0; i < options->size(); i++)
     {
         const auto& option = (*options)[i];
-        if (option.category != currentCategory)
-        {
-            if (!currentCategory.empty() && col != 0)
-                yCursor += cardH + gap;
-            currentCategory = option.category;
-            Rectangle header{
-                gridX,
-                yCursor,
-                contentW,
-                headerH};
-            if (header.y + header.height >= viewportTop && header.y <= viewportBottom)
-            {
-                UiControlIcons::DrawPixelHudPanelFrame(header);
-                UiFontRoleScope displayRole{UiFontRole::Display};
-                int headerFont = 21;
-                int headerWidth = UiText::Measure(currentCategory, headerFont);
-                UiText::Draw(currentCategory,
-                             header.x + (header.width - headerWidth) * 0.5f,
-                             header.y + (header.height - headerFont) * 0.5f,
-                             headerFont,
-                             UiTheme::Parchment);
-            }
-            contentBottom = std::max(contentBottom, header.y + header.height + scrollOffset);
-            yCursor += headerH + categoryGap;
-            col = 0;
-        }
+        if (option.category != activeCategory)
+            continue;
 
         Rectangle card{
             gridX + col * (cardW + gap),
@@ -850,7 +821,7 @@ void BuildPanelWidget::Update(double dt)
     EndScissorMode();
 
     maxScrollOffset = std::max(0.0f, contentBottom - viewportBottom);
-    scrollOffset = std::clamp(scrollOffset, 0.0f, maxScrollOffset);
+    SetScrollOffset(scrollOffset);
     if (maxScrollOffset > 0.0f)
     {
         Rectangle track{scrollBox.x + scrollBox.width - 10.0f - scrollbarW,
@@ -874,19 +845,79 @@ void BuildPanelWidget::Update(double dt)
             float normalized = thumbRange > 0.0f
                 ? (targetThumbY - track.y) / thumbRange
                 : 0.0f;
-            scrollOffset = normalized * maxScrollOffset;
+            SetScrollOffset(normalized * maxScrollOffset);
             thumbY = targetThumbY;
         }
         if (scrollbarDragging && InputManager::IsMouseButtonReleased(MOUSE_BUTTON_LEFT))
             scrollbarDragging = false;
         DrawRectangleRounded(Rectangle{track.x, thumbY, track.width, thumbH}, 0.5f, 4, UiTheme::Iron);
     }
-
     if (hoveredOption >= 0)
     {
         const auto& option = (*options)[hoveredOption];
         DrawBuildTooltip(scene, option, hoveredTile);
     }
+}
+
+void BuildPanelWidget::RefreshCategoryTabs()
+{
+    if (options == nullptr)
+        return;
+
+    categoryTabs.clear();
+    for (const auto& option : *options)
+    {
+        if (std::find(categoryTabs.begin(), categoryTabs.end(), option.category) == categoryTabs.end())
+            categoryTabs.push_back(option.category);
+    }
+    if (activeCategory.empty() && !categoryTabs.empty())
+    {
+        activeCategory = categoryTabs.front();
+        categoryScrollOffsets.emplace(activeCategory, scrollOffset);
+    }
+}
+
+void BuildPanelWidget::SelectCategory(size_t index)
+{
+    if (index >= categoryTabs.size())
+        return;
+
+    categoryScrollOffsets[activeCategory] = scrollOffset;
+    activeCategory = categoryTabs[index];
+    if (const auto savedOffset = categoryScrollOffsets.find(activeCategory);
+        savedOffset != categoryScrollOffsets.end())
+        scrollOffset = savedOffset->second;
+    else
+        categoryScrollOffsets.emplace(activeCategory, 0.0f);
+    maxScrollOffset = 0.0f;
+}
+
+int BuildPanelWidget::GetTabAt(Vec2i point) const
+{
+    if (categoryTabs.empty())
+        return -1;
+
+    const int margin = std::max(9, size.x / 64);
+    const int titleBar = std::max(58, size.y / 14);
+    const float tabBarHeight = 38.0f;
+    Rectangle tabBar{static_cast<float>(pos.x + margin),
+                     static_cast<float>(pos.y + titleBar + margin),
+                     static_cast<float>(size.x - margin * 2), tabBarHeight};
+    Vector2 screenPoint{static_cast<float>(point.x), static_cast<float>(point.y)};
+    if (!CheckCollisionPointRec(screenPoint, tabBar))
+        return -1;
+
+    const float tabGap = 4.0f;
+    const float tabWidth = (tabBar.width - tabGap * static_cast<float>(categoryTabs.size() - 1)) /
+                           static_cast<float>(categoryTabs.size());
+    for (size_t index = 0; index < categoryTabs.size(); ++index)
+    {
+        Rectangle tab{tabBar.x + static_cast<float>(index) * (tabWidth + tabGap),
+                      tabBar.y + 3.0f, tabWidth, tabBar.height - 6.0f};
+        if (CheckCollisionPointRec(screenPoint, tab))
+            return static_cast<int>(index);
+    }
+    return -1;
 }
 
 // Scrolls this build list by mouse wheel steps.
@@ -895,7 +926,14 @@ void BuildPanelWidget::Scroll(float wheel)
     if (wheel == 0.0f)
         return;
 
-    scrollOffset = std::clamp(scrollOffset - wheel * 42.0f, 0.0f, maxScrollOffset);
+    SetScrollOffset(scrollOffset - wheel * 42.0f);
+}
+
+void BuildPanelWidget::SetScrollOffset(float offset)
+{
+    scrollOffset = std::clamp(offset, 0.0f, maxScrollOffset);
+    if (!activeCategory.empty())
+        categoryScrollOffsets[activeCategory] = scrollOffset;
 }
 
 // Returns the build option index under a screen point.
@@ -906,7 +944,9 @@ int BuildPanelWidget::GetOptionAt(Vec2i point) const
 
     int margin = std::max(9, size.x / 64);
     int titleBar = std::max(58, size.y / 14);
-    float viewportTop = pos.y + titleBar + margin;
+    const float tabBarHeight = 38.0f;
+    const float tabBarGap = 7.0f;
+    float viewportTop = pos.y + titleBar + margin + tabBarHeight + tabBarGap;
     const float bottomPadding = std::max(22.0f, margin * 2.0f);
     float viewportBottom = pos.y + size.y - bottomPadding;
     if (point.y < viewportTop || point.y > viewportBottom)
@@ -921,24 +961,15 @@ int BuildPanelWidget::GetOptionAt(Vec2i point) const
     float contentW = static_cast<float>(size.x) - scrollBoxInset * 2.0f - gridLeftInset - gridRightInset;
     float cardW = (contentW - gap * (columns - 1)) / columns;
     float cardH = std::max(108.0f, cardW * 0.92f);
-    float headerH = 32.0f;
-    float categoryGap = 5.0f;
-    float startY = pos.y + titleBar + margin - scrollOffset;
+    float startY = viewportTop - scrollOffset;
 
-    std::string currentCategory;
     float yCursor = startY;
     int col = 0;
     for (size_t i = 0; i < options->size(); i++)
     {
         const auto& option = (*options)[i];
-        if (option.category != currentCategory)
-        {
-            if (!currentCategory.empty() && col != 0)
-                yCursor += cardH + gap;
-            currentCategory = option.category;
-            yCursor += headerH + categoryGap;
-            col = 0;
-        }
+        if (option.category != activeCategory)
+            continue;
 
         Rectangle card{
             gridX + col * (cardW + gap),
@@ -1027,6 +1058,7 @@ BuildGuiSystem::BuildGuiSystem(GuiController* con)
     for (BuildingType type : GetBuildableBuildingTypes())
         options.push_back(MakeBuildOption(scene, type));
     SortBuildOptions(options);
+    buildPanel.RefreshCategoryTabs();
 
     ghostWidget.scene = scene;
 }
@@ -1046,12 +1078,30 @@ void BuildGuiSystem::Update(double dt)
 
     ApplyStrategicHudCameraPadding(scene);
     MoveCamera(scene, cameraMovement);
-    RefreshGhost();
-    buildPanel.hoveredTile = ghostWidget.tilePos;
-    owner->AddUiWidget(&ghostWidget);
-    owner->AddUiWidget(&buildPanel);
+    if (interactionState == BuildInteractionState::Placement)
+    {
+        RefreshGhost();
+        buildPanel.hoveredTile = ghostWidget.tilePos;
+        owner->AddUiWidget(&ghostWidget);
+    }
+    else
+    {
+        buildPanel.hoveredTile = {-1, -1};
+        owner->AddUiWidget(&buildPanel);
+    }
     owner->AddUiWidget(&strategicHudWidget);
     owner->AddUiWidget(owner->GetGameplayClockWidget());
+}
+
+void BuildGuiSystem::OnActivate()
+{
+    interactionState = ApplyBuildInteractionEvent(interactionState, BuildInteractionEvent::Activate);
+    ResetBuildInteraction();
+}
+
+void BuildGuiSystem::OnDeactivate()
+{
+    ResetBuildInteraction();
 }
 
 // Cancels build mode and returns to map view.
@@ -1114,12 +1164,16 @@ void BuildGuiSystem::RosterPressed()
 // Selects a build option or places the selected building.
 void BuildGuiSystem::LmbPressed()
 {
+    const BuildInteractionInputPolicy inputPolicy =
+        ResolveBuildInteractionInputPolicy(interactionState);
     auto mousePos = GetMousePosition();
     Vec2i screenPos{static_cast<int>(mousePos.x), static_cast<int>(mousePos.y)};
     if (DispatchHudButtonClick(*this, strategicHudWidget))
         return;
 
-    if (buildPanel.ContainsPoint(screenPos))
+    // The panel is rendered only in Browse.  Its retained geometry must not
+    // consume placement clicks after an option hides it.
+    if (inputPolicy.panelInteractive && buildPanel.ContainsPoint(screenPos))
     {
         Rectangle panelBounds{
             static_cast<float>(buildPanel.pos.x),
@@ -1132,23 +1186,54 @@ void BuildGuiSystem::LmbPressed()
             return;
         }
 
+        int tab = buildPanel.GetTabAt(screenPos);
+        if (tab >= 0)
+        {
+            buildPanel.SelectCategory(static_cast<size_t>(tab));
+            return;
+        }
+
         int option = buildPanel.GetOptionAt(screenPos);
         if (option >= 0)
             SelectOption(static_cast<size_t>(option));
         return;
     }
 
-    TryPlaceSelectedAtHovered(true);
+    // A map click on an existing owned building is an inspection intent, even
+    // while the build browser/ghost is active. Switch directly to the default
+    // system and open its panel so the player does not have to close build
+    // mode, click again, and then reopen it afterwards.
+    const Vec2i clickedTile = ScreenToTile(scene, mousePos);
+    Building* clickedBuilding = nullptr;
+    if (clickedTile.x >= 0 && clickedTile.y >= 0 &&
+        scene->game->GetTileMap().IsInside(clickedTile))
+        clickedBuilding = scene->game->GetTileMap().GetBuilding(clickedTile);
+    if (clickedBuilding != nullptr && clickedBuilding->owner == GuiLocalPlayer(scene))
+    {
+        auto defaultIt = owner->systems.find("default");
+        auto defaultSystem = defaultIt != owner->systems.end()
+            ? std::dynamic_pointer_cast<BasicMapViewSystem>(defaultIt->second)
+            : nullptr;
+        owner->ChangeSystem("default");
+        if (defaultSystem != nullptr)
+            defaultSystem->SelectBuilding(clickedBuilding);
+        return;
+    }
+
+    if (inputPolicy.placementInteractive)
+        TryPlaceSelectedAtHovered();
 }
 
 void BuildGuiSystem::LmbReleased()
 {
 }
 
-// Starts camera drag.
+// Starts camera drag in both Browse and Placement. Q/Esc leave build mode;
+// RMB must stay available for map navigation while positioning a building.
 void BuildGuiSystem::RmbPressed()
 {
-    cameraMovement.isMoving = true;
+    cameraMovement.isMoving =
+        ResolveBuildInteractionInputPolicy(interactionState).rmbStartsCameraDrag;
 }
 
 // Stops camera drag.
@@ -1160,9 +1245,11 @@ void BuildGuiSystem::RmbReleased()
 // Scrolls the build panel or zooms the camera.
 void BuildGuiSystem::Scroll()
 {
+    const BuildInteractionInputPolicy inputPolicy =
+        ResolveBuildInteractionInputPolicy(interactionState);
     Vector2 mouse = GetMousePosition();
     Vec2i screenPos{static_cast<int>(mouse.x), static_cast<int>(mouse.y)};
-    if (buildPanel.ContainsPoint(screenPos))
+    if (inputPolicy.panelInteractive && buildPanel.ContainsPoint(screenPos))
     {
         buildPanel.Scroll(InputManager::GetMouseWheelMove());
         return;
@@ -1176,6 +1263,19 @@ void BuildGuiSystem::ReturnToMapView()
 {
     cameraMovement.isMoving = false;
     owner->ChangeSystem("default");
+}
+
+void BuildGuiSystem::ResetBuildInteraction()
+{
+    cameraMovement.isMoving = false;
+    interactionState = ApplyBuildInteractionEvent(interactionState, BuildInteractionEvent::Reset);
+    selectedIndex = std::numeric_limits<size_t>::max();
+    selectedPreview.reset();
+    buildPanel.selectedIndex = std::numeric_limits<size_t>::max();
+    buildPanel.hoveredTile = {-1, -1};
+    ghostWidget.selectedOption = nullptr;
+    ghostWidget.canBuild = false;
+    ghostWidget.tilePos = {-1, -1};
 }
 
 // Returns the tile currently targeted by the build cursor.
@@ -1225,6 +1325,7 @@ void BuildGuiSystem::SelectOption(size_t index)
     selectedIndex = index;
     selectedPreview = options[selectedIndex].previewFactory();
     buildPanel.selectedIndex = selectedIndex;
+    interactionState = ApplyBuildInteractionEvent(interactionState, BuildInteractionEvent::SelectOption);
 }
 
 // Rebuilds the ghost preview for the selected option.
@@ -1236,7 +1337,7 @@ void BuildGuiSystem::RefreshGhost()
 }
 
 // Places the selected option under the cursor when placement is valid.
-bool BuildGuiSystem::TryPlaceSelectedAtHovered(bool returnAfterBuild)
+bool BuildGuiSystem::TryPlaceSelectedAtHovered()
 {
     Vec2i tilePos = GetHoveredTile();
     if (!CanPlaceSelected(tilePos))
@@ -1246,9 +1347,7 @@ bool BuildGuiSystem::TryPlaceSelectedAtHovered(bool returnAfterBuild)
         return false;
 
     options[selectedIndex].buildAt(tilePos);
-    if (returnAfterBuild)
-        ReturnToMapView();
-
+    interactionState = ApplyBuildInteractionEvent(interactionState, BuildInteractionEvent::PlaceSuccess);
     return true;
 }
 
@@ -1271,9 +1370,7 @@ RoadBuildSystem::RoadBuildSystem(GuiController* con)
     SelectOption(roadIt != options.end() ? static_cast<size_t>(std::distance(options.begin(), roadIt)) : 0);
 }
 
-// Picks Road or Bridge based on what's under the cursor — see the header
-// comment: with no panel drawn in road mode, a fixed selection silently
-// locks the player out of whichever type isn't selected.
+// Keeps road mode on the sole available road type.
 void RoadBuildSystem::SyncSelectionToTile(Vec2i tilePos)
 {
     if (scene == nullptr || scene->game == nullptr)
@@ -1283,9 +1380,7 @@ void RoadBuildSystem::SyncSelectionToTile(Vec2i tilePos)
     if (!map.IsInside(tilePos))
         return;
 
-    BuildingType wanted = map[map.GetIdFromCoords(tilePos)].isMilitaryRoad
-        ? BuildingType::Bridge
-        : BuildingType::Road;
+    BuildingType wanted = BuildingType::Road;
     if (selectedIndex < options.size() && options[selectedIndex].buildingType == wanted)
         return;
 
@@ -1562,7 +1657,8 @@ void DestroyGuiSystem::LmbPressed()
 
     int positionId = hoveredBuilding->positionId;
     ClearHoverTarget();
-    scene->SubmitLocalCommand(GameCommand::DestroyBuilding(scene->game->GetLocalPlayerId(), positionId));
+    scene->SubmitLocalCommand(GameCommand::DestroyBuilding(
+        scene->game->GetLocalPlayerId(), scene->game->GetLocalActiveProvinceId(), positionId));
 }
 
 void DestroyGuiSystem::LmbReleased()

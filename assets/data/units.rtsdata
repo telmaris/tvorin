@@ -1,18 +1,19 @@
-# Pilot medieval roster. road_attack is soft attack against troops;
-# siege_attack is hard attack against fortifications and headquarters.
+# Pilot medieval roster. field_attack is field pressure;
+# siege_power is the latent strength reserved for province operations.
 
 unit militia
     name "Light Infantry"
     texture_id 0
     max_hp 26
-    road_attack 3
-    siege_attack 1
+    field_attack 3
+    siege_power 1
     armor 0
     move_speed 1.15
     attack_speed 1.1
     recruit_building Barracks
     recruit_time 7
     manpower_cost 5
+    garrison_food_upkeep_per_minute 0.5
     cost FOOD_PROVISIONS 3
 end
 
@@ -20,14 +21,15 @@ unit swordsman
     name "Swordsman"
     texture_id 0
     max_hp 35
-    road_attack 7
-    siege_attack 2
+    field_attack 7
+    siege_power 2
     armor 3
     move_speed 0.95
     attack_speed 1.0
     recruit_building Barracks
     recruit_time 14
     manpower_cost 10
+    garrison_food_upkeep_per_minute 0.5
     cost IRON_SWORD 10
     cost FOOD_PROVISIONS 5
 end
@@ -36,14 +38,15 @@ unit armored_swordsman
     name "Armored Swordsman"
     texture_id 0
     max_hp 45
-    road_attack 8
-    siege_attack 2
+    field_attack 8
+    siege_power 2
     armor 5
     move_speed 0.85
     attack_speed 0.95
     recruit_building Barracks
     recruit_time 17
     manpower_cost 12
+    garrison_food_upkeep_per_minute 0.7
     cost IRON_SWORD 12
     cost LEATHER_ARMOR 12
     cost FOOD_PROVISIONS 6
@@ -53,14 +56,15 @@ unit heavy_infantry
     name "Heavy Infantry"
     texture_id 0
     max_hp 82
-    road_attack 10
-    siege_attack 4
+    field_attack 10
+    siege_power 4
     armor 8
     move_speed 0.65
     attack_speed 1.0
     recruit_building Barracks
     recruit_time 24
     manpower_cost 12
+    garrison_food_upkeep_per_minute 0.8
     cost IRON_SWORD 12
     cost HEAVY_ARMOR 12
     cost FOOD_PROVISIONS 10
@@ -70,8 +74,8 @@ unit archer
     name "Archer"
     texture_id 0
     max_hp 30
-    road_attack 6
-    siege_attack 1
+    field_attack 6
+    siege_power 1
     armor 1
     move_speed 0.9
     attack_speed 0.9
@@ -80,6 +84,7 @@ unit archer
     recruit_building Barracks
     recruit_time 13
     manpower_cost 10
+    garrison_food_upkeep_per_minute 0.5
     cost BOW 10
     cost ARROWS 50
     cost FOOD_PROVISIONS 5
@@ -89,8 +94,8 @@ unit heavy_archer
     name "Heavy Archer"
     texture_id 0
     max_hp 36
-    road_attack 10
-    siege_attack 2
+    field_attack 10
+    siege_power 2
     armor 2
     move_speed 0.75
     attack_speed 0.65
@@ -100,6 +105,7 @@ unit heavy_archer
     requires_tech guild_apprenticeship
     recruit_time 19
     manpower_cost 15
+    garrison_food_upkeep_per_minute 0.7
     cost HEAVY_BOW 15
     cost ARROWS 75
     cost LEATHER_ARMOR 15
@@ -110,8 +116,8 @@ unit spearman
     name "Spearman"
     texture_id 0
     max_hp 65
-    road_attack 7
-    siege_attack 2
+    field_attack 7
+    siege_power 2
     armor 6
     move_speed 0.8
     attack_speed 1.1
@@ -119,6 +125,7 @@ unit spearman
     recruit_building Barracks
     recruit_time 10
     manpower_cost 10
+    garrison_food_upkeep_per_minute 0.6
     cost SPEAR 10
     cost LEATHER_ARMOR 10
     cost FOOD_PROVISIONS 5
@@ -128,8 +135,8 @@ unit light_cavalry
     name "Light Cavalry"
     texture_id 0
     max_hp 80
-    road_attack 14
-    siege_attack 1
+    field_attack 14
+    siege_power 1
     armor 4
     move_speed 1.55
     attack_speed 1.15
@@ -137,6 +144,7 @@ unit light_cavalry
     recruit_building Barracks
     recruit_time 20
     manpower_cost 10
+    garrison_food_upkeep_per_minute 1.0
     cost HORSE 10
     cost IRON_SWORD 10
     cost LEATHER_ARMOR 10
@@ -147,8 +155,8 @@ unit knight
     name "Heavy Cavalry"
     texture_id 0
     max_hp 105
-    road_attack 18
-    siege_attack 3
+    field_attack 18
+    siege_power 3
     armor 10
     move_speed 1.35
     attack_speed 0.9
@@ -156,6 +164,7 @@ unit knight
     recruit_building Barracks
     recruit_time 28
     manpower_cost 20
+    garrison_food_upkeep_per_minute 1.2
     cost HORSE 20
     cost IRON_SWORD 20
     cost HEAVY_ARMOR 20
@@ -166,8 +175,8 @@ unit ballista
     name "Ballista"
     texture_id 0
     max_hp 42
-    road_attack 30
-    siege_attack 10
+    field_attack 30
+    siege_power 10
     armor 3
     move_speed 0.45
     attack_speed 0.4
@@ -176,6 +185,7 @@ unit ballista
     recruit_building Barracks
     recruit_time 25
     manpower_cost 20
+    garrison_food_upkeep_per_minute 1.5
     cost BALLISTA 5
     cost SPEAR 10
     cost FOOD_PROVISIONS 20
@@ -185,14 +195,15 @@ unit ram
     name "Battering Ram"
     texture_id 0
     max_hp 90
-    road_attack 2
-    siege_attack 18
+    field_attack 2
+    siege_power 18
     armor 5
     move_speed 0.4
     attack_speed 0.45
     recruit_building Barracks
     recruit_time 24
     manpower_cost 10
+    garrison_food_upkeep_per_minute 1.1
     cost BATTERING_RAM 5
     cost FOOD_PROVISIONS 10
 end
@@ -201,8 +212,8 @@ unit catapult
     name "Catapult"
     texture_id 0
     max_hp 58
-    road_attack 5
-    siege_attack 32
+    field_attack 5
+    siege_power 32
     armor 2
     move_speed 0.35
     attack_speed 0.3
@@ -212,7 +223,25 @@ unit catapult
     requires_tech catapult_construction
     recruit_time 36
     manpower_cost 20
+    garrison_food_upkeep_per_minute 1.4
     cost CATAPULT 20
     cost STONE 40
     cost FOOD_PROVISIONS 20
+end
+
+unit scout
+    name "Scout"
+    texture_id 0
+    max_hp 12
+    field_attack 1
+    siege_power 0
+    armor 0
+    move_speed 1.4
+    attack_speed 1.0
+    role Scout
+    recruit_building Barracks
+    recruit_time 12
+    manpower_cost 4
+    garrison_food_upkeep_per_minute 0.4
+    cost FOOD_PROVISIONS 4
 end

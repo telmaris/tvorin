@@ -31,7 +31,7 @@ enum class EquipmentCategory : uint8_t
     Count
 };
 
-// Material progression: stone → copper → bronze → iron → steel (plus wood/leather
+// Material progression: stone -> copper -> bronze -> iron -> steel (plus wood/leather
 // for shields/armor). Higher tiers yield higher quality.
 enum class EquipmentMaterial : uint8_t
 {

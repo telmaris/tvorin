@@ -81,34 +81,20 @@ struct VillageDefinition
     double foodPackageUpkeep{1.0};
 };
 
-// TD(etap-6): Headquarters HP/defense + conquest-spoils parameters.
-struct HqDefinition
+struct DefenseDefinition
 {
-    double maxHp{500.0};
-    double hardDefense{0.0};
-    double thornsDamage{0.0};
-    double thornsInterval{3.0};
-    double captureStockFraction{0.4};
-    double conquestRampDuration{600.0};
+    double coverageRadius{0.0};
+    double baseProtection{0.0};
+    std::string requiredState;
+    int garrisonCapacity{0};
+    double upkeepInterval{60.0};
+    double upkeepPackage{1.0};
+    double safetyResilience{0.0};
+    bool raidDestructible{true};
+    bool raidStockLossTarget{true};
 };
 
-// TD(etap-7): DefenseTower combat/ammo/crew parameters. One class handles
-// every tower tier (data-driven, like BattleUnit/UnitDefinition) — a second
-// tier just needs its own BuildingType + BuildingDefinition entry, not a new
-// C++ class. Ammo buffer CAPACITY is data-driven via the existing generic
-// `storageBuffers` mechanism (a normal "storage <ammoResource> <cap> <init>"
-// line, applied by the existing ApplyStorageDefinition) — not duplicated here.
-struct TowerDefinition
-{
-    double damage{5.0};
-    double range{6.0};
-    double attackSpeed{1.0};
-    ResourceType ammoResource{ResourceType::ARROWS};
-    int ammoPerShot{1};
-    int workerCapacity{2};
-};
-
-// Soft, data-driven production district used by the AI placement scorer.
+// Soft, data-driven production district used by placement presentation.
 // Terrain and build validity remain hard constraints; this category only
 // makes related buildings prefer the same neighborhood when space permits.
 enum class BuildingPlacementCategory
@@ -122,6 +108,18 @@ enum class BuildingPlacementCategory
     Knowledge,
     Construction,
     Infrastructure
+};
+
+// Player-facing build-panel grouping. This is intentionally separate from
+// BuildingPlacementCategory, which is a district-scoring hint.
+enum class BuildingBuildCategory
+{
+    None,
+    Materials,
+    Food,
+    Goods,
+    Military,
+    Science
 };
 
 struct BuildingDefinition
@@ -144,8 +142,6 @@ struct BuildingDefinition
     std::vector<std::string> requiredTechnologies;
     std::vector<std::string> requiredFocuses;
     std::vector<ProductionRecipeDefinition> recipes;
-    HqDefinition hq;
-    TowerDefinition tower;
     // Appended last: MakeDefaultDefinitions() below uses positional aggregate
     // init for every entry, none of which set this — a trailing field is
     // safe to add without touching those (defaults to empty).
@@ -154,6 +150,8 @@ struct BuildingDefinition
     // Loading/unloading cadence at the source edge. Kept separate from road
     // traversal time so logistics bonuses may tune either independently.
     double dispatchDelay{0.3};
+    BuildingBuildCategory buildCategory{BuildingBuildCategory::None};
+    DefenseDefinition defense;
 };
 
 // Returns all configured building definitions.
@@ -186,12 +184,7 @@ void ApplyProductionRecipes(Building& building, const BuildingDefinition& defini
 
 // Applies storage buffer data to a building's storage component.
 void ApplyStorageDefinition(Building& building, const BuildingDefinition& definition);
+void ApplyDefenseDefinition(Building& building, const BuildingDefinition& definition);
 
-// Applies HQ HP/defense/conquest data to a building's HqComponent.
-void ApplyHqDefinition(Building& building, const BuildingDefinition& definition);
-
-// Applies tower combat/ammo/crew data to a building's TowerCombatComponent
-// (+ ammo buffer on its StorageComponent, + crew capacity on its WorkerComponent).
-void ApplyTowerDefinition(Building& building, const BuildingDefinition& definition);
 
 #endif

@@ -7,21 +7,40 @@
 #include "economy/BuildingConfig.h"
 #include "economy/Player.h"
 #include "ui/TerrainRenderGeometry.h"
+#include "ui/BuildingPresentation.h"
 #include "ui/UiText.h"
+#include "ui/RaylibResource.h"
 #include "rlgl.h"
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
+#include <filesystem>
 
 namespace
 {
-    bool fogOfWarPreferenceEnabled = true;
+    bool fogOfWarPreferenceEnabled = false;
     bool colorGradingPreferenceEnabled = true;
     bool retroFilterPreferenceEnabled = true;
     bool localLightBloomPreferenceEnabled = true;
     bool rainOverlayPreferenceEnabled = false;
     bool logisticsOverlayPreferenceEnabled = false;
     float sceneTransitionOverlayAlpha = 0.0f;
+    tvorin::ui::TextureHandle customCursorAtlas{};
+    bool customCursorVisible = true;
+    bool customCursorPositionReady = false;
+    std::uint64_t presentedFrameId = 0;
+    bool finalFrameCaptureRequested = false;
+
+    bool IsRenderTelemetryEnabled()
+    {
+        static const bool enabled = []
+        {
+            const char* value = std::getenv("TVORIN_RENDER_TELEMETRY");
+            return value != nullptr && (value[0] == '1' || value[0] == 'y' || value[0] == 'Y');
+        }();
+        return enabled;
+    }
 
     struct MineralOverlayStyle
     {
@@ -116,22 +135,6 @@ namespace
             DrawCircleGradient(static_cast<int>(std::round(x)), static_cast<int>(std::round(y)), radius,
                                Color{196, 202, 212, alpha}, Color{156, 165, 178, 0});
         }
-    }
-
-    void DrawDamageFlashOverlay(Vec2f position, Vec2i footprint, float remainingSeconds)
-    {
-        if (remainingSeconds <= 0.0f)
-            return;
-        const float width = footprint.x * TILE_SIZE;
-        const float height = footprint.y * TILE_SIZE;
-        const float top = RENDER_HEIGHT - position.y - height;
-        const float pulse = 0.45f + 0.55f * std::abs(std::sin(static_cast<float>(GetTime()) * 10.0f));
-        const unsigned char fillAlpha = static_cast<unsigned char>(18.0f + pulse * 28.0f);
-        const unsigned char lineAlpha = static_cast<unsigned char>(125.0f + pulse * 110.0f);
-        DrawRectangle(static_cast<int>(position.x), static_cast<int>(top),
-                      static_cast<int>(width), static_cast<int>(height), Color{255, 58, 32, fillAlpha});
-        DrawRectangleLinesEx({position.x - 2.0f, top - 2.0f, width + 4.0f, height + 4.0f},
-                             2.5f, Color{255, 110, 72, lineAlpha});
     }
 
     void DrawRoadUtilizationOverlay(Vec2f position, float utilization,
@@ -504,23 +507,51 @@ void Renderer::Shutdown()
     dynamicLights.clear();
     fogReveals.clear();
     cachedSnapshotTick = std::numeric_limits<std::uint64_t>::max();
+    cachedSnapshotProvinceId = InvalidProvinceId;
     cachedSnapshotCameraTarget = {std::numeric_limits<float>::max(), std::numeric_limits<float>::max()};
     cachedSnapshotCameraZoom = -1.0f;
 }
 
 namespace
 {
-    float ScreenTopPaddingToRender(float screenPadding)
+    struct RenderViewportTransform
     {
-        float scale = std::min(GetScreenWidth() / static_cast<float>(RENDER_WIDTH),
-                               GetScreenHeight() / static_cast<float>(RENDER_HEIGHT));
-        if (scale <= 0.0f)
-            return 0.0f;
+        float scale{1.0f};
+        float width{static_cast<float>(RENDER_WIDTH)};
+        float height{static_cast<float>(RENDER_HEIGHT)};
+        float offsetX{0.0f};
+        float offsetY{0.0f};
+    };
 
-        float height = RENDER_HEIGHT * scale;
-        float offsetY = (GetScreenHeight() - height) * 0.5f;
-        return std::clamp((screenPadding - offsetY) / scale, 0.0f, static_cast<float>(RENDER_HEIGHT - 1));
+    RenderViewportTransform GetRenderViewportTransform()
+    {
+        const float screenWidth = static_cast<float>(GetScreenWidth());
+        const float screenHeight = static_cast<float>(GetScreenHeight());
+        const float scale = std::max(
+            screenWidth / static_cast<float>(RENDER_WIDTH),
+            screenHeight / static_cast<float>(RENDER_HEIGHT));
+        const float safeScale = scale > 0.0f ? scale : 1.0f;
+        const float width = static_cast<float>(RENDER_WIDTH) * safeScale;
+        const float height = static_cast<float>(RENDER_HEIGHT) * safeScale;
+        return {safeScale, width, height,
+                (screenWidth - width) * 0.5f,
+                (screenHeight - height) * 0.5f};
     }
+
+}
+
+CameraVisibleWorldRect ComputeCameraVisibleWorldRect(const Camera2D& camera,
+                                                     float topRenderPadding)
+{
+    const float zoom = std::max(camera.zoom, 0.0001f);
+    const float top = std::clamp(topRenderPadding, 0.0f,
+                                 static_cast<float>(RENDER_HEIGHT - 1));
+    const float visibleHeight = (static_cast<float>(RENDER_HEIGHT) - top) / zoom;
+    return {
+        camera.target.x,
+        camera.target.x + static_cast<float>(RENDER_WIDTH) / zoom,
+        static_cast<float>(RENDER_HEIGHT) - camera.target.y - visibleHeight,
+        static_cast<float>(RENDER_HEIGHT) - camera.target.y};
 }
 
 void Renderer::ClearDynamicLights()
@@ -849,27 +880,28 @@ void Renderer::Draw(std::vector<UiWidget*> ui, double dt)
 }
 
 // Issues all draw calls but does not present. See header for the locking rationale.
-void Renderer::DrawContent(std::vector<UiWidget*> ui, double dt)
+void Renderer::DrawContent(std::vector<UiWidget*> ui, double dt, bool drawWorld)
 {
     BeginDrawing();
     ClearBackground(BLACK);
+    Tooltip::BeginFrame();
+    uiDrawTick = simulationTick;
 
-    float scale = std::min(GetScreenWidth() / static_cast<float>(RENDER_WIDTH),
-                           GetScreenHeight() / static_cast<float>(RENDER_HEIGHT));
-    float width = RENDER_WIDTH * scale;
-    float height = RENDER_HEIGHT * scale;
-    Vector2 offset{
-        (GetScreenWidth() - width) * 0.5f,
-        (GetScreenHeight() - height) * 0.5f};
+    const RenderViewportTransform viewport = GetRenderViewportTransform();
+    const Vector2 offset{viewport.offsetX, viewport.offsetY};
+    const Rectangle dest{viewport.offsetX, viewport.offsetY,
+                         viewport.width, viewport.height};
 
-    Rectangle dest{offset.x, offset.y, width, height};
-
-    if (worldLayersInitialized)
+    if (drawWorld && worldLayersInitialized)
     {
+        worldCompositeTick = simulationTick;
         // OptionsScene can change this while a GameScene remains constructed.
         // Synchronizing at draw time makes fog enable/disable immediately
         // reflect the current world-derived revealers.
-        renderSettings.fogOfWar = IsFogOfWarPreferenceEnabled();
+        // Local province maps are intentionally fully visible. Keep the
+        // RenderSettings field for old callers/debug tests, but never apply
+        // the legacy local fog preference to gameplay rendering.
+        renderSettings.fogOfWar = false;
         renderSettings.colorGrading = IsColorGradingPreferenceEnabled();
         renderSettings.retroFilter = IsRetroFilterPreferenceEnabled();
         renderSettings.localLightBloom = IsLocalLightBloomPreferenceEnabled();
@@ -1043,18 +1075,161 @@ void Renderer::DrawContent(std::vector<UiWidget*> ui, double dt)
                          22, Color{255, 236, 152, 255});
     }
 
-    for(auto ptr : ui)
+    for (auto ptr : ui)
+        if (ptr != nullptr)
+            ptr->Update(dt);
+
+    // Overlay order is intentionally the reverse of the ordinary draw list:
+    // persistent widgets are registered after the map canvas, while the map's
+    // selected-province card must remain above those widgets. This is a small,
+    // explicit second pass, not a general-purpose z-index system.
+    for (auto it = ui.rbegin(); it != ui.rend(); ++it)
+        if (*it != nullptr)
+            (*it)->DrawOverlay(dt);
+
+    Tooltip::Flush();
+}
+
+// Presents the frame. EndDrawing performs the frame-cap wait, so any
+// world lock the caller held for drawing must already be released here.
+void Renderer::PresentFrame(bool drawTransitionOverlay)
+{
+    if (drawTransitionOverlay)
+        DrawSceneTransitionOverlay();
+    if (customCursorVisible && IsWindowFocused() && customCursorAtlas.IsValid())
     {
-        ptr->Update(dt);
+        const Vector2 mouse = GetMousePosition();
+        const Vector2 delta = GetMouseDelta();
+        if (!customCursorPositionReady &&
+            (mouse.x != 0.0f || mouse.y != 0.0f ||
+             delta.x != 0.0f || delta.y != 0.0f ||
+             IsMouseButtonPressed(MOUSE_BUTTON_LEFT) ||
+             IsMouseButtonPressed(MOUSE_BUTTON_RIGHT) ||
+             IsMouseButtonPressed(MOUSE_BUTTON_MIDDLE)))
+            customCursorPositionReady = true;
+
+        if (customCursorPositionReady &&
+            mouse.x >= 0.0f && mouse.y >= 0.0f &&
+            mouse.x < static_cast<float>(GetScreenWidth()) &&
+            mouse.y < static_cast<float>(GetScreenHeight()))
+        {
+            constexpr float CursorScale = 2.0f;
+            DrawTexturePro(customCursorAtlas.Get(), {0.0f, 0.0f, 16.0f, 16.0f},
+                           {std::round(mouse.x), std::round(mouse.y), 16.0f * CursorScale, 16.0f * CursorScale},
+                           {0.0f, 0.0f}, 0.0f, WHITE);
+        }
+    }
+    ++presentedFrameId;
+    if (IsRenderTelemetryEnabled())
+    {
+        static double lastTelemetryTime = -1.0;
+        const double now = GetTime();
+        if (lastTelemetryTime < 0.0 || now - lastTelemetryTime >= 1.0)
+        {
+            const Vector2 dpi = GetWindowScaleDPI();
+            const Vector2 windowPosition = GetWindowPosition();
+            const UiText::DebugInfo textDebug = UiText::GetDebugInfo();
+            Log::Debug("[RenderTelemetry]",
+                       "frameId=", presentedFrameId,
+                       " simulationTick=", simulationTick,
+                       " focused=", IsWindowFocused() ? 1 : 0,
+                       " screen=", GetScreenWidth(), "x", GetScreenHeight(),
+                       " render=", GetRenderWidth(), "x", GetRenderHeight(),
+                       " dpi=", dpi.x, "x", dpi.y,
+                       " window=", windowPosition.x, ",", windowPosition.y,
+                       " monitor=", GetCurrentMonitor(),
+                       " borderless=", IsWindowState(FLAG_BORDERLESS_WINDOWED_MODE) ? 1 : 0,
+                       " camera=", camera.target.x, ",", camera.target.y,
+                       " zoom=", camera.zoom,
+                       " snapshotTick=", snapshotTick,
+                       " worldCompositeTick=", worldCompositeTick,
+                       " uiDrawTick=", uiDrawTick,
+                       " fontRole=", textDebug.role == UiFontRole::Plain ? "plain" : "display",
+                       " logicalPx=", textDebug.logicalPx,
+                       " rasterPx=", textDebug.rasterPx,
+                       " atlasBaseSize=", textDebug.atlasBaseSize,
+                       " textureFilter=", textDebug.textureFilter,
+                       " cachedAtlases=", textDebug.cachedAtlasCount);
+            lastTelemetryTime = now;
+        }
+    }
+    if (finalFrameCaptureRequested && IsWindowReady())
+    {
+        const std::filesystem::path captureDirectory{"tmp/render-captures"};
+        std::error_code directoryError;
+        std::filesystem::create_directories(captureDirectory, directoryError);
+        const std::filesystem::path path = captureDirectory / ("frame_" +
+            std::to_string(presentedFrameId) + "_tick_" +
+            std::to_string(simulationTick) + ".png");
+
+        // EndDrawing normally flushes raylib's render batch, but the capture
+        // must happen before the buffer swap. Flush explicitly so the image
+        // includes the transition overlay and custom cursor drawn above.
+        rlDrawRenderBatchActive();
+
+        bool saved = false;
+        if (!directoryError)
+        {
+            Image image{};
+            image.width = std::max(1, GetRenderWidth());
+            image.height = std::max(1, GetRenderHeight());
+            image.mipmaps = 1;
+            image.format = PIXELFORMAT_UNCOMPRESSED_R8G8B8A8;
+            image.data = rlReadScreenPixels(image.width, image.height);
+            if (image.data != nullptr)
+            {
+                const std::string pathString = path.generic_string();
+                saved = ExportImage(image, pathString.c_str());
+                UnloadImage(image);
+            }
+        }
+
+        if (saved)
+            Log::Msg("[RenderCapture]", "saved ", path.generic_string(),
+                     " screen=", GetScreenWidth(), "x", GetScreenHeight(),
+                     " render=", GetRenderWidth(), "x", GetRenderHeight());
+        else
+            Log::Error("[RenderCapture]", "failed to save ", path.generic_string(),
+                       directoryError ? " directory error=" : "",
+                       directoryError ? directoryError.message() : "");
+        finalFrameCaptureRequested = false;
+    }
+    EndDrawing();
+}
+
+void Renderer::InitializeCustomCursor()
+{
+    if (customCursorAtlas.IsValid())
+        return;
+
+    customCursorAtlas = tvorin::ui::TextureHandle{LoadTexture("assets/ui/cursors.png")};
+    if (customCursorAtlas.IsValid())
+    {
+        SetTextureFilter(customCursorAtlas.Get(), TEXTURE_FILTER_POINT);
+        customCursorPositionReady = false;
+        HideCursor();
     }
 }
 
-// Presents the frame. EndDrawing performs the vsync / frame-cap wait, so any
-// world lock the caller held for drawing must already be released here.
-void Renderer::PresentFrame()
+void Renderer::ShutdownCustomCursor()
 {
-    DrawSceneTransitionOverlay();
-    EndDrawing();
+    customCursorAtlas.Reset();
+    customCursorPositionReady = false;
+}
+
+void Renderer::SetCustomCursorVisible(bool visible)
+{
+    customCursorVisible = visible;
+}
+
+bool Renderer::IsCustomCursorVisible()
+{
+    return customCursorVisible;
+}
+
+void Renderer::RequestFinalFrameCapture()
+{
+    finalFrameCaptureRequested = true;
 }
 
 // Draws a standalone texture onto one render layer.
@@ -1428,7 +1603,7 @@ Rectangle Renderer::GetBuildingTextureFirstFrameSource(BuildingType type) const
         if (atlasIt != atlasMap.end())
         {
             const TextureAtlas& atlas = atlasIt->second;
-            const int tileId = type == BuildingType::Bridge ? 16 : 0;
+            const int tileId = 0;
             const int clampedId = std::clamp(tileId, 0, std::max(0, atlas.dim.x * atlas.dim.y - 1));
             return {static_cast<float>((clampedId % atlas.dim.x) * atlas.size.x),
                     static_cast<float>((clampedId / atlas.dim.x) * atlas.size.y),
@@ -1597,12 +1772,14 @@ void Renderer::DrawSnapshot(const GameSnapshot& snapshot)
         return;
 
     SetSimulationTick(snapshot.simulationTick);
+    snapshotTick = snapshot.simulationTick;
 
     bool cameraChanged =
         cachedSnapshotCameraZoom != camera.zoom ||
         cachedSnapshotCameraTarget.x != camera.target.x ||
         cachedSnapshotCameraTarget.y != camera.target.y;
-    bool snapshotChanged = cachedSnapshotTick != snapshot.simulationTick;
+    bool snapshotChanged = cachedSnapshotTick != snapshot.simulationTick ||
+                           cachedSnapshotProvinceId != snapshot.activeProvinceId;
     if (!cameraChanged && !snapshotChanged)
         return;
 
@@ -1677,31 +1854,6 @@ void Renderer::DrawSnapshot(const GameSnapshot& snapshot)
             QueueResourceLight(tile.resourceOverlayTextureId, position,
                                static_cast<int>(y * snapshot.mapSize.x + x));
             DrawResourceOverlay(tile.resourceOverlayTextureId, position);
-        }
-    }
-    EndLayer();
-
-    ClearLayer(WorldRenderLayer::MilitaryRoads);
-    BeginLayer(WorldRenderLayer::MilitaryRoads);
-    for (int x = minTileX; x <= maxTileX; x++)
-    {
-        for (int y = minTileY; y <= maxTileY; y++)
-        {
-            const auto& tile = snapshot.tiles[static_cast<size_t>(y * snapshot.mapSize.x + x)];
-            // Keep the track in the normal world layer order so static bridge
-            // sprites render above it and dynamic objects (units/projectiles)
-            // render above both. A Bridge replaces neither the track flag nor
-            // the track texture; it only adds its sprite on StaticObjects.
-            if (tile.isMilitaryRoad)
-            {
-                const int mask = RoadTopology::GetCardinalMask(x, y, snapshot.mapSize.x, snapshot.mapSize.y,
-                    [&](int checkX, int checkY)
-                    {
-                        return snapshot.tiles[static_cast<size_t>(checkY * snapshot.mapSize.x + checkX)].isMilitaryRoad;
-                    });
-                DrawMilitaryRoadTexture(
-                    {static_cast<float>(x * TILE_SIZE), static_cast<float>(y * TILE_SIZE)}, mask);
-            }
         }
     }
     EndLayer();
@@ -1828,7 +1980,14 @@ void Renderer::DrawSnapshot(const GameSnapshot& snapshot)
             if (!tile.hasBuilding)
                 continue;
             const Vec2f position{static_cast<float>(x * TILE_SIZE), static_cast<float>(y * TILE_SIZE)};
-            DrawDamageFlashOverlay(position, tile.buildingFootprint, tile.buildingDamageIndicator);
+            if (tile.isBuildingUpgrading)
+                DrawBuildingFootprintStatusOverlay(
+                    position, tile.buildingFootprint, RENDER_HEIGHT, TILE_SIZE,
+                    BuildingFootprintOverlay::Upgrading);
+            if (!IsRoadLike(tile.buildingType) && tile.isBuildingOperational && tile.roadDisconnected)
+                DrawBuildingFootprintStatusOverlay(
+                    position, tile.buildingFootprint, RENDER_HEIGHT, TILE_SIZE,
+                    BuildingFootprintOverlay::Disconnected);
             if (renderSettings.logisticsOverlay && IsRoadLike(tile.buildingType))
                 DrawRoadSaturationIndicator(position, tile.roadSaturated);
         }
@@ -1836,6 +1995,7 @@ void Renderer::DrawSnapshot(const GameSnapshot& snapshot)
     EndLayer();
 
     cachedSnapshotTick = snapshot.simulationTick;
+    cachedSnapshotProvinceId = snapshot.activeProvinceId;
     cachedSnapshotCameraTarget = {camera.target.x, camera.target.y};
     cachedSnapshotCameraZoom = camera.zoom;
 }
@@ -1843,37 +2003,27 @@ void Renderer::DrawSnapshot(const GameSnapshot& snapshot)
 // Initializes Renderer::ScreenToRender.
 Vec2f Renderer::ScreenToRender(Vector2 screen)
 {
-    float scale = std::min(GetScreenWidth() / static_cast<float>(RENDER_WIDTH),
-                           GetScreenHeight() / static_cast<float>(RENDER_HEIGHT));
-    float width = RENDER_WIDTH * scale;
-    float height = RENDER_HEIGHT * scale;
-    float offsetX = (GetScreenWidth() - width) * 0.5f;
-    float offsetY = (GetScreenHeight() - height) * 0.5f;
+    const RenderViewportTransform viewport = GetRenderViewportTransform();
 
-    if (screen.x < offsetX || screen.x > offsetX + width ||
-        screen.y < offsetY || screen.y > offsetY + height)
+    if (screen.x < viewport.offsetX || screen.x > viewport.offsetX + viewport.width ||
+        screen.y < viewport.offsetY || screen.y > viewport.offsetY + viewport.height)
     {
         return Vec2f{-1.0f, -1.0f};
     }
 
     return Vec2f{
-        (screen.x - offsetX) / scale,
-        (screen.y - offsetY) / scale};
+        (screen.x - viewport.offsetX) / viewport.scale,
+        (screen.y - viewport.offsetY) / viewport.scale};
 }
 
 // Initializes Renderer::RenderToScreen.
 Vec2f Renderer::RenderToScreen(Vec2f render)
 {
-    float scale = std::min(GetScreenWidth() / static_cast<float>(RENDER_WIDTH),
-                           GetScreenHeight() / static_cast<float>(RENDER_HEIGHT));
-    float width = RENDER_WIDTH * scale;
-    float height = RENDER_HEIGHT * scale;
-    float offsetX = (GetScreenWidth() - width) * 0.5f;
-    float offsetY = (GetScreenHeight() - height) * 0.5f;
+    const RenderViewportTransform viewport = GetRenderViewportTransform();
 
     return Vec2f{
-        offsetX + render.x * scale,
-        offsetY + render.y * scale};
+        viewport.offsetX + render.x * viewport.scale,
+        viewport.offsetY + render.y * viewport.scale};
 }
 
 // Initializes Renderer::RenderToWorld.
@@ -1916,17 +2066,22 @@ void Renderer::ClampCameraToMap(Vec2i mapSize)
     if (mapW <= 0.0f || mapH <= 0.0f)
         return;
 
-    float topRenderPadding = ScreenTopPaddingToRender(topScreenPadding);
-    float usableRenderHeight = std::max(1.0f, static_cast<float>(RENDER_HEIGHT) - topRenderPadding);
-    const float minZoom = std::max(RENDER_WIDTH / mapW, usableRenderHeight / mapH);
-    constexpr float MaxZoom = 2.5f;
-    // Round the lower bound upward so snapping never reveals outside the map.
-    const float tileAlignedMinZoom = std::ceil(minZoom * TILE_SIZE) / TILE_SIZE;
-    const float effectiveMinZoom = std::min(tileAlignedMinZoom, MaxZoom);
-    camera.zoom = std::clamp(SnapZoomToTileGrid(camera.zoom), effectiveMinZoom, MaxZoom);
+    // Clamp against the complete render surface, including the area behind
+    // translucent HUD elements.  Treating the top HUD as an invisible part of
+    // the viewport allowed the camera to expose empty space along the upper
+    // edge whenever that part of the HUD did not have an opaque background.
+    const float minZoom = std::max(RENDER_WIDTH / mapW, RENDER_HEIGHT / mapH);
+    // The old fit-to-map zoom made the full campaign visible and left the HUD
+    // with no useful map scale. Move the minimum one wheel step closer, then
+    // round upward so tile snapping never reveals outside the map.
+    const float closerMinZoom = minZoom + CameraZoomWheelStep;
+    const float tileAlignedMinZoom = std::ceil(closerMinZoom * TILE_SIZE) / TILE_SIZE;
+    const float effectiveMinZoom = std::min(tileAlignedMinZoom, CameraMaxZoom);
+    camera.zoom = std::clamp(SnapZoomToTileGrid(camera.zoom), effectiveMinZoom, CameraMaxZoom);
 
-    float visibleW = RENDER_WIDTH / camera.zoom;
-    float visibleH = usableRenderHeight / camera.zoom;
+    const CameraVisibleWorldRect visible = ComputeCameraVisibleWorldRect(camera, 0.0f);
+    const float visibleW = visible.maxX - visible.minX;
+    const float visibleH = visible.maxY - visible.minY;
     float maxX = std::max(0.0f, mapW - visibleW);
     float minY = RENDER_HEIGHT - mapH;
     float maxY = RENDER_HEIGHT - visibleH;
@@ -1943,7 +2098,7 @@ void Renderer::DrawRoadTexture(BuildingType type, Vec2f pos, int connectionMask,
 {
     connectionMask &= 0x0F;
     int atlasId = 19;
-    int tileId = (type == BuildingType::Bridge ? 16 : 0) + connectionMask;
+    int tileId = connectionMask;
     if (type == BuildingType::Road && atlasMap.contains(145))
     {
         const int tileX = static_cast<int>(std::floor(pos.x / TILE_SIZE));
@@ -1972,45 +2127,6 @@ void Renderer::DrawRoadTexture(BuildingType type, Vec2f pos, int connectionMask,
     DrawTexturePro(atlas.tex.Get(), source, destination, {0.0f, 0.0f}, 0.0f, tint);
 }
 
-void Renderer::DrawMilitaryRoadTexture(Vec2f pos, int connectionMask, Color tint)
-{
-    constexpr int MilitaryRoadAtlasId = 144;
-    connectionMask &= 0x0F;
-    int atlasId = MilitaryRoadAtlasId;
-    int tileId = connectionMask;
-    if (atlasMap.contains(146))
-    {
-        const int tileX = static_cast<int>(std::floor(pos.x / TILE_SIZE));
-        const int tileY = static_cast<int>(std::floor(pos.y / TILE_SIZE));
-        const unsigned int hash =
-            static_cast<unsigned int>(tileX) * 73856093u ^
-            static_cast<unsigned int>(tileY) * 19349663u ^
-            static_cast<unsigned int>(connectionMask) * 83492791u;
-        atlasId = 146;
-        tileId = static_cast<int>(hash % 3u) * 16 + connectionMask;
-    }
-
-    auto atlasIt = atlasMap.find(atlasId);
-    if (atlasIt == atlasMap.end() || !atlasIt->second.tex.IsValid())
-    {
-        DrawRectangle(static_cast<int>(pos.x), RENDER_HEIGHT - TILE_SIZE - static_cast<int>(pos.y),
-                      TILE_SIZE, TILE_SIZE, Color{190, 178, 151, tint.a});
-        return;
-    }
-
-    TextureAtlas& atlas = atlasIt->second;
-    Rectangle source = atlas.GetRectFromId(tileId);
-    source.height *= -1.0f;
-    Rectangle destination{pos.x, RENDER_HEIGHT - TILE_SIZE - pos.y,
-                          static_cast<float>(TILE_SIZE), static_cast<float>(TILE_SIZE)};
-    DrawTexturePro(atlas.tex.Get(), source, destination, {0.0f, 0.0f}, 0.0f, tint);
-}
-
-void Renderer::SetTopScreenPadding(float padding)
-{
-    topScreenPadding = std::max(0.0f, padding);
-}
-
 // Adjusts camera or map-space geometry.
 void Renderer::CenterCameraOnWorld(Vec2f worldPoint, Vec2i mapSize)
 {
@@ -2030,7 +2146,7 @@ void Renderer::ZoomAtScreenPoint(Vector2 screen, float wheel, Vec2i mapSize)
         return;
 
     Vec2f worldBefore = RenderToWorld(render);
-    camera.zoom += wheel * 0.12f;
+    camera.zoom += wheel * CameraZoomWheelStep;
     ClampCameraToMap(mapSize);
 
     camera.target.x = worldBefore.x - render.x / camera.zoom;

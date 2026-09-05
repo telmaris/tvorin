@@ -41,8 +41,8 @@ public:
 // Process-wide dispatcher: the only place allowed to call raylib's
 // IsKeyPressed/IsKeyDown/IsMouseButton*/GetMouseWheelMove (see Poll()).
 // Input is a hardware-level concept (one keyboard/mouse), so a single
-// instance is appropriate here — unlike PathingService, which is owned
-// per-GameWorld because simulations must stay independent.
+// instance is appropriate here; simulation-specific state does not belong in
+// this dispatcher.
 //
 // Besides the subscriber/event system above (for "do X when key K is
 // pressed" bindings), GUI code frequently needs a synchronous, inline answer

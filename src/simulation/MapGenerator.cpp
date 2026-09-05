@@ -69,7 +69,14 @@ namespace
 void MapGenerator::GenerateTileMap(TileMap& tilemap, MapParameters& params)
 {
     int presetSize = SizeFromPreset(params.sizePreset);
-    if (params.sizeX <= 0 || params.sizeY <= 0)
+    // Callers that select a non-default preset often leave the historical S
+    // dimensions untouched. Treat that pair as the implicit default so the
+    // preset remains authoritative without taking away support for explicit
+    // custom dimensions used by tests and tools.
+    const bool implicitDefaultSize = params.sizeX == SizeFromPreset(MapSizePreset::S) &&
+                                     params.sizeY == SizeFromPreset(MapSizePreset::S) &&
+                                     params.sizePreset != MapSizePreset::S;
+    if (params.sizeX <= 0 || params.sizeY <= 0 || implicitDefaultSize)
     {
         params.sizeX = presetSize;
         params.sizeY = presetSize;
@@ -120,14 +127,11 @@ int MapGenerator::SizeFromPreset(MapSizePreset preset)
 {
     switch (preset)
     {
-        // S raised 301 -> 401 (2026-07-17, user request): with the wider
-        // starting zones and the HQ build clearance, 301 got cramped — the
-        // minimum playable map grows accordingly.
-        case MapSizePreset::S: return 401;
-        case MapSizePreset::M: return 501;
-        case MapSizePreset::L: return 701;
-        case MapSizePreset::XL: return 1001;
-        default: return 401;
+        case MapSizePreset::S: return 201;
+        case MapSizePreset::M: return 301;
+        case MapSizePreset::L: return 401;
+        case MapSizePreset::XL: return 501;
+        default: return 201;
     }
 }
 
@@ -232,16 +236,63 @@ std::vector<Vec2i> MapGenerator::PickHeadquartersAnchors(const MapParameters& pa
 // Initializes MapGenerator::GenerateResourcePatches.
 void MapGenerator::GenerateResourcePatches(TileMap& tilemap, const MapParameters& params, std::mt19937& rng)
 {
-    float densityScale = 0.5f + std::clamp(params.resourceDensity, 0.0f, 1.0f) * 1.75f;
+    constexpr double referenceMapArea = 401.0 * 401.0;
+    const double mapArea = static_cast<double>(std::max(1, params.sizeX)) *
+                           static_cast<double>(std::max(1, params.sizeY));
+    const double areaScale = mapArea / referenceMapArea;
+    const float densityScale = std::clamp(params.resourceDensity, 0.0f, 1.0f);
     float sizeScale = 0.65f + std::clamp(params.resourceFieldSize, 0.0f, 1.0f) * 1.35f;
     for (auto patch : params.resourcePatches)
     {
-        patch.patchCount = std::max(1, static_cast<int>(std::round(patch.patchCount * densityScale)));
+        patch.patchCount = std::max(0, static_cast<int>(std::round(
+            patch.patchCount * areaScale * densityScale)));
+        if (patch.patchCount == 0)
+            continue;
         patch.minRadius = std::max(1, static_cast<int>(std::round(patch.minRadius * sizeScale)));
         patch.maxRadius = std::max(patch.minRadius, static_cast<int>(std::round(patch.maxRadius * sizeScale)));
         GeneratePatch(tilemap, patch, rng);
     }
     RefreshResourceOverlayEdges(tilemap, rng);
+}
+
+ResourceType MapGenerator::ResourceTypeFromTileType(TileType type)
+{
+    switch (type)
+    {
+        case TileType::WOOD: return ResourceType::WOOD;
+        case TileType::COAL: return ResourceType::COAL;
+        case TileType::IRON_ORE: return ResourceType::IRON_ORE;
+        case TileType::STONE: return ResourceType::STONE;
+        case TileType::COPPER_ORE: return ResourceType::COPPER_ORE;
+        case TileType::SAND: return ResourceType::SAND;
+        case TileType::CLAY: return ResourceType::CLAY;
+        default: return ResourceType::Null;
+    }
+}
+
+void MapGenerator::FilterResourcePatchesForProfile(
+    MapParameters& params, const std::vector<ResourceType>& naturalResourceTypes)
+{
+    std::vector<ResourceType> sorted = naturalResourceTypes;
+    std::sort(sorted.begin(), sorted.end(),
+              [](ResourceType left, ResourceType right)
+              {
+                  return static_cast<int>(left) < static_cast<int>(right);
+              });
+    sorted.erase(std::unique(sorted.begin(), sorted.end()), sorted.end());
+    params.resourcePatches.erase(
+        std::remove_if(params.resourcePatches.begin(), params.resourcePatches.end(),
+                       [&sorted](const ResourcePatchParameters& patch)
+                       {
+                           const ResourceType resource = ResourceTypeFromTileType(patch.type);
+                           return resource == ResourceType::Null ||
+                               !std::binary_search(sorted.begin(), sorted.end(), resource,
+                                   [](ResourceType left, ResourceType right)
+                                   {
+                                       return static_cast<int>(left) < static_cast<int>(right);
+                                   });
+                       }),
+        params.resourcePatches.end());
 }
 
 // B3 rework (docs/work_plan_2026-07-13.md + user follow-up 2026-07-14):
@@ -346,12 +397,6 @@ void MapGenerator::GeneratePatch(TileMap& tilemap, const ResourcePatchParameters
                     continue;
 
                 auto& tile = tilemap[mapPos];
-                // Never paint over the (already carved) military road, and
-                // keep the silhouette intact otherwise — no per-tile biome
-                // clipping (see the function comment).
-                if (tile.isMilitaryRoad)
-                    continue;
-
                 // Gentle richness gradient — richest at the deposit's core,
                 // tapering toward its (already gently undulating) edge.
                 double edgeFalloff = std::clamp(1.0 - 0.3 * (distFromCenter / (majorAxis + 1.0)), 0.7, 1.0);

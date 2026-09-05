@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cmath>
 #include <functional>
+#include <stdexcept>
 
 namespace
 {
@@ -78,8 +79,7 @@ namespace
                     {ResourceType::COPPERWARE, 80, 0},
                     {ResourceType::URBAN_GOODS, 100, 0}
                 },
-                {}, {}, {}, {}, {},
-                HqDefinition{500.0, 10.0, 3.0, 3.0, 0.2, 60.0}},
+                {}, {}, {}, {}, {}},
             BuildingDefinition{
                 BuildingType::Village,
                 "Village",
@@ -243,23 +243,6 @@ namespace
                 {},
                 {},
                 {1, 5, 1.0}},
-            BuildingDefinition{
-                BuildingType::DefenseTower,
-                "Defense Tower",
-                "[DefenseTower]",
-                "assets/textures/building/generated/guard_tower_idle/guard_tower_idle_sheet_2x1.png",
-                "Cost TBD",
-                {{ResourceType::WOOD, 60}, {ResourceType::STONE, 80}, {ResourceType::PLANKS, 20}},
-                {2, 2},
-                6,
-                24.0,
-                0.0,
-                {},
-                {},
-                {{ResourceType::ARROWS, 20, 0}},
-                {}, {}, {}, {}, {},
-                {},
-                TowerDefinition{3.5, 6.0, 1.0, ResourceType::ARROWS, 1, 2}}
         };
     }
 
@@ -297,8 +280,6 @@ namespace
         if (value == "University") return BuildingType::University;
         if (value == "Barracks") return BuildingType::Barracks;
         if (value == "Road") return BuildingType::Road;
-        if (value == "DefenseTower") return BuildingType::DefenseTower;
-        if (value == "Bridge") return BuildingType::Bridge;
         if (value == "AnimalFarm") return BuildingType::AnimalFarm;
         if (value == "Butcher") return BuildingType::Butcher;
         if (value == "Tannery") return BuildingType::Tannery;
@@ -318,6 +299,8 @@ namespace
         if (value == "Bowyer") return BuildingType::Bowyer;
         if (value == "SpearWorkshop") return BuildingType::SpearWorkshop;
         if (value == "SiegeWorkshop") return BuildingType::SiegeWorkshop;
+        if (value == "GuardTower") return BuildingType::GuardTower;
+        if (value == "Fortress") return BuildingType::Fortress;
         return BuildingType::Building;
     }
 
@@ -332,6 +315,17 @@ namespace
         if (value == "construction") return BuildingPlacementCategory::Construction;
         if (value == "infrastructure") return BuildingPlacementCategory::Infrastructure;
         return BuildingPlacementCategory::None;
+    }
+
+    BuildingBuildCategory ParseBuildCategory(const std::string& value)
+    {
+        if (value == "materials") return BuildingBuildCategory::Materials;
+        if (value == "food") return BuildingBuildCategory::Food;
+        if (value == "goods") return BuildingBuildCategory::Goods;
+        if (value == "military") return BuildingBuildCategory::Military;
+        if (value == "science") return BuildingBuildCategory::Science;
+        throw std::runtime_error("Unknown build_category '" + value +
+                                 "' (expected materials, food, goods, military or science)");
     }
 
     // Initializes ParseResourceType.
@@ -555,6 +549,8 @@ namespace
                 definition.texturePath = tokens[1];
             else if (command == "placement_category" && tokens.size() >= 2)
                 definition.placementCategory = ParsePlacementCategory(tokens[1]);
+            else if (command == "build_category" && tokens.size() >= 2)
+                definition.buildCategory = ParseBuildCategory(tokens[1]);
             else if (command == "build_cost" && tokens.size() >= 2)
             {
                 if (tokens.size() >= 3)
@@ -673,28 +669,25 @@ namespace
                     else if (key == "food_package_upkeep") definition.village.foodPackageUpkeep = RtsDataDoubleOr(value);
                 });
             }
-            else if (command == "hq")
+            else if (command == "defense")
             {
                 ParseKeyValueLine(tokens, 1, [&](const std::string& key, const std::string& value)
                 {
-                    if (key == "max_hp") definition.hq.maxHp = RtsDataDoubleOr(value);
-                    else if (key == "hard_defense") definition.hq.hardDefense = RtsDataDoubleOr(value);
-                    else if (key == "thorns_damage") definition.hq.thornsDamage = RtsDataDoubleOr(value);
-                    else if (key == "thorns_interval") definition.hq.thornsInterval = RtsDataDoubleOr(value);
-                    else if (key == "capture_stock_fraction") definition.hq.captureStockFraction = RtsDataDoubleOr(value);
-                    else if (key == "conquest_ramp_duration") definition.hq.conquestRampDuration = RtsDataDoubleOr(value);
+                    if (key == "coverage_radius") definition.defense.coverageRadius = RtsDataDoubleOr(value);
+                    else if (key == "base_protection") definition.defense.baseProtection = RtsDataDoubleOr(value);
+                    else if (key == "required_state") definition.defense.requiredState = value;
+                    else if (key == "garrison_capacity") definition.defense.garrisonCapacity = RtsDataIntOr(value);
+                    else if (key == "upkeep_interval") definition.defense.upkeepInterval = RtsDataDoubleOr(value);
+                    else if (key == "upkeep_package") definition.defense.upkeepPackage = RtsDataDoubleOr(value);
                 });
             }
-            else if (command == "tower")
+            else if (command == "safety")
             {
                 ParseKeyValueLine(tokens, 1, [&](const std::string& key, const std::string& value)
                 {
-                    if (key == "damage") definition.tower.damage = RtsDataDoubleOr(value);
-                    else if (key == "range") definition.tower.range = RtsDataDoubleOr(value);
-                    else if (key == "attack_speed") definition.tower.attackSpeed = RtsDataDoubleOr(value);
-                    else if (key == "ammo_resource") definition.tower.ammoResource = ParseResourceType(value);
-                    else if (key == "ammo_per_shot") definition.tower.ammoPerShot = RtsDataIntOr(value);
-                    else if (key == "worker_capacity") definition.tower.workerCapacity = RtsDataIntOr(value);
+                    if (key == "resilience") definition.defense.safetyResilience = RtsDataDoubleOr(value);
+                    else if (key == "raid_destructible") definition.defense.raidDestructible = RtsDataIntOr(value) != 0;
+                    else if (key == "raid_stock_loss") definition.defense.raidStockLossTarget = RtsDataIntOr(value) != 0;
                 });
             }
         }
@@ -727,6 +720,19 @@ namespace
         for (auto& definition : definitions)
             if (!definition.buildCosts.empty())
                 definition.buildCostText = FormatBuildCostText(definition.buildCosts);
+
+        for (BuildingType buildableType : GetBuildableBuildingTypes())
+        {
+            auto definitionIt = std::find_if(definitions.begin(), definitions.end(),
+                [buildableType](const BuildingDefinition& definition)
+                {
+                    return definition.type == buildableType;
+                });
+            if (definitionIt != definitions.end() &&
+                definitionIt->buildCategory == BuildingBuildCategory::None)
+                throw std::runtime_error("Missing build_category for buildable building '" +
+                                         definitionIt->name + "'");
+        }
 
         return definitions;
     }
@@ -839,20 +845,16 @@ const std::vector<BuildingType>& GetBuildableBuildingTypes()
         BuildingType::StorageBuilding,
         BuildingType::Village,
         BuildingType::Barracks,
-        BuildingType::DefenseTower};
+        BuildingType::GuardTower,
+        BuildingType::Fortress};
     return types;
 }
 
 // Returns road types available in road-build mode.
 const std::vector<BuildingType>& GetBuildableRoadTypes()
 {
-    // B6 (docs/work_plan_2026-07-13.md): Bridge shares the road build panel —
-    // it's a selectable option there, placeable only on isMilitaryRoad tiles
-    // (TileMap::CanBuildFootprint), same as any other build option's
-    // placement rule is enforced through the existing generic machinery.
     static const std::vector<BuildingType> types{
-        BuildingType::Road,
-        BuildingType::Bridge};
+        BuildingType::Road};
     return types;
 }
 
@@ -961,36 +963,34 @@ void ApplyStorageDefinition(Building& building, const BuildingDefinition& defini
     }
 }
 
-// Applies parsed configuration to runtime state.
-void ApplyHqDefinition(Building& building, const BuildingDefinition& definition)
+void ApplyDefenseDefinition(Building& building, const BuildingDefinition& definition)
 {
-    auto* hq = building.GetComponent<HqComponent>();
-    if (hq == nullptr)
-        return;
-
-    hq->maxHp = definition.hq.maxHp;
-    hq->currentHp = definition.hq.maxHp;
-    hq->hardDefense = definition.hq.hardDefense;
-    hq->thornsDamage = definition.hq.thornsDamage;
-    hq->thornsInterval = definition.hq.thornsInterval;
-    hq->thornsTimer = definition.hq.thornsInterval;
-    hq->captureStockFraction = definition.hq.captureStockFraction;
-    hq->conquestRampDuration = definition.hq.conquestRampDuration;
-}
-
-// Applies parsed configuration to runtime state.
-void ApplyTowerDefinition(Building& building, const BuildingDefinition& definition)
-{
-    auto* tower = building.GetComponent<TowerCombatComponent>();
-    auto* workers = building.GetComponent<WorkerComponent>();
-    if (tower == nullptr || workers == nullptr)
-        return;
-
-    tower->damage = definition.tower.damage;
-    tower->range = definition.tower.range;
-    tower->attackSpeed = definition.tower.attackSpeed;
-    tower->ammoResource = definition.tower.ammoResource;
-    tower->ammoPerShot = definition.tower.ammoPerShot;
-    workers->capacity = definition.tower.workerCapacity;
+    auto* coverage = building.GetComponent<DefenseCoverageComponent>();
+    auto* garrison = building.GetComponent<GarrisonComponent>();
+    auto* upkeep = building.GetComponent<GarrisonUpkeepComponent>();
+    auto* safety = building.GetComponent<SafetyComponent>();
+    if (coverage != nullptr)
+    {
+        coverage->radius = std::max(0.0, definition.defense.coverageRadius);
+        coverage->baseProtection = std::max(0.0, definition.defense.baseProtection);
+        coverage->requiredState = definition.defense.requiredState;
+    }
+    if (garrison != nullptr)
+    {
+        garrison->capacity = std::max(0, definition.defense.garrisonCapacity);
+        garrison->presentationName = definition.name;
+    }
+    if (upkeep != nullptr)
+    {
+        upkeep->requiredResource = ResourceType::FOOD_PROVISIONS;
+        upkeep->intervalSeconds = std::max(0.0, definition.defense.upkeepInterval);
+        upkeep->packageSize = std::max(0.0, definition.defense.upkeepPackage);
+    }
+    if (safety != nullptr)
+    {
+        safety->intrinsicResilience = std::clamp(definition.defense.safetyResilience, 0.0, 1.0);
+        safety->raidDestructible = definition.defense.raidDestructible;
+        safety->raidStockLossTarget = definition.defense.raidStockLossTarget;
+    }
 }
 

@@ -1,6 +1,7 @@
 #include "core/GameWorldInternal.h"
 #include "core/PersistenceLimits.h"
 #include "platform/AtomicFile.h"
+#include "warfare/UnitDefinition.h"
 
 #include <iomanip>
 #include <limits>
@@ -8,8 +9,28 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <cmath>
+#include <set>
+#include <tuple>
 
 using namespace GameWorldInternal;
+
+namespace
+{
+    struct PendingProvinceShipments
+    {
+        ProvinceId provinceId{InvalidProvinceId};
+        ShipmentId nextShipmentId{1};
+        std::vector<ResourceShipment> shipments;
+    };
+
+    bool IsValidMapSizePresetValue(int value) noexcept
+    {
+        return value >= static_cast<int>(MapSizePreset::S) &&
+               value <= static_cast<int>(MapSizePreset::XL);
+    }
+
+}
 
 // Serializes current runtime state.
 bool GameWorld::SaveToFile(const std::string& path) const
@@ -19,26 +40,32 @@ bool GameWorld::SaveToFile(const std::string& path) const
     std::ostringstream serialized;
     if (!SaveToStream(serialized) || !serialized.good())
         return false;
+    std::string payload = std::move(serialized).str();
+    if (payload.empty() || payload.size() > PersistenceLimits::MaxSerializedStateBytes)
+        return false;
 
     std::error_code ignored;
     if (fs::exists(destination, ignored))
     {
-        const fs::path backup1 = destination.string() + ".bak.1";
-        const fs::path backup2 = destination.string() + ".bak.2";
-        const fs::path backup3 = destination.string() + ".bak.3";
-        fs::remove(backup3, ignored);
-        fs::rename(backup2, backup3, ignored);
+        for (std::size_t index = PersistenceLimits::SaveBackupCount; index > 1; --index)
+        {
+            const fs::path older = destination.string() + ".bak." + std::to_string(index);
+            const fs::path newer = destination.string() + ".bak." + std::to_string(index - 1);
+            ignored.clear();
+            fs::remove(older, ignored);
+            ignored.clear();
+            fs::rename(newer, older, ignored);
+        }
         ignored.clear();
-        fs::rename(backup1, backup2, ignored);
-        ignored.clear();
-        fs::copy_file(destination, backup1, fs::copy_options::overwrite_existing, ignored);
+        fs::copy_file(destination, destination.string() + ".bak.1",
+                      fs::copy_options::overwrite_existing, ignored);
     }
 
     std::string error;
     return AtomicFileTransaction::Write(destination,
         [&](std::ostream& out)
         {
-            out << serialized.str();
+            out.write(payload.data(), static_cast<std::streamsize>(payload.size()));
             return out.good();
         }, &error);
 }
@@ -48,35 +75,197 @@ std::string GameWorld::SerializeSimulationState() const
     std::ostringstream out;
     if (!SaveToStream(out))
         return {};
-    return out.str();
+    std::string payload = std::move(out).str();
+    if (payload.size() > PersistenceLimits::MaxSerializedStateBytes)
+        return {};
+    return payload;
 }
 
 bool GameWorld::SaveToStream(std::ostream& out) const
 {
 
-    // Save v36: RoadComponent product-priority state.
+    // Save v51: WorldJourney is the only expedition runtime state.
+    // Save v50: every in-flight local-road shipment, including its exact
+    // current leg time, is part of authoritative persistence and resync.
+    // Save v48: immutable journey route-speed rules are persisted.
+    // Save v47: authoritative trade orders join city stock and trade journeys.
+    // Save v46: immutable battle rules are stored with each battle instance.
+    // Save v45: journeys, events, battles and defense upkeep correction state.
+    // Save v43: full campaign-generation parameters and pending colonization.
+    // Save v41: per-province command telemetry for multi-map checksum parity.
+    // Save v40: full connection IDs, route levels and upgrade state.
+    // Save v39: per-province maps and roster location/expedition assignments.
+    // Save v38: campaign graph, province discovery and expedition state.
+    // Save v37: peaceful roster-only state; combat and military-road runtime
+    // data were removed from the format.
     // Save v35: exact construction payment records for deterministic salvage.
-    // Save v34: private Barracks/tower buffers separated from StorageComponent.
+    // Save v34: private Barracks buffers separated from StorageComponent.
     // Save v33: independent household/urban Village upkeep timers.
     // Save v32: runtime identifiers and simulation tick for multiplayer restore.
     // Save v31: transparent per-tile resource-overlay cells.
     // Save v30: settlement tiers and their household/urban supply buffers.
-    // Save v29: added TowerCombatComponent target priority.
     // Save v28: added the UPG block (UpgradeComponent — generic per-instance
     // building upgrade progression, introduced for Road).
     // Snapshot recovery must preserve values tightly enough to reproduce the
     // deterministic checksum; the default stream precision silently rounds
     // timers and resource rates after a few ticks.
+    const auto primaryPlayerIt = playerHandler.players.find(0);
+    const auto* primaryHome = primaryPlayerIt == playerHandler.players.end() ||
+                              primaryPlayerIt->second == nullptr
+        ? nullptr : globalMap.FindBuildableProvince(primaryPlayerIt->second->homeProvinceId);
+    const TileMap* primaryMapPtr = primaryHome != nullptr && primaryHome->GetSimulation() != nullptr
+        ? &primaryHome->GetSimulation()->GetTileMap() : nullptr;
+    if (primaryMapPtr == nullptr)
+        return false;
+    const TileMap& primaryMap = *primaryMapPtr;
     out << std::setprecision(std::numeric_limits<double>::max_digits10);
     out << "RTS_SAVE " << SerializationVersion::GameWorldSaveVersion << '\n';
     out << "WORLD " << std::quoted(worldName) << '\n';
-    out << "RUNTIME " << localPlayerId << ' ' << simulationTick << ' ' << nextCommandId << ' '
-        << nextProjectileId << '\n';
-    out << "PARAMS " << tilemap.params.sizeX << ' ' << tilemap.params.sizeY << ' '
-        << tilemap.params.seed << ' ' << static_cast<int>(tilemap.params.sizePreset) << ' '
-        << tilemap.params.resourceDensity << ' ' << tilemap.params.resourceFieldSize << ' '
-        << tilemap.params.resourceRichness << ' ' << tilemap.params.aiOpponentCount << ' '
-        << tilemap.params.aiDifficulty << ' ' << tilemap.params.debugMode << '\n';
+    out << "RUNTIME " << localPlayerId << ' ' << simulationTick << ' ' << nextCommandId << '\n';
+    out << "PARAMS " << primaryMap.params.sizeX << ' ' << primaryMap.params.sizeY << ' '
+        << primaryMap.params.seed << ' ' << static_cast<int>(primaryMap.params.sizePreset) << ' '
+        << primaryMap.params.resourceDensity << ' ' << primaryMap.params.resourceFieldSize << ' '
+        << primaryMap.params.resourceRichness << ' ' << primaryMap.params.aiOpponentCount << ' '
+        << primaryMap.params.aiDifficulty << ' ' << primaryMap.params.debugMode << '\n';
+
+    std::vector<std::tuple<PlayerId, ProvinceId, ProvinceKnowledgeLevel>> knowledgeEntries;
+    for (const auto& [playerId, player] : playerHandler.players)
+    {
+        (void)player;
+        for (ProvinceId provinceId : globalMap.GetProvinceIds())
+        {
+            const auto* province = globalMap.FindProvince(provinceId);
+            if (province != nullptr && province->GetKnowledge(playerId) != ProvinceKnowledgeLevel::Hidden)
+                knowledgeEntries.emplace_back(static_cast<PlayerId>(playerId), provinceId,
+                                              province->GetKnowledge(playerId));
+        }
+    }
+    out << "CAMPAIGN\nGLOBAL_MAP " << globalMap.GetProvinceCount() << ' '
+        << globalMap.GetEdgeCount() << ' ' << globalMap.GetGenerationSeed() << '\n';
+    const auto& campaignMap = campaignGenerationParameters.globalMap;
+    out << "CAMPAIGN_PARAMETERS " << campaignMap.seed << ' '
+        << campaignMap.provinceCount << ' ' << campaignMap.extraEdgeCount << ' '
+        << campaignMap.layoutRadius << ' ' << campaignMap.minimumLayoutSpacing << ' '
+        << campaignMap.maximumPlacementAttemptsPerProvince << ' '
+        << campaignMap.minimumNeutralBuildables << ' ' << campaignMap.buildableWeight << ' '
+        << campaignMap.neutralCityWeight << ' ' << campaignMap.banditCampWeight << ' '
+        << campaignMap.eventSiteWeight << ' ' << campaignMap.startBoundaryClearance << ' '
+        << campaignMap.buildableWealthScale << ' ' << campaignMap.cityWealthScale << ' '
+        << campaignMap.banditStrengthScale << ' ' << (campaignMap.fogOfWarEnabled ? 1 : 0) << '\n';
+    out << "PROVINCES " << globalMap.GetProvinceCount() << '\n';
+    for (ProvinceId provinceId : globalMap.GetProvinceIds())
+    {
+        const auto* province = globalMap.FindProvince(provinceId);
+        if (province == nullptr)
+            return false;
+        const auto* buildable = globalMap.FindBuildableProvince(provinceId);
+        out << "PROVINCE " << provinceId << ' ' << static_cast<int>(province->GetKind()) << ' '
+            << (buildable != nullptr ? buildable->GetOwnerId() : InvalidPlayerId) << ' '
+            << province->GetLayoutPosition().x << ' '
+            << province->GetLayoutPosition().y << '\n';
+        if (buildable != nullptr)
+        {
+            const auto& value = buildable->GetParameters();
+            out << "BUILDABLE_DATA " << provinceId << ' ' << std::quoted(value.definitionId) << ' '
+                << value.sizeX << ' ' << value.sizeY << ' ' << value.localSeed << ' '
+                << value.resourceWealth << ' ' << value.resourceDensity << ' '
+                << value.resourceFieldSize << ' ' << value.resourceRichness << ' '
+                << value.waterAmount << ' ' << value.mountainAmount << ' ' << value.ruggedness << ' '
+                << value.wealthTier << ' ' << value.traitIds.size();
+            for (const auto& traitId : value.traitIds)
+                out << ' ' << std::quoted(traitId);
+            out << ' ' << value.naturalResourceTypes.size();
+            for (const ResourceType resource : value.naturalResourceTypes)
+                out << ' ' << static_cast<int>(resource);
+            out << '\n';
+        }
+        else if (const auto* city = dynamic_cast<const NeutralCityProvince*>(province))
+        {
+            const auto& state = city->GetState();
+            out << "CITY_DATA " << provinceId << ' ' << std::quoted(city->GetDefinitionId()) << ' '
+                << city->GetWealthTier() << ' ' << state.barterPenaltyMultiplier << ' '
+                << state.revision << ' ' << state.stock.size();
+            for (const auto& [type, amount] : state.stock)
+                out << ' ' << static_cast<int>(type) << ' ' << amount;
+            out << ' ' << state.buyPrices.size();
+            for (const auto& [type, price] : state.buyPrices)
+                out << ' ' << static_cast<int>(type) << ' ' << price;
+            out << ' ' << state.sellPrices.size();
+            for (const auto& [type, price] : state.sellPrices)
+                out << ' ' << static_cast<int>(type) << ' ' << price;
+            out << ' ' << state.tradeScore.size();
+            for (const auto& [playerId, score] : state.tradeScore)
+                out << ' ' << playerId << ' ' << score;
+            out << '\n';
+        }
+        else if (const auto* bandit = dynamic_cast<const BanditProvince*>(province))
+        {
+            const auto& future = bandit->GetFutureBuildableParameters();
+            out << "BANDIT_DATA " << provinceId << ' ' << std::quoted(bandit->GetDefinitionId()) << ' '
+                << bandit->GetStrength() << ' ' << bandit->GetRaidPressure() << ' '
+                << std::quoted(bandit->GetLootTableId()) << ' '
+                << std::quoted(future.definitionId) << ' ' << future.sizeX << ' ' << future.sizeY << ' '
+                << future.localSeed << ' ' << future.resourceWealth << ' ' << future.resourceDensity << ' '
+                << future.resourceFieldSize << ' ' << future.resourceRichness << ' '
+                << future.waterAmount << ' ' << future.mountainAmount << ' ' << future.ruggedness << ' '
+                << future.wealthTier << ' ' << future.traitIds.size();
+            for (const auto& traitId : future.traitIds)
+                out << ' ' << std::quoted(traitId);
+            out << ' ' << future.naturalResourceTypes.size();
+            for (const ResourceType resource : future.naturalResourceTypes)
+                out << ' ' << static_cast<int>(resource);
+            out << '\n';
+        }
+        else if (const auto* event = dynamic_cast<const EventProvince*>(province))
+        {
+            std::set<PlayerId> eventPlayers;
+            for (const auto& [playerId, attempts] : event->GetDiscoveryAttemptsByPlayer())
+                eventPlayers.insert(playerId);
+            for (const auto& [playerId, resolved] : event->GetResolvedByPlayer())
+                eventPlayers.insert(playerId);
+            out << "EVENT_DATA " << provinceId << ' ' << std::quoted(event->GetEventPoolId()) << ' '
+                << eventPlayers.size() << '\n';
+            for (PlayerId playerId : eventPlayers)
+                out << "EVENT_PLAYER " << playerId << ' ' << event->GetDiscoveryAttempts(playerId)
+                    << ' ' << (event->HasResolvedFor(playerId) ? 1 : 0) << '\n';
+        }
+        const auto* simulation = buildable != nullptr ? buildable->GetSimulation() : nullptr;
+        out << "PROVINCE_STATE " << provinceId << ' ' << (simulation != nullptr ? 1 : 0) << ' '
+            << (simulation != nullptr ? simulation->GetEconomy().simulationTick : 0) << '\n';
+    }
+    out << "ENDPROVINCES\nCONNECTIONS " << globalMap.GetConnectionCount() << '\n';
+    for (ProvinceConnectionId connectionId : globalMap.GetConnectionIds())
+    {
+        const auto* connection = globalMap.FindConnection(connectionId);
+        const auto* landRoute = dynamic_cast<const LandRouteConnection*>(connection);
+        if (landRoute == nullptr)
+            return false;
+        out << "CONNECTION " << connectionId << ' '
+            << landRoute->GetFirstProvinceId() << ' '
+            << landRoute->GetSecondProvinceId() << ' '
+            << std::quoted(landRoute->GetDefinitionId()) << ' '
+            << landRoute->GetLengthUnits() << ' '
+            << landRoute->GetLevel() << ' '
+            << landRoute->GetUpgradeTargetLevel() << ' '
+            << landRoute->GetUpgradeRemainingTicks() << '\n';
+    }
+    out << "KNOWLEDGE " << knowledgeEntries.size() << '\n';
+    for (const auto& [playerId, provinceId, level] : knowledgeEntries)
+        out << "KNOW " << playerId << ' ' << provinceId << ' ' << static_cast<int>(level) << '\n';
+    out << "ENDCAMPAIGN\n";
+    out << "COLONIZATION " << pendingColonizations.size() << '\n';
+    for (const auto& [targetProvinceId, operation] : pendingColonizations)
+    {
+        (void)targetProvinceId;
+        out << "COLONIZATION_OP " << operation.playerId << ' '
+            << operation.sourceProvinceId << ' ' << operation.targetProvinceId << ' '
+            << operation.journeyId << ' ' << static_cast<int>(operation.phase) << ' '
+            << operation.phaseCompletionTick << ' ' << operation.settlementDurationTicks << ' '
+            << operation.cost.size() << '\n';
+        for (const auto& cost : operation.cost)
+            out << "COLONIZATION_COST " << static_cast<int>(cost.type) << ' '
+                << cost.amount << '\n';
+    }
     if (render != nullptr)
     {
         out << "CAMERA " << render->camera.target.x << ' ' << render->camera.target.y << ' '
@@ -90,13 +279,19 @@ bool GameWorld::SaveToStream(std::ostream& out) const
     out << "PLAYERS " << playerHandler.players.size() << '\n';
     for (const auto& [id, player] : playerHandler.players)
     {
+        const auto* home = player != nullptr
+            ? globalMap.FindBuildableProvince(player->homeProvinceId) : nullptr;
+        const ProvinceEconomy* economy = home != nullptr && home->GetSimulation() != nullptr
+            ? &home->GetSimulation()->GetEconomy() : nullptr;
+        if (player == nullptr || economy == nullptr)
+            return false;
         // Save v27 (AI rework czystka, TODO #2): the dead DiplomaticState —
         // never read by any gameplay logic post-pivot — was removed, and the
         // DIPLO/WAR blocks (and their counts on this line) with it.
-        out << "PLAYER " << id << ' ' << player->strategicResources.values.size() << ' '
+        out << "PLAYER " << id << ' ' << player->homeProvinceId << ' '
+            << player->strategicResources.values.size() << ' '
             << player->technologies.GetUnlocked().size() << ' '
             << player->focuses.GetUnlocked().size() << ' '
-            << (player->defeated ? 1 : 0) << ' '
             << static_cast<int>(player->controllerType) << ' ' << std::quoted(player->name) << ' '
             << static_cast<int>(player->color.r) << ' ' << static_cast<int>(player->color.g) << ' '
             << static_cast<int>(player->color.b) << ' ' << static_cast<int>(player->color.a) << '\n';
@@ -109,53 +304,68 @@ bool GameWorld::SaveToStream(std::ostream& out) const
         out << "ACTIVE_FOCUS " << std::quoted(player->focuses.GetActiveFocusId()) << ' '
             << player->focuses.GetActiveFocusRemaining() << '\n';
 
-        // TD(etap-3): recruited-but-not-deployed BattleUnit roster. Equipment
-        // is always an empty list in v1 (ETAP 3.4 seam) but its count is
-        // written from day one so a future DLC equipment system doesn't need
-        // another breaking save-format change.
+        // Recruited roster. Location and expedition assignment are stable IDs;
+        // no local-map pointers are serialized.
         out << "ROSTER " << player->nextUnitInstanceId << ' ' << player->roster.units.size() << '\n';
         for (const auto& [instanceId, unit] : player->roster.units)
         {
+            const UnitAssignment& assignment = unit.assignment;
+            if (!assignment.IsStructurallyValid())
+                return false;
             out << "UNIT " << unit.instanceId << ' ' << unit.ownerPlayerId << ' '
-                << std::quoted(unit.unitDefId) << ' ' << unit.currentHp << ' '
-                << static_cast<int>(unit.state) << ' '
-                << unit.routeFromPlayerId << ' ' << unit.routeToPlayerId << ' '
-                << unit.tileIndex << ' ' << unit.tileProgress << ' ' << unit.attackTimer << ' '
+                << std::quoted(unit.unitDefId) << ' ' << static_cast<int>(assignment.kind) << ' '
+                << assignment.provinceId << ' ' << assignment.buildingId << ' '
+                << assignment.worldJourneyId << ' ' << assignment.battleId << ' '
+                << unit.taskGroupId << ' '
                 << unit.equipment.size() << '\n';
         }
 
-        // TD(etap-6.3): productivity ramps on buildings captured from an
-        // eliminated player.
-        out << "CONQUERED " << player->conqueredEconomy.GetRamps().size() << '\n';
-        for (const auto& ramp : player->conqueredEconomy.GetRamps())
-            out << "RAMP " << ramp.buildingId << ' ' << ramp.elapsed << ' ' << ramp.rampDuration << '\n';
+        out << "TASK_GROUPS " << player->taskGroups.GetNextTaskGroupId() << ' '
+            << player->taskGroups.GetGroups().size() << '\n';
+        for (const auto& [groupId, group] : player->taskGroups.GetGroups())
+            out << "TASK_GROUP " << groupId << ' ' << group.stationProvinceId << ' '
+                << group.homeBarracksBuildingId << '\n';
 
-        out << "COMMANDSTATS " << player->dataTracker.processedCommands.size() << '\n';
-        for (const auto& [commandType, count] : player->dataTracker.processedCommands)
+        out << "COMMANDSTATS " << economy->dataTracker.processedCommands.size() << '\n';
+        for (const auto& [commandType, count] : economy->dataTracker.processedCommands)
             out << "CMDSTAT " << static_cast<int>(commandType) << ' ' << count << '\n';
+        std::vector<std::pair<ProvinceId, const ProvinceEconomy*>> provinceEconomies;
+        for (const ProvinceId provinceId : globalMap.GetProvinceIds())
+        {
+            const auto* province = globalMap.FindBuildableProvince(provinceId);
+            if (province == nullptr || province->GetOwnerId() != id ||
+                province->GetSimulation() == nullptr)
+                continue;
+            const auto* provinceEconomy = player->GetProvinceEconomy(provinceId);
+            if (provinceEconomy == nullptr)
+                return false;
+            provinceEconomies.emplace_back(provinceId, provinceEconomy);
+        }
+        if (provinceEconomies.size() > PersistenceLimits::MaxProvinceMaps)
+            return false;
+        out << "PROVINCE_COMMANDSTATS " << provinceEconomies.size() << '\n';
+        for (const auto& [provinceId, provinceEconomy] : provinceEconomies)
+        {
+            out << "PROVINCE_STATS " << provinceId << ' '
+                << provinceEconomy->dataTracker.processedCommands.size() << '\n';
+            for (const auto& [commandType, count] : provinceEconomy->dataTracker.processedCommands)
+                out << "PCMDSTAT " << static_cast<int>(commandType) << ' ' << count << '\n';
+        }
         out << "ENDPLAYER\n";
     }
 
-    out << "TILES " << tilemap.tilemap.size() << '\n';
+    const auto writeMapState = [&out](const TileMap& sourceMap) -> bool
+    {
+        const TileMap& tilemap = sourceMap;
+        out << "TILES " << tilemap.tilemap.size() << '\n';
     for (const auto& tile : tilemap.tilemap)
     {
-        int ownerId = tile.owner != nullptr ? tile.owner->id : -1;
+        int ownerId = tile.ownerId != InvalidPlayerId
+            ? tile.ownerId
+            : (tile.owner != nullptr ? tile.owner->id : -1);
         out << "T " << tile.id << ' ' << static_cast<int>(tile.tileType) << ' '
             << tile.terrainTextureId << ' ' << tile.resourceOverlayTextureId << ' ' << ownerId << ' ' << tile.resourceRichness << ' '
             << static_cast<int>(tile.biome) << '\n';
-    }
-
-    // Military road ring (TD etap-2): written explicitly rather than
-    // regenerated from seed, so generator changes never invalidate an
-    // existing save's ring layout.
-    const auto& militaryRoutes = militaryRoads.GetRoutes();
-    out << "MILROADS " << militaryRoutes.size() << '\n';
-    for (const auto& route : militaryRoutes)
-    {
-        out << "MROUTE " << route.playerA << ' ' << route.playerB << ' ' << route.tiles.size();
-        for (int tileId : route.tiles)
-            out << ' ' << tileId;
-        out << '\n';
     }
 
     int buildingCount = 0;
@@ -172,7 +382,9 @@ bool GameWorld::SaveToStream(std::ostream& out) const
         if (building == nullptr)
             continue;
 
-        int ownerId = building->owner != nullptr ? building->owner->id : -1;
+        int ownerId = building->ownerId != InvalidPlayerId
+            ? building->ownerId
+            : (building->owner != nullptr ? building->owner->id : -1);
         out << "B " << building->positionId << ' ' << static_cast<int>(building->buildingType) << ' '
             << building->id << ' ' << ownerId << ' ' << building->textureId << ' '
             << building->footprint.x << ' ' << building->footprint.y << ' '
@@ -263,24 +475,6 @@ bool GameWorld::SaveToStream(std::ostream& out) const
             out << "ENDLOCALBUF\n";
         }
 
-        if (const auto* hq = building->GetComponent<HqComponent>())
-        {
-            out << "HQ " << hq->maxHp.GetBase() << ' ' << hq->currentHp << ' '
-                << hq->hardDefense.GetBase() << ' ' << hq->thornsDamage.GetBase() << ' '
-                << hq->thornsInterval << ' ' << hq->thornsTimer << ' '
-                << hq->captureStockFraction << ' ' << hq->conquestRampDuration << '\n';
-        }
-
-        if (const auto* tower = building->GetComponent<TowerCombatComponent>())
-        {
-            // Ammo itself is already covered by the LOCALBUF block above;
-            // only the attack cooldown and targeting policy live here.
-            out << "TOWER " << tower->damage.GetBase() << ' ' << tower->range.GetBase() << ' '
-                << tower->attackSpeed.GetBase() << ' ' << tower->attackTimer << ' '
-                << static_cast<int>(tower->ammoResource) << ' ' << tower->ammoPerShot.GetBase() << ' '
-                << static_cast<int>(tower->targetMode) << '\n';
-        }
-
         if (const auto* pop = building->GetComponent<PopulationComponent>())
         {
             out << "VIL " << pop->manpowerRate.GetBase() << ' ' << pop->upkeepTimer << ' '
@@ -311,60 +505,322 @@ bool GameWorld::SaveToStream(std::ostream& out) const
         if (const auto* road = building->GetComponent<RoadComponent>())
             out << "ROADPRIORITY " << static_cast<int>(road->priorityResource) << '\n';
 
+        const auto* coverage = building->GetComponent<DefenseCoverageComponent>();
+        const auto* garrison = building->GetComponent<GarrisonComponent>();
+        const auto* upkeep = building->GetComponent<GarrisonUpkeepComponent>();
+        if (coverage != nullptr || garrison != nullptr || upkeep != nullptr)
+        {
+            const auto* safety = building->GetComponent<SafetyComponent>();
+            out << "DEFENSE "
+                << (coverage != nullptr ? coverage->radius.GetBase() : 0.0) << ' '
+                << (coverage != nullptr ? coverage->baseProtection.GetBase() : 0.0) << ' '
+                << std::quoted(coverage != nullptr ? coverage->requiredState : std::string{}) << ' '
+                << (garrison != nullptr ? garrison->capacity.GetBase() : 0) << ' '
+                << (upkeep != nullptr ? upkeep->timer : 0.0) << ' '
+                << (upkeep != nullptr ? upkeep->debtMicros : 0) << ' '
+                << (upkeep != nullptr ? upkeep->intervalSeconds : 0.0) << ' '
+                << (upkeep != nullptr ? upkeep->packageSize : 0.0) << ' '
+                << (upkeep != nullptr ? upkeep->requestedAmount : 0) << ' '
+                << (upkeep != nullptr ? static_cast<int>(upkeep->supplyStatus) : 0) << ' '
+                << (safety != nullptr ? safety->intrinsicResilience : 0.0) << ' '
+                << (safety != nullptr && safety->raidDestructible ? 1 : 0) << ' '
+                << (safety != nullptr && safety->raidStockLossTarget ? 1 : 0) << '\n';
+        }
+
         out << "ENDB\n";
     }
 
-    // TD(etap-4): deployed (marching/fighting/arrived) units, world-scoped
-    // since a column can include units from either side of a route.
-    out << "DEPLOYEDUNITS " << deployedUnits.size() << '\n';
-    for (const auto& [instanceId, unit] : deployedUnits)
+        return true;
+    };
+
+    if (!writeMapState(primaryMap))
+        return false;
+
+    std::vector<std::pair<ProvinceId, const TileMap*>> provinceMaps;
+    for (const ProvinceId provinceId : globalMap.GetProvinceIds())
     {
-        out << "DUNIT " << unit.instanceId << ' ' << unit.ownerPlayerId << ' '
-            << std::quoted(unit.unitDefId) << ' ' << unit.currentHp << ' '
-            << static_cast<int>(unit.state) << ' '
-            << unit.routeFromPlayerId << ' ' << unit.routeToPlayerId << ' '
-            << unit.tileIndex << ' ' << unit.tileProgress << ' ' << unit.attackTimer << ' '
-            << unit.equipment.size() << '\n';
+        const auto* province = globalMap.FindBuildableProvince(provinceId);
+        if (province == nullptr || provinceId == primaryHome->GetId() ||
+            province->GetOwnerId() == InvalidPlayerId || province->GetSimulation() == nullptr)
+            continue;
+        const auto* simulation = province->GetSimulation();
+        if (!simulation->OwnsTileMap())
+            return false;
+        provinceMaps.emplace_back(provinceId, &simulation->GetTileMap());
+    }
+    if (provinceMaps.size() > PersistenceLimits::MaxProvinceMaps - 1)
+        return false;
+    out << "PROVINCE_MAPS " << provinceMaps.size() << '\n';
+    for (const auto& [provinceId, map] : provinceMaps)
+    {
+        if (map == nullptr)
+            return false;
+        out << "PROVINCE_MAP " << provinceId << ' '
+            << map->params.sizeX << ' ' << map->params.sizeY << ' '
+            << map->params.seed << ' ' << static_cast<int>(map->params.sizePreset) << ' '
+            << map->params.resourceDensity << ' ' << map->params.resourceFieldSize << ' '
+            << map->params.resourceRichness << ' ' << map->params.aiOpponentCount << ' '
+            << map->params.aiDifficulty << ' ' << map->params.debugMode << '\n';
+        if (!writeMapState(*map))
+            return false;
+        out << "ENDPROVINCE_MAP\n";
     }
 
-    out << "SPAWNQUEUES " << spawnQueues.size() << '\n';
-    for (const auto& [routeKey, queue] : spawnQueues)
+    std::vector<std::pair<ProvinceId, const RoadNetwork*>> shipmentNetworks;
+    for (ProvinceId provinceId : globalMap.GetProvinceIds())
     {
-        out << "SQ " << routeKey.first << ' ' << routeKey.second << ' ' << queue.size();
-        for (int unitInstanceId : queue)
-            out << ' ' << unitInstanceId;
+        const auto* province = globalMap.FindBuildableProvince(provinceId);
+        const auto* simulation = province != nullptr ? province->GetSimulation() : nullptr;
+        const auto* network = simulation != nullptr
+            ? simulation->GetEconomy().roadNetwork.get() : nullptr;
+        if (province != nullptr && province->GetOwnerId() != InvalidPlayerId && network != nullptr)
+            shipmentNetworks.emplace_back(provinceId, network);
+    }
+    if (shipmentNetworks.size() > PersistenceLimits::MaxProvinceMaps)
+        return false;
+    out << "SHIPMENT_PROVINCES " << shipmentNetworks.size() << '\n';
+    std::size_t totalShipmentCount = 0;
+    for (const auto& [provinceId, network] : shipmentNetworks)
+    {
+        std::vector<ResourceShipment> shipments;
+        network->AppendShipmentRecords(shipments);
+        if (shipments.size() != network->GetLiveShipmentCount() ||
+            shipments.size() > PersistenceLimits::MaxActiveShipments - totalShipmentCount)
+            return false;
+        totalShipmentCount += shipments.size();
+        out << "SHIPMENT_PROVINCE " << provinceId << ' ' << network->GetNextShipmentId()
+            << ' ' << shipments.size() << '\n';
+        for (const auto& shipment : shipments)
+        {
+            out << "SHIPMENT " << shipment.id << ' ' << static_cast<int>(shipment.type) << ' '
+                << shipment.quantity << ' ' << shipment.sourceBuildingId << ' '
+                << shipment.targetBuildingId << ' ' << shipment.currentPathStep << ' '
+                << shipment.elapsedTime << ' ' << shipment.transportTime << ' '
+                << static_cast<int>(shipment.state) << ' ' << shipment.pathTileIds.size();
+            for (int tileId : shipment.pathTileIds)
+                out << ' ' << tileId;
+            out << '\n';
+        }
+        out << "ENDSHIPMENT_PROVINCE\n";
+    }
+    out << "ENDSHIPMENTS\n";
+
+    out << "JOURNEYS " << armyJourneySystem.GetNextJourneyId() << ' '
+        << armyJourneySystem.GetJourneys().size() << '\n';
+    for (const auto& [journeyId, journey] : armyJourneySystem.GetJourneys())
+    {
+        out << "JOURNEY " << journeyId << ' ' << journey.ownerId << ' '
+            << journey.sourceProvinceId << ' ' << journey.targetProvinceId << ' '
+            << static_cast<int>(journey.status) << ' ' << journey.currentLeg << ' '
+            << journey.startTick << ' ' << journey.legCompletionTick << ' '
+            << journey.deterministicAttemptCounter << ' ' << static_cast<int>(journey.kind) << ' '
+            << journey.rules.baseLegDurationTicks << ' '
+            << journey.rules.routeTravelSpeedMultiplier << ' '
+            << journey.rules.speedProfile.baseUnitsPerMinute << ' '
+            << journey.rules.speedProfile.moverSpeedBasisPoints << ' '
+            << journey.rules.speedProfile.playerRouteSpeedBasisPoints << ' '
+            << journey.rules.speedProfile.operationSpeedBasisPoints << ' '
+            << journey.rules.speedProfile.extraLegDistanceBasisPoints << ' '
+            << journey.legPlan.size();
+        for (const auto& leg : journey.legPlan)
+            out << ' ' << leg.connectionId << ' ' << leg.lengthUnits << ' '
+                << leg.routeTimeBasisPoints << ' ' << leg.routeLevelAtStart << ' '
+                << leg.incidentReductionBasisPoints << ' ' << leg.durationTicks;
+        out << ' ';
+        if (const auto* scout = std::get_if<ScoutParty>(&journey.payload))
+        {
+            out << 0 << ' ' << scout->unitInstanceIds.size();
+            for (const int unitId : scout->unitInstanceIds)
+                out << ' ' << unitId;
+        }
+        else if (const auto* trade = std::get_if<TradeCargo>(&journey.payload))
+        {
+            out << 1 << ' ' << static_cast<int>(trade->offerType) << ' '
+                << static_cast<int>(trade->requestType) << ' ' << trade->amount;
+        }
+        else if (const auto* army = std::get_if<ArmyParty>(&journey.payload))
+        {
+            out << 2 << ' ' << army->unitInstanceIds.size();
+            for (const int unitId : army->unitInstanceIds)
+                out << ' ' << unitId;
+        }
+        else if (const auto* convoy = std::get_if<ResourceConvoy>(&journey.payload))
+        {
+            out << 4 << ' ' << convoy->cargo.size();
+            for (const auto& cargo : convoy->cargo)
+                out << ' ' << static_cast<int>(cargo.type) << ' ' << cargo.amount;
+        }
+        else if (const auto* transfer = std::get_if<ArmyTransferParty>(&journey.payload))
+        {
+            out << 5 << ' ' << transfer->destinationBarracksBuildingId << ' '
+                << transfer->unitInstanceIds.size();
+            for (const int unitId : transfer->unitInstanceIds)
+                out << ' ' << unitId;
+        }
+        else
+        {
+            out << 3 << ' ' << std::get<Colonists>(journey.payload).householdCount;
+        }
         out << '\n';
     }
 
-    out << "PROJECTILES " << projectiles.size() << '\n';
-    for (const auto& [id, projectile] : projectiles)
+    out << "TRADES " << nextTradeOrderId << ' ' << activeTradeOrders.size() << '\n';
+    for (const auto& [orderId, order] : activeTradeOrders)
     {
-        out << "PROJECTILE " << id << ' ' << projectile.sourcePlayerId << ' '
-            << projectile.sourceUnitInstanceId << ' ' << projectile.position.x << ' ' << projectile.position.y << ' '
-            << projectile.damage << ' ' << static_cast<int>(projectile.damageType) << ' '
-            << static_cast<int>(projectile.filter) << ' ' << projectile.ticksRemaining << ' '
-            << projectile.targetUnitInstanceId << ' ' << projectile.speed << '\n';
+        out << "TRADE " << orderId << ' ' << order.playerId << ' '
+            << order.originProvinceId << ' ' << order.cityProvinceId << ' '
+            << static_cast<int>(order.request.offerType) << ' '
+            << static_cast<int>(order.request.requestType) << ' '
+            << order.request.requestedAmount << ' ' << order.request.offeredAmount << ' '
+            << order.offeredAmount << ' ' << order.cargoAmount << ' '
+            << order.cityRevisionAtStart << ' ' << order.journeyId << ' '
+            << static_cast<int>(order.request.mode) << ' '
+            << static_cast<int>(order.status) << '\n';
     }
+    out << "END_TRADES\n";
+
+    out << "BATTLES " << battleSystem.GetNextBattleId() << ' '
+        << battleSystem.GetBattles().size() << ' ' << battleSystem.GetReports().size() << '\n';
+    const auto writeBattleUnitIds = [&out](const char* tag, const std::vector<int>& ids)
+    {
+        out << tag << ' ' << ids.size();
+        for (const int id : ids)
+            out << ' ' << id;
+        out << '\n';
+    };
+    const auto writeBattleSide = [&out](const char* tag, const BattleSideSnapshot& side)
+    {
+        out << tag << ' ' << side.ownerId << ' ' << side.defensiveBonus << ' '
+            << side.units.size() << '\n';
+        for (const auto& unit : side.units)
+            out << "SIDE_UNIT " << unit.instanceId << ' ' << std::quoted(unit.unitDefId) << ' '
+                << unit.effectiveFieldAttack << '\n';
+    };
+    const auto writeOutcome = [&out](const char* tag, const std::optional<BattleOutcome>& outcome)
+    {
+        out << tag << ' ' << (outcome.has_value() ? 1 : 0);
+        if (!outcome.has_value())
+        {
+            out << '\n';
+            return;
+        }
+        const auto& value = *outcome;
+        out << ' ' << (value.valid ? 1 : 0) << ' ' << static_cast<int>(value.winner) << ' '
+            << value.attackerStrength << ' ' << value.defenderStrength << ' '
+            << value.attackerCasualtyBudget << ' ' << value.defenderCasualtyBudget << ' '
+            << value.lootValue << ' ' << (value.crushingVictory ? 1 : 0) << ' '
+            << value.durationTicks << ' ' << value.attackerLostUnitIds.size();
+        for (const int id : value.attackerLostUnitIds)
+            out << ' ' << id;
+        out << ' ' << value.defenderLostUnitIds.size();
+        for (const int id : value.defenderLostUnitIds)
+            out << ' ' << id;
+        out << '\n';
+    };
+    for (const auto& [battleId, battle] : battleSystem.GetBattles())
+    {
+        out << "BATTLE " << battleId << ' ' << battle.attackerId << ' ' << battle.defenderId << ' '
+            << battle.sourceProvinceId << ' ' << battle.targetProvinceId << ' ' << battle.journeyId << ' '
+            << static_cast<int>(battle.status) << ' ' << battle.startTick << ' ' << battle.endTick << ' '
+            << (battle.isRaid ? 1 : 0) << ' ' << battle.raidStrength << ' '
+            << battle.rules.baseLossFraction << ' ' << battle.rules.casualtyCapFraction << ' '
+            << battle.rules.drawBand << ' ' << battle.rules.crushingRatio << ' '
+            << battle.rules.lootFraction << ' ' << battle.rules.durationTicks << '\n';
+        writeBattleUnitIds("ATTACK_IDS", battle.attackerUnitIds);
+        writeBattleUnitIds("DEFENDER_IDS", battle.defenderUnitIds);
+        writeBattleSide("ATTACK_SIDE", battle.attackerSnapshot);
+        writeBattleSide("DEFENDER_SIDE", battle.defenderSnapshot);
+        writeOutcome("OUTCOME", battle.outcome);
+        out << "END_BATTLE\n";
+    }
+    for (const auto& report : battleSystem.GetReports())
+    {
+        out << "REPORT " << report.battleId << ' ' << report.attackerId << ' ' << report.defenderId << ' '
+            << report.sourceProvinceId << ' ' << report.targetProvinceId << ' '
+            << (report.banditTransformed ? 1 : 0) << ' ' << (report.cityDamaged ? 1 : 0) << ' '
+            << (report.raid ? 1 : 0) << ' ' << report.destroyedBuildingIds.size();
+        for (const int id : report.destroyedBuildingIds)
+            out << ' ' << id;
+        out << ' ' << report.lostResources.size();
+        for (const auto& [type, amount] : report.lostResources)
+            out << ' ' << static_cast<int>(type) << ' ' << amount;
+        const auto& outcome = report.outcome;
+        out << " OUTCOME 1 " << (outcome.valid ? 1 : 0) << ' ' << static_cast<int>(outcome.winner) << ' '
+            << outcome.attackerStrength << ' ' << outcome.defenderStrength << ' '
+            << outcome.attackerCasualtyBudget << ' ' << outcome.defenderCasualtyBudget << ' '
+            << outcome.lootValue << ' ' << (outcome.crushingVictory ? 1 : 0) << ' '
+            << outcome.durationTicks << ' ' << outcome.attackerLostUnitIds.size();
+        for (const int id : outcome.attackerLostUnitIds)
+            out << ' ' << id;
+        out << ' ' << outcome.defenderLostUnitIds.size();
+        for (const int id : outcome.defenderLostUnitIds)
+            out << ' ' << id;
+        out << '\n';
+    }
+    out << "END_BATTLES\n";
+
+    out << "EVENT_RUNTIME " << eventSystem.GetNextInstanceId() << ' '
+        << eventSystem.GetCadenceStates().size() << '\n';
+    for (const auto& [provinceId, definitions] : eventSystem.GetCadenceStates())
+    {
+        out << "EVENT_CADENCE " << provinceId << ' ' << definitions.size() << '\n';
+        for (const auto& [definitionId, cadence] : definitions)
+            out << "CADENCE " << std::quoted(definitionId) << ' ' << cadence.nextCheckTick << ' '
+                << cadence.attemptCounter << '\n';
+    }
+    out << "EVENT_INSTANCES " << eventSystem.GetInstances().size() << '\n';
+    for (const auto& [instanceId, instance] : eventSystem.GetInstances())
+    {
+        out << "EVENT_INSTANCE " << instanceId << ' ' << instance.ownerId << ' '
+            << instance.provinceId << ' ' << instance.secondaryProvinceId << ' '
+            << std::quoted(instance.definitionId) << ' ' << static_cast<int>(instance.trigger) << ' '
+            << instance.startTick << ' ' << instance.endTick << ' ' << instance.outcomeRoll << ' '
+            << instance.deterministicAttemptCounter << ' ' << instance.journeyId << ' '
+            << (instance.expired ? 1 : 0) << ' ' << (instance.raidStarted ? 1 : 0) << ' '
+            << (instance.journeyEffectApplied ? 1 : 0) << ' '
+            << instance.appliedEffects.size() << '\n';
+        for (const auto& effect : instance.appliedEffects)
+            out << "EVENT_APPLIED " << instanceId << ' ' << static_cast<int>(effect.kind) << ' '
+                << static_cast<int>(effect.resourceType) << ' ' << effect.amount << ' '
+                << static_cast<int>(effect.stat) << ' ' << effect.additive << ' '
+                << effect.multiplier << ' ' << effect.durationTicks << '\n';
+    }
+    out << "EVENT_FEED " << eventSystem.GetFeed().GetHistory().size() << '\n';
+    for (const auto& notification : eventSystem.GetFeed().GetHistory())
+    {
+        out << "EVENT_NOTIFICATION " << notification.instanceId << ' ' << notification.ownerId << ' '
+            << notification.provinceId << ' ' << notification.secondaryProvinceId << ' '
+            << std::quoted(notification.definitionId) << ' ' << std::quoted(notification.title) << ' '
+            << std::quoted(notification.description) << ' ' << static_cast<int>(notification.trigger) << ' '
+            << notification.startTick << ' ' << notification.endTick << ' ' << notification.outcomeRoll << ' '
+            << (notification.expired ? 1 : 0) << ' ' << notification.appliedEffects.size() << '\n';
+        for (const auto& effect : notification.appliedEffects)
+            out << "EVENT_FEED_APPLIED " << notification.instanceId << ' '
+                << static_cast<int>(effect.kind) << ' ' << static_cast<int>(effect.resourceType) << ' '
+                << effect.amount << ' ' << static_cast<int>(effect.stat) << ' '
+                << effect.additive << ' ' << effect.multiplier << ' ' << effect.durationTicks << '\n';
+    }
+    out << "END_EVENT_RUNTIME\n";
 
     return true;
 }
 
 // Loads the requested data into runtime state.
-bool GameWorld::LoadFromFile(const std::string& path, Renderer* renderer, AudioSystem* a)
+bool GameWorld::LoadFromFile(const std::string& path, Renderer* renderer)
 {
     std::ifstream in(path, std::ios::binary);
     if (!in.is_open())
         return false;
 
     std::string payload((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-    if (payload.empty() || payload.size() > 64u * 1024u * 1024u)
+    if (payload.empty() || payload.size() > PersistenceLimits::MaxSerializedStateBytes)
         return false;
 
     try
     {
         GameWorld candidate;
         std::istringstream state(payload);
-        if (!candidate.LoadFromStream(state, renderer, a, -1))
+        if (!candidate.LoadFromStream(state, renderer, -1))
             return false;
         *this = std::move(candidate);
         RebindMovedState();
@@ -381,15 +837,14 @@ bool GameWorld::RestoreSimulationState(std::string_view payload, int localPlayer
     // Full state transfer has a hard cap in SnapshotTransfer. Keeping the
     // same bound at the persistence boundary prevents an alternate caller
     // from handing the parser an unbounded network allocation.
-    constexpr std::size_t MaxSimulationStateBytes = 64u * 1024u * 1024u;
-    if (payload.empty() || payload.size() > MaxSimulationStateBytes)
+    if (payload.empty() || payload.size() > PersistenceLimits::MaxSerializedStateBytes)
         return false;
 
     try
     {
         GameWorld candidate;
         std::istringstream in{std::string(payload)};
-        if (!candidate.LoadFromStream(in, render, audio, localPlayerIdOverride))
+        if (!candidate.LoadFromStream(in, render, localPlayerIdOverride))
             return false;
         *this = std::move(candidate);
         RebindMovedState();
@@ -405,82 +860,534 @@ void GameWorld::RebindMovedState()
 {
     for (auto& [playerId, player] : playerHandler.players)
     {
-        (void)playerId;
-        if (player != nullptr)
-            player->RebindTileMap(tilemap);
-        if (player != nullptr && player->roadNetwork != nullptr)
-            player->roadNetwork->RebindWorld(tilemap);
+        if (player == nullptr)
+            continue;
+        bool boundHome = false;
+        for (const ProvinceId provinceId : globalMap.GetProvinceIds())
+        {
+            auto* province = globalMap.FindBuildableProvince(provinceId);
+            if (province == nullptr || province->GetOwnerId() != playerId ||
+                province->GetSimulation() == nullptr)
+                continue;
+            player->BindProvince(provinceId, *province->GetSimulation());
+            if (provinceId == player->homeProvinceId)
+                boundHome = true;
+        }
+        if (boundHome)
+        {
+            player->SetActiveProvince(player->homeProvinceId);
+            if (auto* home = globalMap.FindBuildableProvince(player->homeProvinceId);
+                home != nullptr && home->GetSimulation() != nullptr &&
+                home->GetSimulation()->OwnsTileMap())
+                player->RebindTileMap(player->homeProvinceId, home->GetSimulation()->GetTileMap());
+        }
     }
 }
 
-bool GameWorld::LoadFromStream(std::istream& in, Renderer* renderer, AudioSystem* a,
+bool GameWorld::LoadFromStream(std::istream& in, Renderer* renderer,
                                int localPlayerIdOverride)
 {
-
-    combatTelemetry.Clear();
-    projectiles.clear();
 
     std::string tag;
     int version = 0;
     in >> tag >> version;
-    // TD(etap-1): the old war system's save fields (HQ/MIL/DIVS/RECRUIT) were
-    // dropped, not merely extended — a breaking change per the rework plan.
-    // Older saves are rejected outright rather than partially parsed.
-    // v27 (AI rework czystka): DiplomaticState removed from the format.
-    // v35: exact construction payment records for deterministic salvage.
-    // v34: private Barracks/tower buffers separated from StorageComponent.
-    // v33: independent household/urban Village upkeep timers.
-    // v32: runtime identifiers and simulation tick for multiplayer restore.
-    // v31: transparent per-tile resource-overlay cells.
-    // v30: settlement tiers and advanced supply buffers.
-    // v29: added tower target priority.
-    // v28: added the UPG block (UpgradeComponent).
-    if (tag != "RTS_SAVE" ||
-        (version != 30 && version != 31 && version != 32 && version != 33 &&
-         version != 34 && version != 35 && version != 36))
+    // The save format is intentionally a hard boundary. A pre-rework save
+    // cannot be partially interpreted because it contains removed combat and
+    // military-road sections.
+    if (tag != "RTS_SAVE" || version != SerializationVersion::GameWorldSaveVersion)
         return false;
 
     render = renderer;
-    audio  = a;
 
     in >> tag >> std::quoted(worldName);
     if (tag != "WORLD")
         return false;
 
     int serializedLocalPlayerId = localPlayerId;
-    if (version >= 32)
-    {
-        in >> tag >> serializedLocalPlayerId >> simulationTick >> nextCommandId >> nextProjectileId;
-        if (tag != "RUNTIME")
-            return false;
-    }
-    else
-    {
-        simulationTick = 0;
-        nextCommandId = 1;
-        nextProjectileId = 1;
-    }
+    in >> tag >> serializedLocalPlayerId >> simulationTick >> nextCommandId;
+    if (tag != "RUNTIME")
+        return false;
     localPlayerId = localPlayerIdOverride >= 0 ? localPlayerIdOverride : serializedLocalPlayerId;
 
+    MapParameters primaryMapParams;
     int preset = 0;
-    in >> tag >> tilemap.params.sizeX >> tilemap.params.sizeY >> tilemap.params.seed >> preset;
+    in >> tag >> primaryMapParams.sizeX >> primaryMapParams.sizeY >> primaryMapParams.seed >> preset;
     if (tag != "PARAMS")
         return false;
     std::size_t expectedTileCount = 0;
-    if (!PersistenceLimits::CheckedArea(tilemap.params.sizeX, tilemap.params.sizeY, expectedTileCount))
+    if (!PersistenceLimits::CheckedArea(primaryMapParams.sizeX, primaryMapParams.sizeY, expectedTileCount) ||
+        !IsValidMapSizePresetValue(preset))
         return false;
-    tilemap.params.sizePreset = static_cast<MapSizePreset>(preset);
+    primaryMapParams.sizePreset = static_cast<MapSizePreset>(preset);
     if (version >= 3)
     {
-        in >> tilemap.params.resourceDensity >> tilemap.params.resourceFieldSize
-            >> tilemap.params.resourceRichness >> tilemap.params.aiOpponentCount
-            >> tilemap.params.aiDifficulty;
+        in >> primaryMapParams.resourceDensity >> primaryMapParams.resourceFieldSize
+            >> primaryMapParams.resourceRichness >> primaryMapParams.aiOpponentCount
+            >> primaryMapParams.aiDifficulty;
         if (version >= 4)
-            in >> tilemap.params.debugMode;
-        else
-            tilemap.params.debugMode = false;
+            in >> primaryMapParams.debugMode;
+    else
+        primaryMapParams.debugMode = false;
     }
 
+    globalMap = GlobalMap{};
+    pendingHomeProvinceByPlayer.clear();
+    pendingColonizations.clear();
+    activeTradeOrders.clear();
+    nextTradeOrderId = 1;
+    std::vector<std::tuple<PlayerId, ProvinceId, ProvinceKnowledgeLevel>> restoredKnowledge;
+    std::vector<ColonizationOperation> restoredColonizations;
+    std::vector<WorldJourney> restoredJourneys;
+    WorldJourneyId restoredNextJourneyId = 1;
+    std::vector<TradeOrder> restoredTradeOrders;
+    std::uint64_t restoredNextTradeOrderId = 1;
+    std::vector<BattleInstance> restoredBattles;
+    std::vector<BattleReport> restoredBattleReports;
+    BattleId restoredNextBattleId = 1;
+    std::vector<WorldEventInstance> restoredEvents;
+    std::vector<WorldEventNotificationView> restoredEventNotifications;
+    std::vector<PendingProvinceShipments> restoredProvinceShipments;
+    WorldEventInstanceId restoredNextEventId = 1;
+    in >> tag;
+    if (tag != "CAMPAIGN")
+        return false;
+    int provinceCount = 0;
+    int edgeCount = 0;
+    std::uint32_t generationSeed = 0;
+    in >> tag >> provinceCount >> edgeCount >> generationSeed;
+    if (tag != "GLOBAL_MAP" ||
+        !PersistenceLimits::IsCountInRange(provinceCount, PersistenceLimits::MaxGlobalProvinces) ||
+        !PersistenceLimits::IsCountInRange(edgeCount, PersistenceLimits::MaxGlobalEdges) ||
+        provinceCount <= 0)
+        return false;
+    globalMap.SetGenerationSeed(generationSeed);
+    GlobalMapGenerationParameters restoredCampaignMap;
+    int restoredFogOfWar = 1;
+    in >> tag >> restoredCampaignMap.seed >> restoredCampaignMap.provinceCount
+       >> restoredCampaignMap.extraEdgeCount >> restoredCampaignMap.layoutRadius
+       >> restoredCampaignMap.minimumLayoutSpacing
+       >> restoredCampaignMap.maximumPlacementAttemptsPerProvince
+       >> restoredCampaignMap.minimumNeutralBuildables >> restoredCampaignMap.buildableWeight
+       >> restoredCampaignMap.neutralCityWeight >> restoredCampaignMap.banditCampWeight
+       >> restoredCampaignMap.eventSiteWeight >> restoredCampaignMap.startBoundaryClearance
+       >> restoredCampaignMap.buildableWealthScale >> restoredCampaignMap.cityWealthScale
+       >> restoredCampaignMap.banditStrengthScale >> restoredFogOfWar;
+    if (!in || tag != "CAMPAIGN_PARAMETERS" ||
+        restoredCampaignMap.provinceCount != provinceCount ||
+        restoredCampaignMap.provinceCount <= 0 ||
+        restoredCampaignMap.extraEdgeCount < 0 || restoredCampaignMap.layoutRadius <= 0 ||
+        restoredCampaignMap.minimumLayoutSpacing < 0 ||
+        restoredCampaignMap.maximumPlacementAttemptsPerProvince <= 0 ||
+        restoredCampaignMap.minimumNeutralBuildables < 0 ||
+        restoredCampaignMap.buildableWeight < 0 || restoredCampaignMap.neutralCityWeight < 0 ||
+        restoredCampaignMap.banditCampWeight < 0 || restoredCampaignMap.eventSiteWeight < 0 ||
+        restoredCampaignMap.startBoundaryClearance < 0 ||
+        !std::isfinite(restoredCampaignMap.buildableWealthScale) ||
+         !std::isfinite(restoredCampaignMap.cityWealthScale) ||
+         !std::isfinite(restoredCampaignMap.banditStrengthScale) ||
+         (restoredFogOfWar != 0 && restoredFogOfWar != 1) ||
+        restoredCampaignMap.buildableWealthScale < 0.0 ||
+        restoredCampaignMap.cityWealthScale < 0.0 ||
+        restoredCampaignMap.banditStrengthScale < 0.0)
+        return false;
+    restoredCampaignMap.fogOfWarEnabled = restoredFogOfWar != 0;
+    globalMap.SetFogOfWarEnabled(restoredCampaignMap.fogOfWarEnabled);
+    campaignGenerationParameters.localMap = primaryMapParams;
+    campaignGenerationParameters.globalMap = restoredCampaignMap;
+    in >> tag;
+    int serializedProvinceCount = 0;
+    if (tag != "PROVINCES" || !(in >> serializedProvinceCount) ||
+        serializedProvinceCount != provinceCount)
+        return false;
+    std::map<ProvinceId, std::pair<bool, std::uint64_t>> provinceStates;
+    for (int i = 0; i < provinceCount; ++i)
+    {
+        std::uint64_t provinceIdValue = 0;
+        int kind = 0;
+        int ownerId = InvalidPlayerId;
+        Vec2i position{};
+        in >> tag >> provinceIdValue >> kind >> ownerId >> position.x >> position.y;
+        if (!in || tag != "PROVINCE" || provinceIdValue == InvalidProvinceId ||
+            provinceIdValue > std::numeric_limits<ProvinceId>::max() ||
+            kind < static_cast<int>(ProvinceKind::Buildable) ||
+            kind > static_cast<int>(ProvinceKind::TreasureSite) ||
+            ownerId < InvalidPlayerId)
+            return false;
+        const ProvinceId provinceId = static_cast<ProvinceId>(provinceIdValue);
+        std::unique_ptr<IProvince> province;
+        if (static_cast<ProvinceKind>(kind) == ProvinceKind::Buildable)
+            province = std::make_unique<BuildableProvince>(provinceId, position, ownerId);
+        else
+        {
+            if (ownerId != InvalidPlayerId)
+                return false;
+            switch (static_cast<ProvinceKind>(kind))
+            {
+                case ProvinceKind::NeutralSettlement:
+                    province = std::make_unique<NeutralCityProvince>(provinceId, position);
+                    break;
+                case ProvinceKind::BanditCamp:
+                    province = std::make_unique<BanditProvince>(provinceId, position);
+                    break;
+                case ProvinceKind::TreasureSite:
+                    province = std::make_unique<EventProvince>(provinceId, position);
+                    break;
+                case ProvinceKind::Buildable:
+                    return false;
+            }
+        }
+        if (!globalMap.AddProvince(std::move(province)))
+            return false;
+
+        std::size_t provinceExpectedTileCount = 0;
+        in >> tag;
+        if (static_cast<ProvinceKind>(kind) == ProvinceKind::Buildable)
+        {
+            BuildableProvinceParameters parameters;
+            int traitCount = 0;
+            std::uint64_t dataProvinceId = 0;
+            in >> dataProvinceId >> std::quoted(parameters.definitionId) >> parameters.sizeX
+               >> parameters.sizeY >> parameters.localSeed >> parameters.resourceWealth
+               >> parameters.resourceDensity >> parameters.resourceFieldSize
+               >> parameters.resourceRichness >> parameters.waterAmount
+               >> parameters.mountainAmount >> parameters.ruggedness >> parameters.wealthTier
+               >> traitCount;
+            if (!in || tag != "BUILDABLE_DATA" || dataProvinceId != provinceId ||
+                !PersistenceLimits::IsCountInRange(traitCount, PersistenceLimits::MaxBufferEntries) ||
+                !PersistenceLimits::CheckedArea(parameters.sizeX, parameters.sizeY,
+                                                provinceExpectedTileCount) ||
+                !std::isfinite(parameters.resourceWealth) ||
+                !std::isfinite(parameters.resourceDensity) ||
+                !std::isfinite(parameters.resourceFieldSize) ||
+                !std::isfinite(parameters.resourceRichness) ||
+                !std::isfinite(parameters.waterAmount) ||
+                !std::isfinite(parameters.mountainAmount) ||
+                !std::isfinite(parameters.ruggedness))
+                return false;
+            parameters.traitIds.reserve(static_cast<std::size_t>(traitCount));
+            for (int traitIndex = 0; traitIndex < traitCount; ++traitIndex)
+            {
+                std::string traitId;
+                in >> std::quoted(traitId);
+                if (!in || traitId.empty())
+                    return false;
+                parameters.traitIds.push_back(std::move(traitId));
+            }
+            int naturalResourceCount = 0;
+            in >> naturalResourceCount;
+            if (!in || !PersistenceLimits::IsCountInRange(naturalResourceCount, 16))
+                return false;
+            int previousResource = -1;
+            for (int resourceIndex = 0; resourceIndex < naturalResourceCount; ++resourceIndex)
+            {
+                int resourceValue = 0;
+                in >> resourceValue;
+                if (!in || resourceValue <= previousResource || resourceValue < 0 || resourceValue > 255 ||
+                    resourceValue == static_cast<int>(ResourceType::Null))
+                    return false;
+                previousResource = resourceValue;
+                const ResourceType resource = static_cast<ResourceType>(resourceValue);
+                if (resource != ResourceType::WOOD && resource != ResourceType::STONE &&
+                    resource != ResourceType::COAL && resource != ResourceType::IRON_ORE &&
+                    resource != ResourceType::COPPER_ORE && resource != ResourceType::CLAY &&
+                    resource != ResourceType::SAND)
+                    return false;
+                parameters.naturalResourceTypes.push_back(resource);
+            }
+            auto* restored = globalMap.FindBuildableProvince(provinceId);
+            if (restored == nullptr)
+                return false;
+            restored->SetParameters(std::move(parameters));
+        }
+        else if (static_cast<ProvinceKind>(kind) == ProvinceKind::NeutralSettlement)
+        {
+            std::uint64_t dataProvinceId = 0;
+            std::string definitionId;
+            int wealthTier = 0;
+            double barterPenalty = 0.0;
+            std::uint64_t revision = 0;
+            int stockCount = 0;
+            int buyPriceCount = 0;
+            int sellPriceCount = 0;
+            int scoreCount = 0;
+            in >> dataProvinceId >> std::quoted(definitionId) >> wealthTier >> barterPenalty >> revision
+               >> stockCount;
+            if (!in || tag != "CITY_DATA" || dataProvinceId != provinceId || definitionId.empty() ||
+                !std::isfinite(barterPenalty) || barterPenalty < 1.0 ||
+                !PersistenceLimits::IsCountInRange(stockCount, PersistenceLimits::MaxBufferEntries))
+                return false;
+            auto* city = dynamic_cast<NeutralCityProvince*>(globalMap.FindProvince(provinceId));
+            if (city == nullptr)
+                return false;
+            city->SetDefinitionId(std::move(definitionId));
+            city->SetWealthTier(wealthTier);
+            city->SetBarterPenaltyMultiplier(barterPenalty);
+            auto& state = city->GetStateForAuthority();
+            state.stock.clear();
+            state.buyPrices.clear();
+            state.sellPrices.clear();
+            state.tradeScore.clear();
+            for (int index = 0; index < stockCount; ++index)
+            {
+                int resourceType = 0;
+                int amount = 0;
+                in >> resourceType >> amount;
+                if (!in || resourceType < 0 || resourceType > 255 || amount < 0 ||
+                    !state.stock.emplace(static_cast<ResourceType>(resourceType), amount).second)
+                    return false;
+            }
+            in >> buyPriceCount;
+            if (!PersistenceLimits::IsCountInRange(buyPriceCount, PersistenceLimits::MaxBufferEntries))
+                return false;
+            for (int index = 0; index < buyPriceCount; ++index)
+            {
+                int resourceType = 0;
+                double price = 0.0;
+                in >> resourceType >> price;
+                if (!in || resourceType < 0 || resourceType > 255 || !std::isfinite(price) || price <= 0.0 ||
+                    !state.buyPrices.emplace(static_cast<ResourceType>(resourceType), price).second)
+                    return false;
+            }
+            in >> sellPriceCount;
+            if (!PersistenceLimits::IsCountInRange(sellPriceCount, PersistenceLimits::MaxBufferEntries))
+                return false;
+            for (int index = 0; index < sellPriceCount; ++index)
+            {
+                int resourceType = 0;
+                double price = 0.0;
+                in >> resourceType >> price;
+                if (!in || resourceType < 0 || resourceType > 255 || !std::isfinite(price) || price <= 0.0 ||
+                    !state.sellPrices.emplace(static_cast<ResourceType>(resourceType), price).second)
+                    return false;
+            }
+            in >> scoreCount;
+            if (!PersistenceLimits::IsCountInRange(scoreCount, PersistenceLimits::MaxBufferEntries))
+                return false;
+            for (int index = 0; index < scoreCount; ++index)
+            {
+                int scorePlayerId = InvalidPlayerId;
+                int score = 0;
+                in >> scorePlayerId >> score;
+                if (!in || scorePlayerId == InvalidPlayerId || score < 0 || score > 1000 ||
+                    !state.tradeScore.emplace(scorePlayerId, score).second)
+                    return false;
+            }
+            state.revision = revision == 0 ? 1 : revision;
+            city->SetWealthTier(wealthTier);
+            city->SetBarterPenaltyMultiplier(barterPenalty);
+            state.revision = revision == 0 ? 1 : revision;
+        }
+        else if (static_cast<ProvinceKind>(kind) == ProvinceKind::BanditCamp)
+        {
+            std::uint64_t dataProvinceId = 0;
+            std::string definitionId;
+            std::string lootTableId;
+            int strength = 0;
+            int raidPressure = 0;
+            BuildableProvinceParameters future;
+            int traitCount = 0;
+            in >> dataProvinceId >> std::quoted(definitionId) >> strength >> raidPressure
+               >> std::quoted(lootTableId) >> std::quoted(future.definitionId) >> future.sizeX
+               >> future.sizeY >> future.localSeed >> future.resourceWealth >> future.resourceDensity
+               >> future.resourceFieldSize >> future.resourceRichness >> future.waterAmount
+               >> future.mountainAmount >> future.ruggedness >> future.wealthTier >> traitCount;
+            if (!in || tag != "BANDIT_DATA" || dataProvinceId != provinceId || definitionId.empty() ||
+                strength < 0 || raidPressure < 0 || future.definitionId.empty() ||
+                !PersistenceLimits::IsCountInRange(traitCount, PersistenceLimits::MaxBufferEntries) ||
+                !PersistenceLimits::CheckedArea(future.sizeX, future.sizeY, provinceExpectedTileCount) ||
+                !std::isfinite(future.resourceWealth) || !std::isfinite(future.resourceDensity) ||
+                !std::isfinite(future.resourceFieldSize) || !std::isfinite(future.resourceRichness) ||
+                !std::isfinite(future.waterAmount) || !std::isfinite(future.mountainAmount) ||
+                !std::isfinite(future.ruggedness))
+                return false;
+            future.traitIds.reserve(static_cast<std::size_t>(traitCount));
+            for (int traitIndex = 0; traitIndex < traitCount; ++traitIndex)
+            {
+                std::string traitId;
+                in >> std::quoted(traitId);
+                if (!in || traitId.empty())
+                    return false;
+                future.traitIds.push_back(std::move(traitId));
+            }
+            int naturalResourceCount = 0;
+            in >> naturalResourceCount;
+            if (!in || !PersistenceLimits::IsCountInRange(naturalResourceCount, 16))
+                return false;
+            int previousResource = -1;
+            for (int resourceIndex = 0; resourceIndex < naturalResourceCount; ++resourceIndex)
+            {
+                int resourceValue = 0;
+                in >> resourceValue;
+                if (!in || resourceValue <= previousResource || resourceValue < 0 || resourceValue > 255 ||
+                    resourceValue == static_cast<int>(ResourceType::Null))
+                    return false;
+                previousResource = resourceValue;
+                const ResourceType resource = static_cast<ResourceType>(resourceValue);
+                if (resource != ResourceType::WOOD && resource != ResourceType::STONE &&
+                    resource != ResourceType::COAL && resource != ResourceType::IRON_ORE &&
+                    resource != ResourceType::COPPER_ORE && resource != ResourceType::CLAY &&
+                    resource != ResourceType::SAND)
+                    return false;
+                future.naturalResourceTypes.push_back(resource);
+            }
+            auto* bandit = dynamic_cast<BanditProvince*>(globalMap.FindProvince(provinceId));
+            if (bandit == nullptr)
+                return false;
+            bandit->SetStrength(strength);
+            bandit->SetRaidPressure(raidPressure);
+            bandit->SetLootTableId(std::move(lootTableId));
+            bandit->SetDefinitionId(std::move(definitionId));
+            bandit->SetFutureBuildableParameters(std::move(future));
+        }
+        else
+        {
+            std::uint64_t dataProvinceId = 0;
+            std::string poolId;
+            int eventPlayerCount = 0;
+            in >> dataProvinceId >> std::quoted(poolId) >> eventPlayerCount;
+            if (!in || tag != "EVENT_DATA" || dataProvinceId != provinceId ||
+                !PersistenceLimits::IsCountInRange(eventPlayerCount, PersistenceLimits::MaxBufferEntries))
+                return false;
+            auto* event = dynamic_cast<EventProvince*>(globalMap.FindProvince(provinceId));
+            if (event == nullptr)
+                return false;
+            event->SetEventPoolId(std::move(poolId));
+            for (int eventIndex = 0; eventIndex < eventPlayerCount; ++eventIndex)
+            {
+                int eventPlayerId = InvalidPlayerId;
+                std::uint32_t attempts = 0;
+                int resolved = 0;
+                in >> tag >> eventPlayerId >> attempts >> resolved;
+                if (!in || tag != "EVENT_PLAYER" || eventPlayerId == InvalidPlayerId ||
+                    (resolved != 0 && resolved != 1) ||
+                    !event->RestoreDiscoveryState(eventPlayerId, attempts, resolved != 0))
+                    return false;
+            }
+        }
+
+        int hasSimulation = 0;
+        std::uint64_t simulationTick = 0;
+        in >> tag >> provinceIdValue >> hasSimulation >> simulationTick;
+        if (!in || tag != "PROVINCE_STATE" || provinceIdValue != provinceId ||
+            (hasSimulation != 0 && hasSimulation != 1))
+            return false;
+        provinceStates[provinceId] = {hasSimulation != 0, simulationTick};
+        if (hasSimulation)
+        {
+            auto* buildable = dynamic_cast<BuildableProvince*>(globalMap.FindProvince(provinceId));
+            if (buildable == nullptr)
+                return false;
+            buildable->CreateSimulation().RestoreSimulationTick(simulationTick);
+        }
+    }
+    in >> tag;
+    if (tag != "ENDPROVINCES")
+        return false;
+    in >> tag >> serializedProvinceCount;
+    if (tag != "CONNECTIONS" || serializedProvinceCount != edgeCount)
+        return false;
+    for (int i = 0; i < edgeCount; ++i)
+    {
+        std::uint64_t connectionIdValue = 0;
+        std::uint64_t fromValue = 0;
+        std::uint64_t toValue = 0;
+        std::string definitionId;
+        int level = 0;
+        int lengthUnits = 0;
+        int targetLevel = -1;
+        std::uint64_t remainingTicks = 0;
+        in >> tag >> connectionIdValue >> fromValue >> toValue >>
+            std::quoted(definitionId) >> lengthUnits >> level >> targetLevel >> remainingTicks;
+        if (!in || tag != "CONNECTION" || fromValue == InvalidProvinceId ||
+            connectionIdValue == InvalidProvinceConnectionId ||
+            connectionIdValue > std::numeric_limits<ProvinceConnectionId>::max() ||
+            toValue == InvalidProvinceId || fromValue > std::numeric_limits<ProvinceId>::max() ||
+            toValue > std::numeric_limits<ProvinceId>::max() ||
+            fromValue >= toValue ||
+            lengthUnits <= 0 ||
+            !globalMap.AddConnection(static_cast<ProvinceId>(fromValue),
+                                     static_cast<ProvinceId>(toValue),
+                                     static_cast<ProvinceConnectionId>(connectionIdValue),
+                                     definitionId))
+            return false;
+        auto* connection = dynamic_cast<LandRouteConnection*>(
+            globalMap.FindConnection(static_cast<ProvinceConnectionId>(connectionIdValue)));
+        if (connection == nullptr ||
+            connection->GetLengthUnits() != lengthUnits ||
+            !connection->SetRuntimeState(level, targetLevel, remainingTicks))
+            return false;
+    }
+    int knowledgeCount = 0;
+    std::set<std::pair<PlayerId, ProvinceId>> knowledgeKeys;
+    in >> tag >> knowledgeCount;
+    if (tag != "KNOWLEDGE" ||
+        !PersistenceLimits::IsCountInRange(knowledgeCount, PersistenceLimits::MaxProvinceKnowledgeEntries))
+        return false;
+    for (int i = 0; i < knowledgeCount; ++i)
+    {
+        int playerId = InvalidPlayerId;
+        std::uint64_t provinceIdValue = 0;
+        int level = 0;
+        in >> tag >> playerId >> provinceIdValue >> level;
+        if (!in || tag != "KNOW" || playerId == InvalidPlayerId ||
+            provinceIdValue == InvalidProvinceId || provinceIdValue > std::numeric_limits<ProvinceId>::max() ||
+            level < static_cast<int>(ProvinceKnowledgeLevel::Hidden) ||
+            level > static_cast<int>(ProvinceKnowledgeLevel::Owned) ||
+            globalMap.FindProvince(static_cast<ProvinceId>(provinceIdValue)) == nullptr ||
+            !knowledgeKeys.insert({playerId, static_cast<ProvinceId>(provinceIdValue)}).second)
+            return false;
+        restoredKnowledge.emplace_back(playerId, static_cast<ProvinceId>(provinceIdValue),
+                                       static_cast<ProvinceKnowledgeLevel>(level));
+    }
+    in >> tag;
+    if (tag != "ENDCAMPAIGN" || !globalMap.IsConnected())
+        return false;
+    int colonizationCount = 0;
+    in >> tag >> colonizationCount;
+    if (tag != "COLONIZATION" ||
+        !PersistenceLimits::IsCountInRange(colonizationCount,
+                                           PersistenceLimits::MaxColonizationOperations))
+        return false;
+    for (int index = 0; index < colonizationCount; ++index)
+    {
+        ColonizationOperation operation;
+        int costCount = 0;
+        int phase = 0;
+        in >> tag >> operation.playerId >> operation.sourceProvinceId
+           >> operation.targetProvinceId >> operation.journeyId >> phase
+           >> operation.phaseCompletionTick >> operation.settlementDurationTicks >> costCount;
+        if (!in || tag != "COLONIZATION_OP" || operation.playerId == InvalidPlayerId ||
+            operation.sourceProvinceId == InvalidProvinceId ||
+            operation.targetProvinceId == InvalidProvinceId ||
+            operation.journeyId == InvalidWorldJourneyId ||
+            phase < static_cast<int>(ColonizationPhase::Traveling) ||
+            phase > static_cast<int>(ColonizationPhase::Failed) ||
+            operation.settlementDurationTicks == 0 ||
+            (static_cast<ColonizationPhase>(phase) == ColonizationPhase::Traveling &&
+             operation.phaseCompletionTick != 0) ||
+            (static_cast<ColonizationPhase>(phase) == ColonizationPhase::Establishing &&
+             operation.phaseCompletionTick < simulationTick) ||
+            !PersistenceLimits::IsCountInRange(costCount, PersistenceLimits::MaxBufferEntries))
+            return false;
+        operation.phase = static_cast<ColonizationPhase>(phase);
+        std::set<ResourceType> costTypes;
+        for (int costIndex = 0; costIndex < costCount; ++costIndex)
+        {
+            int resourceType = 0;
+            int amount = 0;
+            in >> tag >> resourceType >> amount;
+            if (!in || tag != "COLONIZATION_COST" || resourceType < 0 || resourceType > 255 ||
+                amount <= 0 || !costTypes.insert(static_cast<ResourceType>(resourceType)).second)
+                return false;
+            operation.cost.push_back({static_cast<ResourceType>(resourceType), amount});
+        }
+        if (operation.cost.empty())
+            return false;
+        restoredColonizations.push_back(std::move(operation));
+    }
+    for (const auto& [playerId, provinceId, level] : restoredKnowledge)
+        if (!globalMap.SetKnowledge(playerId, provinceId, level))
+            return false;
     if (version >= 2)
     {
         Camera2D camera{};
@@ -490,7 +1397,7 @@ bool GameWorld::LoadFromStream(std::istream& in, Renderer* renderer, AudioSystem
         if (render != nullptr)
         {
             render->camera = camera;
-            render->ClampCameraToMap({tilemap.params.sizeX, tilemap.params.sizeY});
+            render->ClampCameraToMap({primaryMapParams.sizeX, primaryMapParams.sizeY});
         }
     }
 
@@ -500,43 +1407,47 @@ bool GameWorld::LoadFromStream(std::istream& in, Renderer* renderer, AudioSystem
     in >> tag >> playerCount;
     if (tag != "PLAYERS" || !PersistenceLimits::IsCountInRange(playerCount, PersistenceLimits::MaxSupportedPlayers))
         return false;
+    std::map<PlayerId, std::map<GameCommandType, int>> pendingCommandStats;
+    std::map<PlayerId, std::map<ProvinceId, std::map<GameCommandType, int>>> pendingProvinceCommandStats;
 
     for (int i = 0; i < playerCount; i++)
     {
         int playerId = 0;
+        std::uint64_t homeProvinceValue = 0;
         int strategicCount = 0;
         int technologyCount = 0;
         int focusCount = 0;
-        int defeatedFlag = 0;
-        in >> tag >> playerId >> strategicCount >> technologyCount >> focusCount >> defeatedFlag;
+        in >> tag >> playerId >> homeProvinceValue >> strategicCount >> technologyCount >> focusCount;
         if (tag != "PLAYER")
             return false;
+        if (playerHandler.players.contains(playerId) || playerId < 0 ||
+            strategicCount < 0 || technologyCount < 0 || focusCount < 0)
+            return false;
+        if (playerId == InvalidPlayerId || homeProvinceValue == InvalidProvinceId ||
+            homeProvinceValue > std::numeric_limits<ProvinceId>::max())
+            return false;
+        const ProvinceId homeProvinceId = static_cast<ProvinceId>(homeProvinceValue);
+        auto* homeProvince = dynamic_cast<BuildableProvince*>(globalMap.FindProvince(homeProvinceId));
+        if (homeProvince == nullptr ||
+            (homeProvince->GetOwnerId() != InvalidPlayerId && homeProvince->GetOwnerId() != playerId))
+            return false;
 
-        auto player = std::make_unique<Player>(playerId, tilemap);
-        player->defeated = defeatedFlag != 0;
-        if (version >= 32)
-        {
-            int controllerType = 0;
-            int red = 0;
-            int green = 0;
-            int blue = 0;
-            int alpha = 255;
-            in >> controllerType >> std::quoted(player->name) >> red >> green >> blue >> alpha;
-            if (controllerType < static_cast<int>(PlayerControllerType::LocalHuman) ||
-                controllerType > static_cast<int>(PlayerControllerType::Remote) ||
-                red < 0 || red > 255 || green < 0 || green > 255 ||
-                blue < 0 || blue > 255 || alpha < 0 || alpha > 255)
-                return false;
-            player->controllerType = static_cast<PlayerControllerType>(controllerType);
-            player->color = Color{static_cast<unsigned char>(red), static_cast<unsigned char>(green),
-                                  static_cast<unsigned char>(blue), static_cast<unsigned char>(alpha)};
-        }
-        else
-        {
-            player->name = playerId == localPlayerId ? "Player" : "AI Opponent";
-            player->controllerType = playerId == localPlayerId ? PlayerControllerType::LocalHuman : PlayerControllerType::AI;
-            player->color = playerId == localPlayerId ? Color{66, 154, 255, 255} : Color{220, 72, 72, 255};
-        }
+        auto player = std::make_unique<Player>(playerId);
+        int controllerType = 0;
+        int red = 0;
+        int green = 0;
+        int blue = 0;
+        int alpha = 255;
+        in >> controllerType >> std::quoted(player->name) >> red >> green >> blue >> alpha;
+        if (controllerType < static_cast<int>(PlayerControllerType::LocalHuman) ||
+            controllerType > static_cast<int>(PlayerControllerType::Remote) ||
+            red < 0 || red > 255 || green < 0 || green > 255 ||
+            blue < 0 || blue > 255 || alpha < 0 || alpha > 255)
+            return false;
+        player->controllerType = static_cast<PlayerControllerType>(controllerType);
+        player->homeProvinceId = homeProvinceId;
+        player->color = Color{static_cast<unsigned char>(red), static_cast<unsigned char>(green),
+                              static_cast<unsigned char>(blue), static_cast<unsigned char>(alpha)};
         if (localPlayerIdOverride >= 0)
             player->controllerType = playerId == localPlayerId ? PlayerControllerType::LocalHuman : PlayerControllerType::Remote;
         for (int s = 0; s < strategicCount; s++)
@@ -565,106 +1476,226 @@ bool GameWorld::LoadFromStream(std::istream& in, Renderer* renderer, AudioSystem
                 return false;
             player->focuses.RestoreFocus(focusId);
         }
-        if (version >= 32)
-        {
-            std::string activeFocusId;
-            double activeFocusRemaining = 0.0;
-            in >> tag >> std::quoted(activeFocusId) >> activeFocusRemaining;
-            if (tag != "ACTIVE_FOCUS" || !player->focuses.RestoreActiveFocus(activeFocusId, activeFocusRemaining))
-                return false;
-        }
+        std::string activeFocusId;
+        double activeFocusRemaining = 0.0;
+        in >> tag >> std::quoted(activeFocusId) >> activeFocusRemaining;
+        if (tag != "ACTIVE_FOCUS" || !player->focuses.RestoreActiveFocus(activeFocusId, activeFocusRemaining))
+            return false;
         player->RefreshTechnologyModifiers();
 
         int rosterCount = 0;
         in >> tag >> player->nextUnitInstanceId >> rosterCount;
-        if (tag != "ROSTER" || !PersistenceLimits::IsCountInRange(rosterCount, PersistenceLimits::MaxUnits))
+        if (tag != "ROSTER" || player->nextUnitInstanceId <= 0 ||
+            !PersistenceLimits::IsCountInRange(rosterCount, PersistenceLimits::MaxUnits))
             return false;
         for (int u = 0; u < rosterCount; u++)
         {
             int instanceId = 0;
             int ownerPlayerId = 0;
             std::string unitDefId;
-            double currentHp = 0.0;
-            int state = 0;
-            int routeFromPlayerId = -1;
-            int routeToPlayerId = -1;
-            int tileIndex = 0;
-            double tileProgress = 0.0;
-            double attackTimer = 0.0;
             size_t equipmentCount = 0;
-            in >> tag >> instanceId >> ownerPlayerId >> std::quoted(unitDefId) >> currentHp
-               >> state >> routeFromPlayerId >> routeToPlayerId >> tileIndex >> tileProgress
-               >> attackTimer >> equipmentCount;
-            if (tag != "UNIT")
+            int assignmentKind = 0;
+            std::uint64_t assignmentProvinceValue = 0;
+            int assignmentBuildingId = 0;
+            std::uint64_t activeJourneyValue = 0;
+            std::uint64_t activeBattleValue = 0;
+            std::uint64_t taskGroupValue = 0;
+            in >> tag >> instanceId >> ownerPlayerId >> std::quoted(unitDefId)
+               >> assignmentKind >> assignmentProvinceValue >> assignmentBuildingId
+               >> activeJourneyValue >> activeBattleValue >> taskGroupValue >> equipmentCount;
+            if (tag != "UNIT" || instanceId <= 0 || ownerPlayerId != playerId ||
+                unitDefId.empty() || player->roster.units.contains(instanceId) ||
+                assignmentKind < static_cast<int>(UnitAssignmentKind::BarracksReserve) ||
+                assignmentKind > static_cast<int>(UnitAssignmentKind::Unassigned) ||
+                assignmentProvinceValue > std::numeric_limits<ProvinceId>::max() ||
+                assignmentBuildingId < 0 || assignmentBuildingId >= 300'000 ||
+                activeJourneyValue == InvalidWorldJourneyId &&
+                    static_cast<UnitAssignmentKind>(assignmentKind) == UnitAssignmentKind::Journey ||
+                activeBattleValue == InvalidBattleId &&
+                    static_cast<UnitAssignmentKind>(assignmentKind) == UnitAssignmentKind::Battle)
                 return false;
 
             BattleUnit unit(instanceId, ownerPlayerId, unitDefId);
-            unit.currentHp = currentHp;
-            unit.state = static_cast<BattleUnitState>(state);
-            unit.routeFromPlayerId = routeFromPlayerId;
-            unit.routeToPlayerId = routeToPlayerId;
-            unit.tileIndex = tileIndex;
-            unit.tileProgress = tileProgress;
-            unit.attackTimer = attackTimer;
-            // Equipment is always empty in v1 (ETAP 3.4 seam) — equipmentCount
-            // is read but not yet parsed into instances.
+            unit.assignment.kind = static_cast<UnitAssignmentKind>(assignmentKind);
+            unit.assignment.provinceId = static_cast<ProvinceId>(assignmentProvinceValue);
+            unit.assignment.buildingId = assignmentBuildingId;
+            unit.assignment.worldJourneyId = static_cast<WorldJourneyId>(activeJourneyValue);
+            unit.assignment.battleId = static_cast<BattleId>(activeBattleValue);
+            unit.taskGroupId = static_cast<TaskGroupId>(taskGroupValue);
+            if (!unit.assignment.IsStructurallyValid())
+                return false;
+            // Equipment remains a reserved, empty seam in the peaceful format.
+            if (equipmentCount != 0)
+                return false;
             player->roster.AddUnit(std::move(unit));
         }
-
-        // TD(etap-6.3): productivity ramps on buildings captured from an
-        // eliminated player.
-        int conqueredCount = 0;
-        in >> tag >> conqueredCount;
-        if (tag != "CONQUERED")
+        if (player->roster.units.size() != static_cast<std::size_t>(rosterCount))
             return false;
-        std::vector<ConqueredBuildingRamp> ramps;
-        if (!PersistenceLimits::IsCountInRange(conqueredCount, PersistenceLimits::MaxBuildings))
+        TaskGroupId nextTaskGroupId = InvalidTaskGroupId;
+        int taskGroupCount = 0;
+        in >> tag >> nextTaskGroupId >> taskGroupCount;
+        if (tag != "TASK_GROUPS" || nextTaskGroupId == InvalidTaskGroupId ||
+            !PersistenceLimits::IsCountInRange(taskGroupCount,
+                                                TaskGroupRegistry::MaxTaskGroupsPerPlayer))
             return false;
-        ramps.reserve(conqueredCount);
-        for (int r = 0; r < conqueredCount; r++)
+        std::map<TaskGroupId, TaskGroup> restoredTaskGroups;
+        for (int groupIndex = 0; groupIndex < taskGroupCount; ++groupIndex)
         {
-            ConqueredBuildingRamp ramp;
-            in >> tag >> ramp.buildingId >> ramp.elapsed >> ramp.rampDuration;
-            if (tag != "RAMP")
+            TaskGroup group;
+            in >> tag >> group.id >> group.stationProvinceId >> group.homeBarracksBuildingId;
+            if (!in || tag != "TASK_GROUP" || group.id == InvalidTaskGroupId ||
+                !restoredTaskGroups.emplace(group.id, group).second)
                 return false;
-            ramps.push_back(ramp);
         }
-        player->conqueredEconomy.SetRamps(std::move(ramps));
-        // Re-derive each ramp's BalanceModifier from the restored elapsed
-        // time immediately (zero-dt tick), mirroring RefreshTechnologyModifiers()
-        // above rather than leaving the captured buildings' cycle time
-        // unmodified until the next real simulation tick.
-        player->conqueredEconomy.Tick(*player, 0.0);
-
-        if (version >= 32)
-        {
-            int commandStatCount = 0;
-            in >> tag >> commandStatCount;
-            if (tag != "COMMANDSTATS" || commandStatCount < 0)
+        if (!player->taskGroups.Restore(nextTaskGroupId, std::move(restoredTaskGroups)))
+            return false;
+        for (const auto& [unitId, unit] : player->roster.units)
+            if (unit.taskGroupId != InvalidTaskGroupId &&
+                player->taskGroups.Find(unit.taskGroupId) == nullptr)
                 return false;
-            player->dataTracker.processedCommands.clear();
-            for (int c = 0; c < commandStatCount; ++c)
+        int commandStatCount = 0;
+        in >> tag >> commandStatCount;
+        if (tag != "COMMANDSTATS" || commandStatCount < 0)
+            return false;
+        std::map<GameCommandType, int> restoredCommandStats;
+        for (int c = 0; c < commandStatCount; ++c)
+        {
+            int commandType = 0;
+            int count = 0;
+            in >> tag >> commandType >> count;
+            if (tag != "CMDSTAT" || count < 0)
+                return false;
+            restoredCommandStats[static_cast<GameCommandType>(commandType)] = count;
+        }
+
+        int provinceCommandStatsCount = 0;
+        in >> tag >> provinceCommandStatsCount;
+        if (version < 41)
+        {
+            if (tag != "ENDPLAYER")
+                return false;
+        }
+        else
+        {
+            if (tag != "PROVINCE_COMMANDSTATS" ||
+                !PersistenceLimits::IsCountInRange(provinceCommandStatsCount,
+                                                    PersistenceLimits::MaxProvinceMaps))
+                return false;
+            for (int p = 0; p < provinceCommandStatsCount; ++p)
             {
-                int commandType = 0;
-                int count = 0;
-                in >> tag >> commandType >> count;
-                if (tag != "CMDSTAT" || count < 0)
+                std::uint64_t provinceIdValue = 0;
+                int statsCount = 0;
+                in >> tag >> provinceIdValue >> statsCount;
+                if (!in || tag != "PROVINCE_STATS" || provinceIdValue == InvalidProvinceId ||
+                    provinceIdValue > std::numeric_limits<ProvinceId>::max() ||
+                    !PersistenceLimits::IsCountInRange(statsCount, PersistenceLimits::MaxBufferEntries))
                     return false;
-                player->dataTracker.processedCommands[static_cast<GameCommandType>(commandType)] = count;
+                const ProvinceId provinceId = static_cast<ProvinceId>(provinceIdValue);
+                const auto* province = globalMap.FindBuildableProvince(provinceId);
+                if (province == nullptr || province->GetOwnerId() != playerId ||
+                    !pendingProvinceCommandStats[playerId].emplace(provinceId,
+                                                                     std::map<GameCommandType, int>{}).second)
+                    return false;
+                auto& stats = pendingProvinceCommandStats[playerId][provinceId];
+                for (int s = 0; s < statsCount; ++s)
+                {
+                    int commandType = 0;
+                    int count = 0;
+                    in >> tag >> commandType >> count;
+                    if (!in || tag != "PCMDSTAT" || count < 0)
+                        return false;
+                    stats[static_cast<GameCommandType>(commandType)] = count;
+                }
             }
+            in >> tag;
+            if (tag != "ENDPLAYER")
+                return false;
         }
-
-        in >> tag;
-        if (tag != "ENDPLAYER")
-            return false;
         playerHandler.players[playerId] = std::move(player);
         AttachControllerForPlayer(playerHandler.players[playerId].get());
+        pendingCommandStats[playerId] = std::move(restoredCommandStats);
     }
 
-    int tileCount = 0;
-    in >> tag >> tileCount;
+    std::set<ProvinceId> homeProvinceIds;
+    std::map<PlayerId, std::size_t> ownedProvinceCounts;
+    for (ProvinceId provinceId : globalMap.GetProvinceIds())
+    {
+        const auto* province = globalMap.FindProvince(provinceId);
+        const auto* buildable = globalMap.FindBuildableProvince(provinceId);
+        if (province == nullptr || buildable == nullptr || buildable->GetOwnerId() == InvalidPlayerId)
+            continue;
+        if (!playerHandler.players.contains(buildable->GetOwnerId()) ||
+            province->GetKind() != ProvinceKind::Buildable)
+            return false;
+        ++ownedProvinceCounts[buildable->GetOwnerId()];
+    }
+    for (const auto& [playerId, player] : playerHandler.players)
+    {
+        if (player == nullptr || player->homeProvinceId == InvalidProvinceId ||
+            !homeProvinceIds.insert(player->homeProvinceId).second)
+            return false;
+        const auto* home = globalMap.FindBuildableProvince(player->homeProvinceId);
+        if (home == nullptr || home->GetKind() != ProvinceKind::Buildable ||
+            home->GetOwnerId() != playerId)
+            return false;
+        if (ownedProvinceCounts[playerId] == 0)
+            return false;
+    }
+    for (const auto& [knowledgePlayerId, provinceId, level] : restoredKnowledge)
+    {
+        if (!playerHandler.players.contains(knowledgePlayerId))
+            return false;
+        const auto* province = globalMap.FindProvince(provinceId);
+        const auto* buildable = globalMap.FindBuildableProvince(provinceId);
+        if (province == nullptr ||
+            (level == ProvinceKnowledgeLevel::Owned &&
+             (buildable == nullptr || buildable->GetOwnerId() != knowledgePlayerId)))
+            return false;
+    }
+
+    auto primaryPlayerIt = playerHandler.players.find(0);
+    if (primaryPlayerIt == playerHandler.players.end() || primaryPlayerIt->second == nullptr)
+        return false;
+    auto* primaryHome = dynamic_cast<BuildableProvince*>(
+        globalMap.FindProvince(primaryPlayerIt->second->homeProvinceId));
+    if (primaryHome == nullptr)
+        return false;
+    ProvinceSimulation& primarySimulation = primaryHome->CreateSimulation();
+    TileMap& primaryMap = primarySimulation.GetTileMap();
+    primaryMap.params = primaryMapParams;
+
+    // Attach every owned province's canonical local context before reading
+    // buildings. This is required for PlaceLoadedBuilding to register each
+    // object in the correct province-owned registry instead of falling back
+    // to a detached player compatibility path.
+    for (auto& [playerId, player] : playerHandler.players)
+    {
+        if (player == nullptr)
+            return false;
+        bool boundHome = false;
+        for (const ProvinceId provinceId : globalMap.GetProvinceIds())
+        {
+            auto* province = globalMap.FindBuildableProvince(provinceId);
+            if (province == nullptr || province->GetOwnerId() != playerId)
+                continue;
+            if (province->GetSimulation() == nullptr)
+                return false;
+            player->BindProvince(provinceId, *province->GetSimulation());
+            boundHome |= provinceId == player->homeProvinceId;
+        }
+        if (!boundHome)
+            return false;
+        player->SetActiveProvince(player->homeProvinceId);
+    }
+
+    std::vector<PendingConnection> pendingConnections;
+    auto loadMapState = [&](TileMap& targetMap, std::size_t expectedTiles) -> bool
+    {
+        TileMap& tilemap = targetMap;
+        int tileCount = 0;
+        in >> tag >> tileCount;
     if (tag != "TILES" || !PersistenceLimits::IsCountInRange(tileCount, PersistenceLimits::MaxMapTiles) ||
-        static_cast<std::size_t>(tileCount) != expectedTileCount)
+        static_cast<std::size_t>(tileCount) != expectedTiles)
         return false;
 
     tilemap.tilemap.clear();
@@ -682,7 +1713,7 @@ bool GameWorld::LoadFromStream(std::istream& in, Renderer* renderer, AudioSystem
         in >> ownerId;
         if (tag != "T")
             return false;
-        if (id < 0 || static_cast<std::size_t>(id) >= expectedTileCount || id != i)
+        if (id < 0 || static_cast<std::size_t>(id) >= expectedTiles || id != i)
             return false;
 
         Tile tile{id};
@@ -705,45 +1736,12 @@ bool GameWorld::LoadFromStream(std::istream& in, Renderer* renderer, AudioSystem
         // because it's still part of the save format. Left in place rather
         // than bumping the save version to drop the field; ownerId always
         // reads back as whatever was written (effectively unused/-1 today).
+        tile.ownerId = ownerId;
         auto ownerIt = playerHandler.players.find(ownerId);
         tile.owner = ownerIt != playerHandler.players.end() ? ownerIt->second.get() : nullptr;
         tilemap.tilemap[id] = std::move(tile);
     }
 
-    // Military road ring (TD etap-2): restored verbatim, not regenerated —
-    // reapply Tile::isMilitaryRoad from the saved tile lists.
-    int militaryRouteCount = 0;
-    in >> tag >> militaryRouteCount;
-    if (tag != "MILROADS" || !PersistenceLimits::IsCountInRange(militaryRouteCount, PersistenceLimits::MaxRouteCount))
-        return false;
-
-    std::vector<MilitaryRoute> loadedRoutes;
-    loadedRoutes.reserve(militaryRouteCount);
-    for (int i = 0; i < militaryRouteCount; i++)
-    {
-        MilitaryRoute route;
-        size_t tileCountInRoute = 0;
-        in >> tag >> route.playerA >> route.playerB >> tileCountInRoute;
-        if (tag != "MROUTE")
-            return false;
-
-        if (!PersistenceLimits::IsCountInRange(tileCountInRoute, PersistenceLimits::MaxRouteTiles))
-            return false;
-        route.tiles.reserve(tileCountInRoute);
-        for (size_t t = 0; t < tileCountInRoute; t++)
-        {
-            int tileId = 0;
-            in >> tileId;
-            if (tileId < 0 || static_cast<std::size_t>(tileId) >= expectedTileCount)
-                return false;
-            tilemap.tilemap[tileId].isMilitaryRoad = true;
-            route.tiles.push_back(tileId);
-        }
-        loadedRoutes.push_back(std::move(route));
-    }
-    militaryRoads.RestoreRoutes(std::move(loadedRoutes));
-
-    std::vector<PendingConnection> pendingConnections;
     int buildingCount = 0;
     in >> tag >> buildingCount;
     if (tag != "BUILDINGS" || !PersistenceLimits::IsCountInRange(buildingCount, PersistenceLimits::MaxBuildings))
@@ -944,7 +1942,7 @@ bool GameWorld::LoadFromStream(std::istream& in, Renderer* renderer, AudioSystem
                     int type = 0, target = -1;
                     in >> tag >> type >> target;
                     if (tag != "SUP") return false;
-                    pendingConnections.push_back({positionId, static_cast<ResourceType>(type), target, false, false});
+                    pendingConnections.push_back({&tilemap, positionId, static_cast<ResourceType>(type), target, false, false});
                 }
 
                 in >> tag >> count;
@@ -955,7 +1953,7 @@ bool GameWorld::LoadFromStream(std::istream& in, Renderer* renderer, AudioSystem
                     int type = 0, target = -1;
                     in >> tag >> type >> target;
                     if (tag != "REC") return false;
-                    pendingConnections.push_back({positionId, static_cast<ResourceType>(type), target, true, false});
+                    pendingConnections.push_back({&tilemap, positionId, static_cast<ResourceType>(type), target, true, false});
                 }
 
                 in >> tag;
@@ -971,7 +1969,7 @@ bool GameWorld::LoadFromStream(std::istream& in, Renderer* renderer, AudioSystem
                         int type = 0, target = -1;
                         in >> tag >> type >> target;
                         if (tag != "ALTREC") return false;
-                        pendingConnections.push_back({positionId, static_cast<ResourceType>(type), target, true, true});
+                        pendingConnections.push_back({&tilemap, positionId, static_cast<ResourceType>(type), target, true, true});
                     }
                     in >> tag;
                 }
@@ -982,7 +1980,7 @@ bool GameWorld::LoadFromStream(std::istream& in, Renderer* renderer, AudioSystem
                 const bool localBlock = tag == "LOCALBUF";
                 auto* storage = placed->GetComponent<StorageComponent>();
                 auto* local = placed->GetComponent<LocalResourceBufferComponent>();
-                // v30-v33 encoded Barracks/tower private buffers as STOR, so
+                // v30-v33 encoded Barracks private buffers as STOR, so
                 // an old STOR block may fall back to the new local component.
                 // A v34 LOCALBUF block, however, must never populate a real
                 // warehouse if a future specialized building owns both.
@@ -1070,28 +2068,6 @@ bool GameWorld::LoadFromStream(std::istream& in, Renderer* renderer, AudioSystem
                     recruitment->queue.push_back(RecruitmentQueueEntry{unitDefId, total, remaining, resourcesReady != 0});
                 }
             }
-            else if (tag == "HQ")
-            {
-                auto* hq = placed->GetComponent<HqComponent>();
-                if (hq == nullptr) return false;
-                in >> hq->maxHp >> hq->currentHp >> hq->hardDefense >> hq->thornsDamage >>
-                      hq->thornsInterval >> hq->thornsTimer >> hq->captureStockFraction >>
-                      hq->conquestRampDuration;
-            }
-            else if (tag == "TOWER")
-            {
-                auto* tower = placed->GetComponent<TowerCombatComponent>();
-                if (tower == nullptr) return false;
-                int ammoResource = 0;
-                int targetMode = 0;
-                in >> tower->damage >> tower->range >> tower->attackSpeed >> tower->attackTimer >>
-                      ammoResource >> tower->ammoPerShot >> targetMode;
-                tower->ammoResource = static_cast<ResourceType>(ammoResource);
-                if (targetMode < static_cast<int>(TowerTargetMode::NearestToHq) ||
-                    targetMode > static_cast<int>(TowerTargetMode::StrongestUnit))
-                    return false;
-                tower->targetMode = static_cast<TowerTargetMode>(targetMode);
-            }
             else if (tag == "UPG")
             {
                 auto* upgrade = placed->GetComponent<UpgradeComponent>();
@@ -1116,11 +2092,888 @@ bool GameWorld::LoadFromStream(std::istream& in, Renderer* renderer, AudioSystem
                     return false;
                 road->SetPriorityResource(resource);
             }
+            else if (tag == "DEFENSE")
+            {
+                auto* coverage = placed->GetComponent<DefenseCoverageComponent>();
+                auto* garrison = placed->GetComponent<GarrisonComponent>();
+                auto* upkeep = placed->GetComponent<GarrisonUpkeepComponent>();
+                auto* safety = placed->GetComponent<SafetyComponent>();
+                double radius = 0.0;
+                double protection = 0.0;
+                std::string requiredState;
+                int capacity = 0;
+                double timer = 0.0;
+                std::int64_t debtMicros = 0;
+                double interval = 0.0;
+                double packageSize = 0.0;
+                int requested = 0;
+                int status = 0;
+                double resilience = 0.0;
+                int raidDestructible = 0;
+                int raidStockLossTarget = 0;
+                in >> radius >> protection >> std::quoted(requiredState) >> capacity >> timer
+                   >> debtMicros >> interval >> packageSize >> requested >> status >> resilience
+                   >> raidDestructible >> raidStockLossTarget;
+                if (!in || coverage == nullptr || garrison == nullptr || upkeep == nullptr || safety == nullptr ||
+                    !std::isfinite(radius) || !std::isfinite(protection) || radius < 0.0 || protection < 0.0 ||
+                    capacity < 0 || !std::isfinite(timer) || timer < 0.0 || debtMicros < 0 ||
+                    !std::isfinite(interval) || interval <= 0.0 || !std::isfinite(packageSize) || packageSize <= 0.0 ||
+                    requested < 0 || status < static_cast<int>(GarrisonSupplyStatus::Supplied) ||
+                    status > static_cast<int>(GarrisonSupplyStatus::RequestPending) ||
+                    !std::isfinite(resilience) || resilience < 0.0 || resilience > 1.0 ||
+                    (raidDestructible != 0 && raidDestructible != 1) ||
+                    (raidStockLossTarget != 0 && raidStockLossTarget != 1))
+                    return false;
+                coverage->radius = radius;
+                coverage->baseProtection = protection;
+                coverage->requiredState = std::move(requiredState);
+                garrison->capacity = capacity;
+                upkeep->timer = timer;
+                upkeep->debtMicros = debtMicros;
+                upkeep->intervalSeconds = interval;
+                upkeep->packageSize = packageSize;
+                upkeep->requestedAmount = requested;
+                upkeep->supplyStatus = static_cast<GarrisonSupplyStatus>(status);
+                safety->intrinsicResilience = resilience;
+                safety->raidDestructible = raidDestructible != 0;
+                safety->raidStockLossTarget = raidStockLossTarget != 0;
+            }
             else
             {
                 return false;
             }
         }
+    }
+        return true;
+    };
+
+    if (!loadMapState(primaryMap, expectedTileCount))
+        return false;
+
+    int provinceMapCount = 0;
+    in >> tag >> provinceMapCount;
+    if (tag != "PROVINCE_MAPS" ||
+        !PersistenceLimits::IsCountInRange(provinceMapCount, PersistenceLimits::MaxProvinceMaps - 1))
+        return false;
+    std::set<ProvinceId> loadedProvinceMaps;
+    if (playerHandler.players.contains(0))
+        loadedProvinceMaps.insert(playerHandler.players.at(0)->homeProvinceId);
+    std::size_t totalCampaignTiles = expectedTileCount;
+    for (int i = 0; i < provinceMapCount; ++i)
+    {
+        std::uint64_t provinceIdValue = 0;
+        MapParameters provinceMapParams = primaryMapParams;
+        int presetValue = 0;
+        in >> tag >> provinceIdValue >> provinceMapParams.sizeX >> provinceMapParams.sizeY
+           >> provinceMapParams.seed >> presetValue >> provinceMapParams.resourceDensity
+           >> provinceMapParams.resourceFieldSize >> provinceMapParams.resourceRichness
+           >> provinceMapParams.aiOpponentCount >> provinceMapParams.aiDifficulty
+           >> provinceMapParams.debugMode;
+        if (!in || tag != "PROVINCE_MAP" || provinceIdValue == InvalidProvinceId ||
+            provinceIdValue > std::numeric_limits<ProvinceId>::max())
+            return false;
+        if (!IsValidMapSizePresetValue(presetValue))
+            return false;
+        provinceMapParams.sizePreset = static_cast<MapSizePreset>(presetValue);
+        std::size_t provinceTileCount = 0;
+        if (!PersistenceLimits::CheckedArea(provinceMapParams.sizeX, provinceMapParams.sizeY,
+                                            provinceTileCount))
+            return false;
+        const ProvinceId provinceId = static_cast<ProvinceId>(provinceIdValue);
+        if (!loadedProvinceMaps.insert(provinceId).second)
+            return false;
+        auto* province = dynamic_cast<BuildableProvince*>(globalMap.FindProvince(provinceId));
+        if (province == nullptr || province->GetSimulation() == nullptr ||
+            !province->GetSimulation()->OwnsTileMap())
+            return false;
+        province->GetSimulation()->GetTileMap().params = provinceMapParams;
+        if (!loadMapState(province->GetSimulation()->GetTileMap(), provinceTileCount))
+            return false;
+        in >> tag;
+        if (tag != "ENDPROVINCE_MAP")
+            return false;
+        const std::size_t loadedProvinceTileCount = province->GetSimulation()->GetTileMap().tilemap.size();
+        if (loadedProvinceTileCount > PersistenceLimits::MaxCampaignTiles - totalCampaignTiles)
+            return false;
+        totalCampaignTiles += loadedProvinceTileCount;
+    }
+
+    int shipmentProvinceCount = 0;
+    in >> tag >> shipmentProvinceCount;
+    if (!in || tag != "SHIPMENT_PROVINCES" ||
+        !PersistenceLimits::IsCountInRange(shipmentProvinceCount,
+                                           PersistenceLimits::MaxProvinceMaps))
+        return false;
+    std::set<ProvinceId> shipmentProvinceIds;
+    std::size_t totalShipmentCount = 0;
+    restoredProvinceShipments.reserve(static_cast<std::size_t>(shipmentProvinceCount));
+    for (int provinceIndex = 0; provinceIndex < shipmentProvinceCount; ++provinceIndex)
+    {
+        std::uint64_t provinceIdValue = 0;
+        PendingProvinceShipments pending;
+        int shipmentCount = 0;
+        in >> tag >> provinceIdValue >> pending.nextShipmentId >> shipmentCount;
+        if (!in || tag != "SHIPMENT_PROVINCE" ||
+            provinceIdValue == InvalidProvinceId ||
+            provinceIdValue > std::numeric_limits<ProvinceId>::max() ||
+            pending.nextShipmentId == 0 ||
+            !PersistenceLimits::IsCountInRange(shipmentCount,
+                                               PersistenceLimits::MaxActiveShipments) ||
+            static_cast<std::size_t>(shipmentCount) >
+                PersistenceLimits::MaxActiveShipments - totalShipmentCount)
+            return false;
+        pending.provinceId = static_cast<ProvinceId>(provinceIdValue);
+        auto* province = globalMap.FindBuildableProvince(pending.provinceId);
+        if (!shipmentProvinceIds.insert(pending.provinceId).second || province == nullptr ||
+            province->GetOwnerId() == InvalidPlayerId || province->GetSimulation() == nullptr)
+            return false;
+
+        totalShipmentCount += static_cast<std::size_t>(shipmentCount);
+        pending.shipments.reserve(static_cast<std::size_t>(shipmentCount));
+        std::set<ShipmentId> shipmentIds;
+        for (int shipmentIndex = 0; shipmentIndex < shipmentCount; ++shipmentIndex)
+        {
+            ResourceShipment shipment;
+            int typeValue = 0;
+            int stateValue = 0;
+            int pathCount = 0;
+            in >> tag >> shipment.id >> typeValue >> shipment.quantity
+               >> shipment.sourceBuildingId >> shipment.targetBuildingId
+               >> shipment.currentPathStep >> shipment.elapsedTime
+               >> shipment.transportTime >> stateValue >> pathCount;
+            if (!in || tag != "SHIPMENT" || shipment.id == 0 ||
+                !shipmentIds.insert(shipment.id).second || shipment.id >= pending.nextShipmentId ||
+                typeValue < 0 || typeValue > static_cast<int>(ResourceType::CATAPULT) ||
+                shipment.quantity != 1 || shipment.sourceBuildingId < 0 ||
+                shipment.targetBuildingId < 0 || shipment.currentPathStep < 0 ||
+                !std::isfinite(shipment.elapsedTime) || shipment.elapsedTime < 0.0 ||
+                !std::isfinite(shipment.transportTime) || shipment.transportTime < 0.0 ||
+                stateValue != static_cast<int>(ResourceShipmentState::InTransit) ||
+                !PersistenceLimits::IsCountInRange(pathCount,
+                                                   PersistenceLimits::MaxRouteTiles) ||
+                pathCount < 2 || shipment.currentPathStep >= pathCount)
+                return false;
+            shipment.type = static_cast<ResourceType>(typeValue);
+            shipment.state = static_cast<ResourceShipmentState>(stateValue);
+            shipment.pathTileIds.resize(static_cast<std::size_t>(pathCount));
+            for (int& tileId : shipment.pathTileIds)
+                if (!(in >> tileId) || tileId < 0)
+                    return false;
+            pending.shipments.push_back(std::move(shipment));
+        }
+        in >> tag;
+        if (!in || tag != "ENDSHIPMENT_PROVINCE")
+            return false;
+        restoredProvinceShipments.push_back(std::move(pending));
+    }
+    in >> tag;
+    if (!in || tag != "ENDSHIPMENTS")
+        return false;
+
+    in >> tag >> restoredNextJourneyId;
+    int journeyCount = 0;
+    in >> journeyCount;
+    if (!in || tag != "JOURNEYS" || restoredNextJourneyId == InvalidWorldJourneyId ||
+        !PersistenceLimits::IsCountInRange(journeyCount,
+                                            PersistenceLimits::MaxWorldJourneys))
+        return false;
+    for (int index = 0; index < journeyCount; ++index)
+    {
+        WorldJourney journey;
+        int status = 0;
+        int kind = 0;
+        int legPlanCount = 0;
+        int payloadKind = 0;
+        in >> tag >> journey.id >> journey.ownerId >> journey.sourceProvinceId >>
+            journey.targetProvinceId >> status >> journey.currentLeg >> journey.startTick >>
+            journey.legCompletionTick >> journey.deterministicAttemptCounter >>
+            kind >> journey.rules.baseLegDurationTicks >> journey.rules.routeTravelSpeedMultiplier >>
+            journey.rules.speedProfile.baseUnitsPerMinute >>
+            journey.rules.speedProfile.moverSpeedBasisPoints >>
+            journey.rules.speedProfile.playerRouteSpeedBasisPoints >>
+            journey.rules.speedProfile.operationSpeedBasisPoints >>
+            journey.rules.speedProfile.extraLegDistanceBasisPoints >> legPlanCount;
+        if (!in || tag != "JOURNEY" || journey.id == InvalidWorldJourneyId ||
+            status < static_cast<int>(WorldJourneyStatus::Planned) ||
+            status > static_cast<int>(WorldJourneyStatus::Cancelled) ||
+            kind < static_cast<int>(WorldJourneyKind::Unknown) ||
+            kind > static_cast<int>(WorldJourneyKind::ArmyTransfer) ||
+            !PersistenceLimits::IsCountInRange(
+                legPlanCount, PersistenceLimits::MaxJourneyPathConnections) ||
+            !std::isfinite(journey.rules.routeTravelSpeedMultiplier) ||
+            journey.rules.routeTravelSpeedMultiplier <= 0.0 ||
+            journey.rules.speedProfile.baseUnitsPerMinute <= 0 ||
+            journey.rules.speedProfile.moverSpeedBasisPoints <= 0 ||
+            journey.rules.speedProfile.playerRouteSpeedBasisPoints <= 0 ||
+            journey.rules.speedProfile.operationSpeedBasisPoints <= 0 ||
+            journey.rules.speedProfile.extraLegDistanceBasisPoints <= 0)
+            return false;
+        journey.status = static_cast<WorldJourneyStatus>(status);
+        journey.kind = static_cast<WorldJourneyKind>(kind);
+        std::set<ProvinceConnectionId> uniqueConnections;
+        if (legPlanCount <= 0)
+            return false;
+        journey.legPlan.resize(static_cast<std::size_t>(legPlanCount));
+        for (auto& leg : journey.legPlan)
+        {
+            in >> leg.connectionId >> leg.lengthUnits >> leg.routeTimeBasisPoints
+               >> leg.routeLevelAtStart >> leg.incidentReductionBasisPoints >> leg.durationTicks;
+            if (!in || leg.connectionId == InvalidProvinceConnectionId ||
+                !uniqueConnections.insert(leg.connectionId).second ||
+                leg.lengthUnits <= 0 || leg.routeTimeBasisPoints <= 0 ||
+                leg.routeLevelAtStart < 0 || leg.incidentReductionBasisPoints < 0 ||
+                leg.incidentReductionBasisPoints > 10000 || leg.durationTicks == 0)
+                return false;
+        }
+        in >> payloadKind;
+        if (!in || payloadKind < 0 || payloadKind > 5)
+            return false;
+        if (payloadKind == 0 || payloadKind == 2)
+        {
+            int unitCount = 0;
+            in >> unitCount;
+            if (!in || !PersistenceLimits::IsCountInRange(unitCount, PersistenceLimits::MaxExpeditionUnits))
+                return false;
+            std::vector<int> unitIds(static_cast<std::size_t>(unitCount));
+            std::set<int> uniqueUnits;
+            for (int& unitId : unitIds)
+            {
+                in >> unitId;
+                if (!in || unitId <= 0 || !uniqueUnits.insert(unitId).second)
+                    return false;
+            }
+            journey.payload = payloadKind == 0 ? WorldJourneyPayload{ScoutParty{std::move(unitIds)}}
+                                                : WorldJourneyPayload{ArmyParty{std::move(unitIds)}};
+        }
+        else if (payloadKind == 1)
+        {
+            int offerType = 0;
+            int requestType = 0;
+            int amount = 0;
+            in >> offerType >> requestType >> amount;
+            if (!in || offerType < 0 || offerType > static_cast<int>(ResourceType::CATAPULT) ||
+                requestType < 0 || requestType > static_cast<int>(ResourceType::CATAPULT) || amount < 0)
+                return false;
+            journey.payload = TradeCargo{static_cast<ResourceType>(offerType),
+                                          static_cast<ResourceType>(requestType), amount};
+        }
+        else if (payloadKind == 3)
+        {
+            int householdCount = 0;
+            in >> householdCount;
+            if (!in || householdCount < 0)
+                return false;
+            journey.payload = Colonists{householdCount};
+        }
+        else if (payloadKind == 4)
+        {
+            int cargoCount = 0;
+            in >> cargoCount;
+            if (!in || !PersistenceLimits::IsCountInRange(cargoCount, 16))
+                return false;
+            ResourceConvoy convoy;
+            std::set<ResourceType> uniqueTypes;
+            for (int cargoIndex = 0; cargoIndex < cargoCount; ++cargoIndex)
+            {
+                int resourceType = 0;
+                int amount = 0;
+                in >> resourceType >> amount;
+                const ResourceType type = static_cast<ResourceType>(resourceType);
+                if (!in || resourceType < 0 || resourceType > static_cast<int>(ResourceType::CATAPULT) ||
+                    amount <= 0 || !uniqueTypes.insert(type).second)
+                    return false;
+                convoy.cargo.push_back({type, amount});
+            }
+            if (convoy.cargo.empty())
+                return false;
+            journey.payload = std::move(convoy);
+        }
+        else
+        {
+            int destinationBarracksId = 0;
+            int unitCount = 0;
+            in >> destinationBarracksId >> unitCount;
+            if (!in || destinationBarracksId <= 0 ||
+                !PersistenceLimits::IsCountInRange(unitCount, PersistenceLimits::MaxExpeditionUnits))
+                return false;
+            ArmyTransferParty transfer;
+            transfer.destinationBarracksBuildingId = destinationBarracksId;
+            transfer.unitInstanceIds.resize(static_cast<std::size_t>(unitCount));
+            std::set<int> uniqueUnits;
+            for (int& unitId : transfer.unitInstanceIds)
+            {
+                in >> unitId;
+                if (!in || unitId <= 0 || !uniqueUnits.insert(unitId).second)
+                    return false;
+            }
+            if (transfer.unitInstanceIds.empty())
+                return false;
+            journey.payload = std::move(transfer);
+        }
+        restoredJourneys.push_back(std::move(journey));
+    }
+
+    in >> tag >> restoredNextTradeOrderId;
+    int tradeCount = 0;
+    in >> tradeCount;
+    if (!in || tag != "TRADES" || restoredNextTradeOrderId == 0 ||
+        !PersistenceLimits::IsCountInRange(tradeCount, static_cast<int>(MaxActiveTradeOrders)))
+        return false;
+    std::set<std::uint64_t> uniqueTradeIds;
+    for (int index = 0; index < tradeCount; ++index)
+    {
+        TradeOrder order;
+        int offerType = 0;
+        int requestType = 0;
+        int mode = 0;
+        int status = 0;
+        in >> tag >> order.id >> order.playerId >> order.originProvinceId
+            >> order.cityProvinceId >> offerType >> requestType
+            >> order.request.requestedAmount >> order.request.offeredAmount
+            >> order.offeredAmount >> order.cargoAmount >> order.cityRevisionAtStart
+            >> order.journeyId >> mode >> status;
+        if (!in || tag != "TRADE" || order.id == 0 ||
+            !uniqueTradeIds.insert(order.id).second ||
+            order.playerId == InvalidPlayerId || order.originProvinceId == InvalidProvinceId ||
+            order.cityProvinceId == InvalidProvinceId || order.journeyId == InvalidWorldJourneyId ||
+            offerType < 0 || offerType > static_cast<int>(ResourceType::CATAPULT) ||
+            requestType < 0 || requestType > static_cast<int>(ResourceType::CATAPULT) ||
+            offerType == requestType || order.request.requestedAmount <= 0 ||
+            order.request.offeredAmount < 0 || order.offeredAmount <= 0 ||
+            order.cargoAmount <= 0 || order.cityRevisionAtStart == 0 ||
+            mode < static_cast<int>(TradeMode::Coin) ||
+            mode > static_cast<int>(TradeMode::Barter) ||
+            status != static_cast<int>(TradeOrderStatus::InTransit) &&
+                status != static_cast<int>(TradeOrderStatus::AwaitingUnload))
+            return false;
+        order.request.offerType = static_cast<ResourceType>(offerType);
+        order.request.requestType = static_cast<ResourceType>(requestType);
+        order.request.mode = static_cast<TradeMode>(mode);
+        order.status = static_cast<TradeOrderStatus>(status);
+        restoredTradeOrders.push_back(std::move(order));
+    }
+    in >> tag;
+    if (tag != "END_TRADES")
+        return false;
+    for (const auto& order : restoredTradeOrders)
+        if (order.id >= restoredNextTradeOrderId)
+            return false;
+
+    in >> tag >> restoredNextBattleId;
+    int battleCount = 0;
+    int battleReportCount = 0;
+    in >> battleCount >> battleReportCount;
+    if (!in || tag != "BATTLES" || restoredNextBattleId == InvalidBattleId ||
+        !PersistenceLimits::IsCountInRange(
+            battleCount, BattleLifecycleSystem::MaxBattleRecords) ||
+        !PersistenceLimits::IsCountInRange(
+            battleReportCount, BattleLifecycleSystem::MaxBattleReports))
+        return false;
+    const auto readBattleIds = [&in, &tag](const char* expectedTag,
+                                           std::vector<int>& ids) -> bool
+    {
+        int count = 0;
+        if (!(in >> tag >> count) || tag != expectedTag ||
+            !PersistenceLimits::IsCountInRange(count, PersistenceLimits::MaxExpeditionUnits))
+            return false;
+        ids.resize(static_cast<std::size_t>(count));
+        std::set<int> uniqueIds;
+        for (int& id : ids)
+        {
+            in >> id;
+            if (!in || id <= 0 || !uniqueIds.insert(id).second)
+                return false;
+        }
+        return true;
+    };
+    const auto readBattleSide = [&in, &tag](const char* expectedTag,
+                                             BattleSideSnapshot& side) -> bool
+    {
+        int count = 0;
+        if (!(in >> tag >> side.ownerId >> side.defensiveBonus >> count) || tag != expectedTag ||
+            !PersistenceLimits::IsCountInRange(count, PersistenceLimits::MaxExpeditionUnits) ||
+            !std::isfinite(side.defensiveBonus) || side.defensiveBonus < 0.0)
+            return false;
+        side.units.resize(static_cast<std::size_t>(count));
+        std::set<int> uniqueIds;
+        for (auto& unit : side.units)
+        {
+            if (!(in >> tag >> unit.instanceId >> std::quoted(unit.unitDefId) >> unit.effectiveFieldAttack) ||
+                tag != "SIDE_UNIT" || unit.instanceId <= 0 || unit.unitDefId.empty() ||
+                !std::isfinite(unit.effectiveFieldAttack) || unit.effectiveFieldAttack < 0.0 ||
+                !uniqueIds.insert(unit.instanceId).second)
+                return false;
+        }
+        return true;
+    };
+    const auto readBattleOutcome = [&in, &tag](std::optional<BattleOutcome>& destination) -> bool
+    {
+        int hasOutcome = 0;
+        if (!(in >> tag >> hasOutcome) || tag != "OUTCOME" || (hasOutcome != 0 && hasOutcome != 1))
+            return false;
+        if (hasOutcome == 0)
+        {
+            destination.reset();
+            return true;
+        }
+        BattleOutcome outcome;
+        int valid = 0;
+        int winner = 0;
+        int crushing = 0;
+        int attackerLossCount = 0;
+        int defenderLossCount = 0;
+        if (!(in >> valid >> winner >> outcome.attackerStrength >> outcome.defenderStrength >>
+              outcome.attackerCasualtyBudget >> outcome.defenderCasualtyBudget >> outcome.lootValue >>
+              crushing >> outcome.durationTicks >> attackerLossCount) || valid < 0 || valid > 1 ||
+            winner < static_cast<int>(BattleWinner::Invalid) || winner > static_cast<int>(BattleWinner::Defender) ||
+            (crushing != 0 && crushing != 1) || !std::isfinite(outcome.attackerStrength) ||
+            !std::isfinite(outcome.defenderStrength) || outcome.attackerStrength < 0.0 ||
+            outcome.defenderStrength < 0.0 || outcome.attackerCasualtyBudget < 0 ||
+            outcome.defenderCasualtyBudget < 0 || !std::isfinite(outcome.lootValue) ||
+            outcome.lootValue < 0.0 ||
+            !PersistenceLimits::IsCountInRange(attackerLossCount, PersistenceLimits::MaxExpeditionUnits))
+            return false;
+        outcome.valid = valid != 0;
+        outcome.winner = static_cast<BattleWinner>(winner);
+        outcome.crushingVictory = crushing != 0;
+        outcome.attackerLostUnitIds.resize(static_cast<std::size_t>(attackerLossCount));
+        std::set<int> uniqueLosses;
+        for (int& id : outcome.attackerLostUnitIds)
+        {
+            in >> id;
+            if (!in || id <= 0 || !uniqueLosses.insert(id).second)
+                return false;
+        }
+        in >> defenderLossCount;
+        if (!in || !PersistenceLimits::IsCountInRange(defenderLossCount, PersistenceLimits::MaxExpeditionUnits))
+            return false;
+        outcome.defenderLostUnitIds.resize(static_cast<std::size_t>(defenderLossCount));
+        uniqueLosses.clear();
+        for (int& id : outcome.defenderLostUnitIds)
+        {
+            in >> id;
+            if (!in || id <= 0 || !uniqueLosses.insert(id).second)
+                return false;
+        }
+        destination = std::move(outcome);
+        return true;
+    };
+    for (int index = 0; index < battleCount; ++index)
+    {
+        BattleInstance battle;
+        int status = 0;
+        int raid = 0;
+        in >> tag >> battle.id >> battle.attackerId >> battle.defenderId >>
+            battle.sourceProvinceId >> battle.targetProvinceId >> battle.journeyId >> status >>
+            battle.startTick >> battle.endTick >> raid >> battle.raidStrength >>
+            battle.rules.baseLossFraction >> battle.rules.casualtyCapFraction >>
+            battle.rules.drawBand >> battle.rules.crushingRatio >> battle.rules.lootFraction >>
+            battle.rules.durationTicks;
+        if (!in || tag != "BATTLE" || battle.id == InvalidBattleId ||
+            status < static_cast<int>(BattleLifecycleStatus::InTransit) ||
+            status > static_cast<int>(BattleLifecycleStatus::Cancelled) ||
+            (raid != 0 && raid != 1) || battle.raidStrength < 0 ||
+            !std::isfinite(battle.rules.baseLossFraction) || battle.rules.baseLossFraction < 0.0 ||
+            battle.rules.baseLossFraction >= 1.0 ||
+            !std::isfinite(battle.rules.casualtyCapFraction) || battle.rules.casualtyCapFraction < 0.0 ||
+            battle.rules.casualtyCapFraction >= 1.0 ||
+            !std::isfinite(battle.rules.drawBand) || battle.rules.drawBand < 0.0 ||
+            battle.rules.drawBand > 1.0 || !std::isfinite(battle.rules.crushingRatio) ||
+            battle.rules.crushingRatio < 1.0 || !std::isfinite(battle.rules.lootFraction) ||
+            battle.rules.lootFraction < 0.0 || battle.rules.lootFraction > 1.0 ||
+            battle.rules.durationTicks == 0)
+            return false;
+        battle.status = static_cast<BattleLifecycleStatus>(status);
+        battle.isRaid = raid != 0;
+        if (!readBattleIds("ATTACK_IDS", battle.attackerUnitIds) ||
+            !readBattleIds("DEFENDER_IDS", battle.defenderUnitIds) ||
+            !readBattleSide("ATTACK_SIDE", battle.attackerSnapshot) ||
+            !readBattleSide("DEFENDER_SIDE", battle.defenderSnapshot) ||
+            !readBattleOutcome(battle.outcome))
+            return false;
+        in >> tag;
+        if (tag != "END_BATTLE")
+            return false;
+        restoredBattles.push_back(std::move(battle));
+    }
+    for (int index = 0; index < battleReportCount; ++index)
+    {
+        BattleReport report;
+        int transformed = 0;
+        int cityDamaged = 0;
+        int raid = 0;
+        int destroyedCount = 0;
+        int resourceCount = 0;
+        in >> tag >> report.battleId >> report.attackerId >> report.defenderId >>
+            report.sourceProvinceId >> report.targetProvinceId >> transformed >> cityDamaged >> raid >> destroyedCount;
+        if (!in || tag != "REPORT" || report.battleId == InvalidBattleId ||
+            (transformed != 0 && transformed != 1) || (cityDamaged != 0 && cityDamaged != 1) ||
+            (raid != 0 && raid != 1) || !PersistenceLimits::IsCountInRange(destroyedCount, 64))
+            return false;
+        report.banditTransformed = transformed != 0;
+        report.cityDamaged = cityDamaged != 0;
+        report.raid = raid != 0;
+        report.destroyedBuildingIds.resize(static_cast<std::size_t>(destroyedCount));
+        for (int& id : report.destroyedBuildingIds)
+            if (!(in >> id) || id <= 0)
+                return false;
+        in >> resourceCount;
+        if (!in || !PersistenceLimits::IsCountInRange(resourceCount, PersistenceLimits::MaxBufferEntries))
+            return false;
+        for (int resourceIndex = 0; resourceIndex < resourceCount; ++resourceIndex)
+        {
+            int type = 0;
+            int amount = 0;
+            in >> type >> amount;
+            if (!in || type < 0 || type > static_cast<int>(ResourceType::CATAPULT) || amount < 0 ||
+                !report.lostResources.emplace(static_cast<ResourceType>(type), amount).second)
+                return false;
+        }
+        std::optional<BattleOutcome> reportOutcome;
+        if (!readBattleOutcome(reportOutcome) || !reportOutcome.has_value())
+            return false;
+        report.outcome = *reportOutcome;
+        restoredBattleReports.push_back(std::move(report));
+    }
+    in >> tag;
+    if (tag != "END_BATTLES")
+        return false;
+
+    in >> tag >> restoredNextEventId;
+    int cadenceProvinceCount = 0;
+    in >> cadenceProvinceCount;
+    if (!in || tag != "EVENT_RUNTIME" || restoredNextEventId == InvalidWorldEventInstanceId ||
+        !PersistenceLimits::IsCountInRange(cadenceProvinceCount, PersistenceLimits::MaxGlobalProvinces))
+        return false;
+    std::vector<std::tuple<ProvinceId, std::string, ProvinceEventCadenceState>> restoredCadence;
+    for (int index = 0; index < cadenceProvinceCount; ++index)
+    {
+        ProvinceId provinceId = InvalidProvinceId;
+        int definitionCount = 0;
+        in >> tag >> provinceId >> definitionCount;
+        if (!in || tag != "EVENT_CADENCE" || provinceId == InvalidProvinceId ||
+            globalMap.FindProvince(provinceId) == nullptr ||
+            !PersistenceLimits::IsCountInRange(definitionCount, PersistenceLimits::MaxBufferEntries))
+            return false;
+        for (int definitionIndex = 0; definitionIndex < definitionCount; ++definitionIndex)
+        {
+            std::string definitionId;
+            ProvinceEventCadenceState state;
+            in >> tag >> std::quoted(definitionId) >> state.nextCheckTick >> state.attemptCounter;
+            if (!in || tag != "CADENCE" || definitionId.empty() ||
+                FindWorldEventDefinition(definitionId) == nullptr)
+                return false;
+            restoredCadence.emplace_back(provinceId, std::move(definitionId), state);
+        }
+    }
+    int eventCount = 0;
+    in >> tag >> eventCount;
+    if (!in || tag != "EVENT_INSTANCES" ||
+        !PersistenceLimits::IsCountInRange(
+            eventCount, PersistenceLimits::MaxWorldEventInstances))
+        return false;
+    for (int index = 0; index < eventCount; ++index)
+    {
+        WorldEventInstance instance;
+        int trigger = 0;
+        int expired = 0;
+        int raidStarted = 0;
+        int journeyEffectApplied = 0;
+        int appliedEffectCount = 0;
+        in >> tag >> instance.id >> instance.ownerId >> instance.provinceId >>
+            instance.secondaryProvinceId >> std::quoted(instance.definitionId) >> trigger >>
+            instance.startTick >> instance.endTick >> instance.outcomeRoll >>
+            instance.deterministicAttemptCounter >> instance.journeyId >> expired >> raidStarted >>
+            journeyEffectApplied >> appliedEffectCount;
+        if (!in || tag != "EVENT_INSTANCE" || instance.id == InvalidWorldEventInstanceId ||
+            instance.definitionId.empty() || FindWorldEventDefinition(instance.definitionId) == nullptr ||
+            trigger < 0 || trigger > static_cast<int>(WorldEventTriggerDomain::Raid) ||
+            (expired != 0 && expired != 1) || (raidStarted != 0 && raidStarted != 1) ||
+            (journeyEffectApplied != 0 && journeyEffectApplied != 1) ||
+            !PersistenceLimits::IsCountInRange(appliedEffectCount, 32))
+            return false;
+        instance.trigger = static_cast<WorldEventTriggerDomain>(trigger);
+        instance.expired = expired != 0;
+        instance.raidStarted = raidStarted != 0;
+        instance.journeyEffectApplied = journeyEffectApplied != 0;
+        instance.effects = FindWorldEventDefinition(instance.definitionId)->effects;
+        for (int effectIndex = 0; effectIndex < appliedEffectCount; ++effectIndex)
+        {
+            AppliedWorldEventEffect effect;
+            WorldEventInstanceId appliedInstanceId = InvalidWorldEventInstanceId;
+            int kind = 0;
+            int resourceType = 0;
+            int stat = 0;
+            in >> tag >> appliedInstanceId >> kind >> resourceType >> effect.amount >> stat >> effect.additive >>
+                effect.multiplier >> effect.durationTicks;
+            if (!in || tag != "EVENT_APPLIED" || appliedInstanceId != instance.id ||
+                kind < 0 || kind > static_cast<int>(AppliedWorldEventEffectKind::RaidStarted) || resourceType < 0 ||
+                (resourceType != static_cast<int>(ResourceType::Null) &&
+                 resourceType > static_cast<int>(ResourceType::CATAPULT)) ||
+                stat < static_cast<int>(BalanceStat::BuildTime) ||
+                stat > static_cast<int>(BalanceStat::ColonizationDuration) ||
+                !std::isfinite(effect.additive) || !std::isfinite(effect.multiplier) ||
+                effect.multiplier <= 0.0)
+                return false;
+            effect.kind = static_cast<AppliedWorldEventEffectKind>(kind);
+            effect.resourceType = static_cast<ResourceType>(resourceType);
+            effect.stat = static_cast<BalanceStat>(stat);
+            instance.appliedEffects.push_back(effect);
+        }
+        restoredEvents.push_back(std::move(instance));
+    }
+    int eventFeedCount = 0;
+    in >> tag >> eventFeedCount;
+    if (!in || tag != "EVENT_FEED" ||
+        !PersistenceLimits::IsCountInRange(
+            eventFeedCount, PersistenceLimits::MaxWorldEventFeedEntries))
+        return false;
+    for (int index = 0; index < eventFeedCount; ++index)
+    {
+        WorldEventNotificationView notification;
+        int trigger = 0;
+        int expired = 0;
+        int appliedEffectCount = 0;
+        in >> tag >> notification.instanceId >> notification.ownerId >> notification.provinceId >>
+            notification.secondaryProvinceId >> std::quoted(notification.definitionId) >>
+            std::quoted(notification.title) >> std::quoted(notification.description) >> trigger >>
+            notification.startTick >> notification.endTick >> notification.outcomeRoll >> expired;
+        in >> appliedEffectCount;
+        if (!in || tag != "EVENT_NOTIFICATION" || notification.instanceId == InvalidWorldEventInstanceId ||
+            FindWorldEventDefinition(notification.definitionId) == nullptr ||
+            trigger < 0 || trigger > static_cast<int>(WorldEventTriggerDomain::Raid) ||
+            (expired != 0 && expired != 1) || notification.definitionId.size() > PersistenceLimits::MaxStringBytes ||
+            notification.title.size() > PersistenceLimits::MaxStringBytes ||
+            notification.description.size() > PersistenceLimits::MaxStringBytes ||
+            !PersistenceLimits::IsCountInRange(appliedEffectCount, 32))
+            return false;
+        notification.trigger = static_cast<WorldEventTriggerDomain>(trigger);
+        notification.expired = expired != 0;
+        for (int effectIndex = 0; effectIndex < appliedEffectCount; ++effectIndex)
+        {
+            AppliedWorldEventEffect effect;
+            WorldEventInstanceId appliedInstanceId = InvalidWorldEventInstanceId;
+            int kind = 0;
+            int resourceType = 0;
+            int stat = 0;
+            in >> tag >> appliedInstanceId >> kind >> resourceType >> effect.amount >> stat >> effect.additive >>
+                effect.multiplier >> effect.durationTicks;
+            if (!in || tag != "EVENT_FEED_APPLIED" || appliedInstanceId != notification.instanceId ||
+                kind < 0 || kind > static_cast<int>(AppliedWorldEventEffectKind::RaidStarted) || resourceType < 0 ||
+                (resourceType != static_cast<int>(ResourceType::Null) &&
+                 resourceType > static_cast<int>(ResourceType::CATAPULT)) ||
+                stat < static_cast<int>(BalanceStat::BuildTime) ||
+                stat > static_cast<int>(BalanceStat::ColonizationDuration) ||
+                !std::isfinite(effect.additive) || !std::isfinite(effect.multiplier) ||
+                effect.multiplier <= 0.0)
+                return false;
+            effect.kind = static_cast<AppliedWorldEventEffectKind>(kind);
+            effect.resourceType = static_cast<ResourceType>(resourceType);
+            effect.stat = static_cast<BalanceStat>(stat);
+            notification.appliedEffects.push_back(effect);
+        }
+        restoredEventNotifications.push_back(std::move(notification));
+    }
+    in >> tag;
+    if (tag != "END_EVENT_RUNTIME")
+        return false;
+
+    if (loadedProvinceMaps.size() != static_cast<std::size_t>(provinceMapCount + 1) ||
+        totalCampaignTiles > PersistenceLimits::MaxCampaignTiles)
+        return false;
+
+    if (!playerHandler.players.contains(0))
+        return false;
+
+    std::size_t expectedExtraProvinceMaps = 0;
+    for (const ProvinceId provinceId : globalMap.GetProvinceIds())
+    {
+        const auto* province = globalMap.FindBuildableProvince(provinceId);
+        if (province == nullptr || province->GetOwnerId() == InvalidPlayerId)
+            continue;
+        if (!playerHandler.players.contains(province->GetOwnerId()) ||
+            province->GetSimulation() == nullptr)
+            return false;
+        if (provinceId != playerHandler.players.at(0)->homeProvinceId)
+        {
+            if (!province->GetSimulation()->OwnsTileMap() ||
+                !loadedProvinceMaps.contains(provinceId))
+                return false;
+            ++expectedExtraProvinceMaps;
+        }
+    }
+    if (static_cast<std::size_t>(provinceMapCount) != expectedExtraProvinceMaps)
+        return false;
+
+    // Local building IDs are namespaced by owner and province. Recompute the
+    // next counter from the loaded tilemaps so a post-load build cannot reuse
+    // an existing ID even though each ProvinceSimulation starts at zero.
+    for (const ProvinceId provinceId : globalMap.GetProvinceIds())
+    {
+        auto* province = globalMap.FindBuildableProvince(provinceId);
+        if (province == nullptr || province->GetSimulation() == nullptr)
+            continue;
+        auto& economy = province->GetSimulation()->GetEconomy();
+        const int prefix = province->GetOwnerId() * 5'000'000 +
+                           static_cast<int>(provinceId) * 300'000;
+        int nextLocalId = 0;
+        for (const auto& tile : economy.ownedTilemap.tilemap)
+        {
+            if (tile.building == nullptr || tile.building->id < prefix)
+                continue;
+            const int localId = tile.building->id - prefix;
+            if (localId >= 0 && localId < 300'000)
+                nextLocalId = std::max(nextLocalId, localId + 1);
+        }
+        economy.build.buildingId = nextLocalId;
+    }
+
+    for (auto& [playerId, player] : playerHandler.players)
+    {
+        if (player == nullptr)
+            continue;
+        auto* home = dynamic_cast<BuildableProvince*>(globalMap.FindProvince(player->homeProvinceId));
+        if (home == nullptr || home->GetSimulation() == nullptr)
+            return false;
+        ProvinceSimulation& simulation = *home->GetSimulation();
+        const std::uint64_t savedProvinceTick = simulation.GetEconomy().simulationTick;
+        simulation.RestoreSimulationTick(savedProvinceTick);
+        player->SetActiveProvince(player->homeProvinceId);
+        player->RebindTileMap(simulation.GetTileMap());
+        simulation.GetEconomy().dataTracker.processedCommands = pendingCommandStats[playerId];
+        for (const ProvinceId provinceId : globalMap.GetProvinceIds())
+        {
+            auto* province = globalMap.FindBuildableProvince(provinceId);
+            if (province == nullptr || province->GetOwnerId() != playerId ||
+                province->GetSimulation() == nullptr)
+                continue;
+            player->BindProvince(provinceId, *province->GetSimulation());
+            player->RebindTileMap(provinceId, province->GetSimulation()->GetTileMap());
+            const auto statsPlayerIt = pendingProvinceCommandStats.find(playerId);
+            if (statsPlayerIt != pendingProvinceCommandStats.end())
+            {
+                const auto statsIt = statsPlayerIt->second.find(provinceId);
+                if (statsIt != statsPlayerIt->second.end())
+                    province->GetSimulation()->GetEconomy().dataTracker.processedCommands = statsIt->second;
+                else if (provinceId == player->homeProvinceId)
+                    province->GetSimulation()->GetEconomy().dataTracker.processedCommands = pendingCommandStats[playerId];
+            }
+            else if (provinceId == player->homeProvinceId)
+                province->GetSimulation()->GetEconomy().dataTracker.processedCommands = pendingCommandStats[playerId];
+        }
+    }
+
+    std::map<PlayerId, Player*> restoredPlayers;
+    for (const auto& [playerId, player] : playerHandler.players)
+        if (player != nullptr)
+            restoredPlayers.emplace(playerId, player.get());
+    std::set<std::pair<PlayerId, int>> journeyUnitOwners;
+    for (const auto& journey : restoredJourneys)
+    {
+        if (!std::holds_alternative<ScoutParty>(journey.payload) &&
+            !std::holds_alternative<ArmyParty>(journey.payload) &&
+            !std::holds_alternative<ArmyTransferParty>(journey.payload))
+            continue;
+        const auto* playerIt = restoredPlayers.contains(journey.ownerId)
+            ? restoredPlayers.at(journey.ownerId) : nullptr;
+        if (playerIt == nullptr)
+            return false;
+        const auto checkUnit = [&](int unitId) -> bool
+        {
+            return playerIt->roster.FindUnit(unitId) != nullptr &&
+                   journeyUnitOwners.insert({journey.ownerId, unitId}).second;
+        };
+        if (const auto* scout = std::get_if<ScoutParty>(&journey.payload))
+        {
+            for (const int unitId : scout->unitInstanceIds)
+                if (!checkUnit(unitId))
+                    return false;
+        }
+        else if (const auto* army = std::get_if<ArmyParty>(&journey.payload))
+        {
+            for (const int unitId : army->unitInstanceIds)
+                if (!checkUnit(unitId))
+                    return false;
+        }
+        else if (const auto* transfer = std::get_if<ArmyTransferParty>(&journey.payload))
+        {
+            for (const int unitId : transfer->unitInstanceIds)
+                if (!checkUnit(unitId))
+                    return false;
+        }
+    }
+    std::string runtimeFailure;
+    if (!armyJourneySystem.Restore(restoredNextJourneyId, std::move(restoredJourneys),
+                                   globalMap, runtimeFailure) ||
+        !battleSystem.Restore(restoredNextBattleId, std::move(restoredBattles),
+                              std::move(restoredBattleReports), globalMap,
+                              restoredPlayers, armyJourneySystem, runtimeFailure))
+        return false;
+    activeTradeOrders.clear();
+    nextTradeOrderId = restoredNextTradeOrderId;
+    for (auto& order : restoredTradeOrders)
+    {
+        const auto playerIt = restoredPlayers.find(order.playerId);
+        const auto* source = globalMap.FindBuildableProvince(order.originProvinceId);
+        const auto* city = dynamic_cast<const NeutralCityProvince*>(
+            globalMap.FindProvince(order.cityProvinceId));
+        const auto journeyIt = armyJourneySystem.GetJourneys().find(order.journeyId);
+        if (playerIt == restoredPlayers.end() || playerIt->second == nullptr ||
+            source == nullptr || source->GetOwnerId() != order.playerId ||
+            source->GetSimulation() == nullptr || city == nullptr ||
+            city->GetState().revision < order.cityRevisionAtStart ||
+            journeyIt == armyJourneySystem.GetJourneys().end() ||
+            journeyIt->second.ownerId != order.playerId ||
+            journeyIt->second.sourceProvinceId != order.originProvinceId ||
+            journeyIt->second.targetProvinceId != order.cityProvinceId ||
+            (order.status == TradeOrderStatus::InTransit &&
+             journeyIt->second.status != WorldJourneyStatus::InTransit) ||
+            (order.status == TradeOrderStatus::AwaitingUnload &&
+             journeyIt->second.status != WorldJourneyStatus::Succeeded &&
+             journeyIt->second.status != WorldJourneyStatus::AwaitingUnload) ||
+            !std::holds_alternative<TradeCargo>(journeyIt->second.payload) ||
+            std::get<TradeCargo>(journeyIt->second.payload).offerType != order.request.offerType ||
+            std::get<TradeCargo>(journeyIt->second.payload).requestType != order.request.requestType ||
+            std::get<TradeCargo>(journeyIt->second.payload).amount != order.cargoAmount ||
+            !activeTradeOrders.emplace(order.id, std::move(order)).second)
+            return false;
+    }
+    eventSystem.SetCampaignSeed(restoredCampaignMap.seed);
+    eventSystem.SetNextInstanceId(restoredNextEventId);
+    for (const auto& [provinceId, definitionId, cadence] : restoredCadence)
+        eventSystem.RestoreCadenceState(provinceId, definitionId, cadence);
+    for (auto& instance : restoredEvents)
+    {
+        if (globalMap.FindProvince(instance.provinceId) == nullptr ||
+            (instance.secondaryProvinceId != InvalidProvinceId &&
+             globalMap.FindProvince(instance.secondaryProvinceId) == nullptr) ||
+            (instance.journeyId != InvalidWorldJourneyId &&
+             !armyJourneySystem.GetJourneys().contains(instance.journeyId)) ||
+            !eventSystem.RestoreInstance(std::move(instance)))
+            return false;
+    }
+    for (auto& notification : restoredEventNotifications)
+        eventSystem.GetFeed().RestoreNotification(std::move(notification));
+
+    for (const auto& operation : restoredColonizations)
+    {
+        const auto playerIt = playerHandler.players.find(static_cast<int>(operation.playerId));
+        const auto* source = globalMap.FindBuildableProvince(operation.sourceProvinceId);
+        const auto* target = globalMap.FindBuildableProvince(operation.targetProvinceId);
+        if (playerIt == playerHandler.players.end() || playerIt->second == nullptr ||
+            source == nullptr || target == nullptr || source->GetOwnerId() != operation.playerId ||
+            source->GetSimulation() == nullptr || target->GetOwnerId() != InvalidPlayerId ||
+            target->GetSimulation() != nullptr ||
+            target->GetKnowledge(operation.playerId) < ProvinceKnowledgeLevel::Scouted ||
+            !armyJourneySystem.GetJourneys().contains(operation.journeyId) ||
+            armyJourneySystem.GetJourneys().at(operation.journeyId).ownerId != operation.playerId ||
+            armyJourneySystem.GetJourneys().at(operation.journeyId).sourceProvinceId != operation.sourceProvinceId ||
+            armyJourneySystem.GetJourneys().at(operation.journeyId).targetProvinceId != operation.targetProvinceId ||
+            !std::holds_alternative<Colonists>(
+                armyJourneySystem.GetJourneys().at(operation.journeyId).payload) ||
+            pendingColonizations.contains(operation.targetProvinceId))
+            return false;
+        pendingColonizations.emplace(operation.targetProvinceId, operation);
     }
 
     // Upgrade modifiers are derived state, just like technology and focus
@@ -1136,27 +2989,75 @@ bool GameWorld::LoadFromStream(std::istream& in, Renderer* renderer, AudioSystem
 
     for (auto& [id, player] : playerHandler.players)
     {
-        player->roadNetwork = std::make_unique<RoadNetwork>(tilemap);
-
-        for (auto& tile : tilemap.tilemap)
+        if (player == nullptr)
+            return false;
+        for (const ProvinceId provinceId : globalMap.GetProvinceIds())
         {
-            if (tile.building != nullptr && tile.building->owner == player.get() && !tile.building->IsUnderConstruction())
-                player->roadNetwork->UpdateNavMap(tile.id, tile.building.get());
+            auto* province = globalMap.FindBuildableProvince(provinceId);
+            if (province == nullptr || province->GetOwnerId() != id ||
+                province->GetSimulation() == nullptr)
+                continue;
+            TileMap& provinceMap = province->GetSimulation()->GetTileMap();
+            ProvinceEconomy* economy = player->GetProvinceEconomy(provinceId);
+            if (economy == nullptr || economy->roadNetwork == nullptr)
+                return false;
+            for (auto& tile : provinceMap.tilemap)
+                if (tile.building != nullptr && tile.building->owner == player.get() &&
+                    !tile.building->IsUnderConstruction())
+                    economy->roadNetwork->UpdateNavMap(tile.id, tile.building.get());
         }
     }
 
-    for (auto& tile : tilemap.tilemap)
+    for (const auto& [id, player] : playerHandler.players)
     {
-        if (tile.building != nullptr && tile.building->buildingType == BuildingType::Road)
-            tilemap.RefreshRoadTilesAround(tilemap.GetCoordsFromId(tile.id));
+        (void)id;
+        if (player == nullptr)
+            return false;
+        for (const auto& [groupId, group] : player->taskGroups.GetGroups())
+        {
+            (void)groupId;
+            ProvinceEconomy* economy = player->GetProvinceEconomy(group.stationProvinceId);
+            Building* barracks = economy != nullptr && economy->tilemap != nullptr
+                ? economy->tilemap->GetBuilding(group.homeBarracksBuildingId) : nullptr;
+            if (barracks == nullptr || barracks->owner != player.get() ||
+                barracks->buildingType != BuildingType::Barracks)
+                return false;
+        }
+        for (const auto& [unitId, unit] : player->roster.units)
+        {
+            (void)unitId;
+            if (unit.taskGroupId == InvalidTaskGroupId)
+                continue;
+            const TaskGroup* group = player->taskGroups.Find(unit.taskGroupId);
+            if (group == nullptr || unit.assignment.kind == UnitAssignmentKind::Unassigned ||
+                (unit.assignment.kind == UnitAssignmentKind::BarracksReserve &&
+                 (unit.assignment.provinceId != group->stationProvinceId ||
+                  unit.assignment.buildingId != group->homeBarracksBuildingId)))
+                return false;
+        }
     }
-    tilemap.terrainDirty = true;
-    tilemap.buildingsDirty = true;
+
+    for (ProvinceId provinceId : globalMap.GetProvinceIds())
+    {
+        auto* province = globalMap.FindBuildableProvince(provinceId);
+        if (province == nullptr || province->GetSimulation() == nullptr)
+            continue;
+        TileMap& provinceMap = province->GetSimulation()->GetTileMap();
+        for (auto& tile : provinceMap.tilemap)
+        {
+            if (tile.building != nullptr && tile.building->buildingType == BuildingType::Road)
+                provinceMap.RefreshRoadTilesAround(provinceMap.GetCoordsFromId(tile.id));
+        }
+        provinceMap.terrainDirty = true;
+        provinceMap.buildingsDirty = true;
+    }
 
     for (const auto& pending : pendingConnections)
     {
-        Building* source = tilemap.GetBuilding(pending.sourcePosition);
-        Building* target = pending.targetPosition >= 0 ? tilemap.GetBuilding(pending.targetPosition) : nullptr;
+        if (pending.map == nullptr)
+            return false;
+        Building* source = pending.map->GetBuilding(pending.sourcePosition);
+        Building* target = pending.targetPosition >= 0 ? pending.map->GetBuilding(pending.targetPosition) : nullptr;
         if (source == nullptr || target == nullptr || source->IsUnderConstruction() || target->IsUnderConstruction())
             continue;
 
@@ -1168,95 +3069,33 @@ bool GameWorld::LoadFromStream(std::istream& in, Renderer* renderer, AudioSystem
             source->SetSupplier(pending.resource, target);
     }
 
-    // TD(etap-4): deployed units, world-scoped.
-    int deployedCount = 0;
-    in >> tag >> deployedCount;
-    if (tag != "DEPLOYEDUNITS" || !PersistenceLimits::IsCountInRange(deployedCount, PersistenceLimits::MaxUnits))
-        return false;
-
-    deployedUnits.clear();
-    for (int i = 0; i < deployedCount; i++)
+    for (const auto& pending : restoredProvinceShipments)
     {
-        int instanceId = 0;
-        int ownerPlayerId = 0;
-        std::string unitDefId;
-        double currentHp = 0.0;
-        int state = 0;
-        int routeFromPlayerId = -1;
-        int routeToPlayerId = -1;
-        int tileIndex = 0;
-        double tileProgress = 0.0;
-        double attackTimer = 0.0;
-        size_t equipmentCount = 0;
-        in >> tag >> instanceId >> ownerPlayerId >> std::quoted(unitDefId) >> currentHp
-           >> state >> routeFromPlayerId >> routeToPlayerId >> tileIndex >> tileProgress
-           >> attackTimer >> equipmentCount;
-        if (tag != "DUNIT")
+        auto* province = globalMap.FindBuildableProvince(pending.provinceId);
+        ProvinceEconomy* economy = province != nullptr && province->GetSimulation() != nullptr
+            ? &province->GetSimulation()->GetEconomy() : nullptr;
+        if (economy == nullptr || economy->roadNetwork == nullptr || economy->tilemap == nullptr)
             return false;
 
-        BattleUnit unit(instanceId, ownerPlayerId, unitDefId);
-        unit.currentHp = currentHp;
-        unit.state = static_cast<BattleUnitState>(state);
-        unit.routeFromPlayerId = routeFromPlayerId;
-        unit.routeToPlayerId = routeToPlayerId;
-        unit.tileIndex = tileIndex;
-        unit.tileProgress = tileProgress;
-        unit.attackTimer = attackTimer;
-        deployedUnits[instanceId] = std::move(unit);
-    }
-
-    int spawnQueueCount = 0;
-    in >> tag >> spawnQueueCount;
-    if (tag != "SPAWNQUEUES" || !PersistenceLimits::IsCountInRange(spawnQueueCount, PersistenceLimits::MaxSupportedPlayers * PersistenceLimits::MaxSupportedPlayers))
-        return false;
-
-    spawnQueues.clear();
-    for (int i = 0; i < spawnQueueCount; i++)
-    {
-        int fromPlayerId = 0, toPlayerId = 0;
-        size_t queueLength = 0;
-        in >> tag >> fromPlayerId >> toPlayerId >> queueLength;
-        if (tag != "SQ")
-            return false;
-
-        std::deque<int> queue;
-        if (!PersistenceLimits::IsCountInRange(queueLength, PersistenceLimits::MaxQueueEntries))
-            return false;
-        for (size_t q = 0; q < queueLength; q++)
+        auto findBuilding = [&](int buildingId) -> Building*
         {
-            int unitInstanceId = 0;
-            in >> unitInstanceId;
-            queue.push_back(unitInstanceId);
-        }
-        spawnQueues[{fromPlayerId, toPlayerId}] = std::move(queue);
-    }
-
-    if (version >= 32)
-    {
-        int projectileCount = 0;
-        in >> tag >> projectileCount;
-        if (tag != "PROJECTILES" || !PersistenceLimits::IsCountInRange(projectileCount, PersistenceLimits::MaxProjectiles))
-            return false;
-        for (int i = 0; i < projectileCount; ++i)
+            for (Building* building : economy->dataTracker.buildings)
+                if (building != nullptr && building->id == buildingId)
+                    return building;
+            return nullptr;
+        };
+        for (const auto& shipment : pending.shipments)
         {
-            int id = 0;
-            AttackEmission projectile;
-            int damageType = 0;
-            int targetFilter = 0;
-            in >> tag >> id >> projectile.sourcePlayerId >> projectile.sourceUnitInstanceId
-               >> projectile.position.x >> projectile.position.y >> projectile.damage
-               >> damageType >> targetFilter >> projectile.ticksRemaining
-               >> projectile.targetUnitInstanceId >> projectile.speed;
-            if (tag != "PROJECTILE" || id < 1 || projectile.ticksRemaining < 0 ||
-                damageType != static_cast<int>(DamageType::Physical) ||
-                targetFilter < static_cast<int>(AttackTargetFilter::EnemiesOnly) ||
-                targetFilter > static_cast<int>(AttackTargetFilter::Everyone) ||
-                !std::isfinite(projectile.damage) || !std::isfinite(projectile.speed))
+            for (int tileId : shipment.pathTileIds)
+                if (tileId >= static_cast<int>(economy->tilemap->tilemap.size()))
+                    return false;
+            Building* source = findBuilding(shipment.sourceBuildingId);
+            Building* target = findBuilding(shipment.targetBuildingId);
+            if (!economy->roadNetwork->RestoreShipment(shipment, source, target))
                 return false;
-            projectile.damageType = static_cast<DamageType>(damageType);
-            projectile.filter = static_cast<AttackTargetFilter>(targetFilter);
-            projectiles[id] = std::move(projectile);
         }
+        if (!economy->roadNetwork->RestoreNextShipmentId(pending.nextShipmentId))
+            return false;
     }
 
     in >> std::ws;

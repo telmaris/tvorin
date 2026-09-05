@@ -1,43 +1,56 @@
-// Roster/deploy panel (TD etap-8.1) + its GuiSystem.
+// Recruited roster panel. Deployment is a global-map concern and is not
+// available while the local province view is the only playable map.
 
 #include "GuiInternal.h"
 
 #include "ui/ControlIcons.h"
+#include "ui/UnitTypeCard.h"
 #include "scenes/Scenes.h"
 #include "economy/Player.h"
 #include "warfare/UnitDefinition.h"
-#include "core/GameCommand.h"
-#include "simulation/MilitaryRoadNetwork.h"
-#include "simulation/PathingService.h"
 
 #include <algorithm>
-#include <set>
+#include <cmath>
 
 namespace
 {
-    // Every player the local player could currently deploy against: direct
-    // ring neighbors, or transitively reachable through a conquered HQ
-    // (PathingService::AreHqsConnected already covers both — see etap-6.3).
-    std::vector<int> ReachableEnemyPlayerIds(GameScene* scene, int localPlayerId)
+    const TaskGroupView* FindTaskGroupView(const GameSnapshot& snapshot, TaskGroupId id)
+    {
+        for (const auto& group : snapshot.taskGroups)
+            if (group.id == id)
+                return &group;
+        return nullptr;
+    }
+
+    const char* TaskGroupStatusLabel(TaskGroupStatus status)
+    {
+        switch (status)
+        {
+            case TaskGroupStatus::Empty: return "Empty";
+            case TaskGroupStatus::Reserve: return "Reserve";
+            case TaskGroupStatus::Garrison: return "Garrison";
+            case TaskGroupStatus::Journey: return "Journey";
+            case TaskGroupStatus::Battle: return "Battle";
+            case TaskGroupStatus::Mixed: return "Mixed";
+        }
+        return "Unknown";
+    }
+
+    std::vector<int> CompletedBarracksIds(GameScene* scene, ProvinceId provinceId)
     {
         std::vector<int> result;
         if (scene == nullptr || scene->game == nullptr)
             return result;
+        Player* player = GuiLocalPlayer(scene);
+        ProvinceSimulation* simulation = player != nullptr
+            ? player->GetProvinceSimulation(provinceId) : nullptr;
+        if (simulation == nullptr)
+            return result;
 
-        auto& playerHandler = scene->game->GetPlayerHandler();
-        auto isEliminated = [&](int playerId)
-        {
-            auto it = playerHandler.players.find(playerId);
-            return it != playerHandler.players.end() && it->second != nullptr && it->second->defeated;
-        };
-
-        for (const auto& [id, player] : playerHandler.players)
-        {
-            if (id == localPlayerId || player == nullptr || player->defeated)
-                continue;
-            if (PathingService::AreHqsConnected(scene->game->GetMilitaryRoads(), localPlayerId, id, isEliminated))
-                result.push_back(id);
-        }
+        for (Building* building : simulation->GetEconomy().dataTracker.buildings)
+            if (building != nullptr && building->buildingType == BuildingType::Barracks &&
+                !building->IsUnderConstruction())
+                result.push_back(building->id);
         std::sort(result.begin(), result.end());
         return result;
     }
@@ -63,160 +76,218 @@ void RosterPanelWidget::Update(double dt)
     const float chromeInset = UiControlIcons::PixelHudFrameInset(bounds);
     Rectangle title{bounds.x + chromeInset + 2.0f, bounds.y + 4.0f,
                     bounds.width - (chromeInset + 2.0f) * 2.0f, 42.0f};
-    UiText::DrawTitleBar(title, "Roster & Deploy", PanelTitleCloseReserve(bounds));
+    UiText::DrawTitleBar(title, "Roster", PanelTitleCloseReserve(bounds));
     DrawCloseButton(bounds);
 
-    // Drop anything no longer a valid InRoster unit (deployed some other way,
-    // or the roster changed under us) before drawing.
-    selectedGroup.erase(std::remove_if(selectedGroup.begin(), selectedGroup.end(), [&](int id)
+    const float margin = 24.0f;
+    const float top = bounds.y + 64.0f;
+    const float contentWidth = bounds.width - margin * 2.0f;
+    const float split = std::floor(contentWidth * 0.42f);
+    const float leftX = bounds.x + margin;
+    const float rightX = leftX + split + 18.0f;
+    const float rightWidth = contentWidth - split - 18.0f;
+    const float bottom = bounds.y + bounds.height - 24.0f;
+    const ProvinceId provinceId = scene->game->GetLocalActiveProvinceId();
+    const std::vector<int> barracksIds = CompletedBarracksIds(scene, provinceId);
+    if (std::find(barracksIds.begin(), barracksIds.end(), selectedBarracksId) == barracksIds.end())
+        selectedBarracksId = barracksIds.empty() ? 0 : barracksIds.front();
+    const int barracksId = selectedBarracksId;
+
+    DrawLineEx({rightX - 9.0f, top - 4.0f}, {rightX - 9.0f, bottom}, 1.0f,
+               UiTheme::Bronze);
+    std::string provinceName = "active province";
+    for (const auto& node : scene->latestSnapshot.globalMapView.nodes)
+        if (node.id == provinceId && !node.displayName.empty())
+            provinceName = node.displayName;
+    UiText::Draw("Units in " + provinceName, static_cast<int>(leftX),
+                 static_cast<int>(top), 20, UiTheme::AmberBright);
+    UiText::Draw("Task groups", static_cast<int>(rightX),
+                 static_cast<int>(top), 20, UiTheme::AmberBright);
+
+    const float unitCardGap = 8.0f;
+    constexpr int cardColumns = 4;
+    const float cardSize = std::clamp(
+        std::floor((split - unitCardGap * (cardColumns - 1)) / cardColumns),
+        48.0f, 104.0f);
+    const float cardGridWidth = cardColumns * cardSize + (cardColumns - 1) * unitCardGap;
+    const float cardGridX = leftX + (split - cardGridWidth) * 0.5f;
+    const float cardGridY = top + 30.0f;
+    const Rectangle leftViewport{leftX, cardGridY, split, bottom - cardGridY};
+    BeginScissorMode(static_cast<int>(leftViewport.x), static_cast<int>(leftViewport.y),
+                     static_cast<int>(leftViewport.width),
+                     static_cast<int>(leftViewport.height));
+
+    std::vector<std::pair<std::string, const UnitDefinition*>> unitTypes;
+    for (const auto& [id, definition] : GetUnitCatalog())
+        if (definition.recruitBuilding == BuildingType::Barracks)
+            unitTypes.emplace_back(id, &definition);
+    std::stable_sort(unitTypes.begin(), unitTypes.end(), [](const auto& lhs, const auto& rhs)
     {
-        const BattleUnit* unit = player->roster.FindUnit(id);
-        return unit == nullptr || unit->state != BattleUnitState::InRoster;
-    }), selectedGroup.end());
+        return lhs.first < rhs.first;
+    });
 
-    float margin = 24.0f;
-    float columnGap = 24.0f;
-    float columnW = (bounds.width - margin * 2.0f - columnGap) / 2.0f;
-    float top = bounds.y + 60.0f;
-    float targetAreaH = 110.0f;
-    float listBottom = bounds.y + bounds.height - targetAreaH;
-
-    Rectangle availableArea{bounds.x + margin, top, columnW, listBottom - top};
-    Rectangle groupArea{bounds.x + margin + columnW + columnGap, top, columnW, listBottom - top};
-
-    UiText::Draw("Available", static_cast<int>(availableArea.x), static_cast<int>(availableArea.y), 20, UiTheme::AmberBright);
-    UiText::Draw("Attack group (spearhead first)", static_cast<int>(groupArea.x), static_cast<int>(groupArea.y), 20, UiTheme::AmberBright);
-
-    std::set<int> inGroup(selectedGroup.begin(), selectedGroup.end());
-    const int rowH = 44;
-
-    // --- Available units: click a row to append it to the tail of the group ---
-    float rowY = availableArea.y + 28.0f;
-    for (const auto& [instanceId, unit] : player->roster.units)
+    if (unitTypes.empty())
     {
-        if (unit.state != BattleUnitState::InRoster || inGroup.count(instanceId) > 0)
-            continue;
-        if (rowY + rowH > availableArea.y + availableArea.height)
-            break;
-
-        const UnitDefinition* def = FindUnitDefinition(unit.unitDefId);
-        std::string label = (def != nullptr ? def->displayName : unit.unitDefId) + " - HP " +
-            std::to_string(static_cast<int>(std::round(unit.GetEffectiveMaxHp(*player))));
-
-        Rectangle row{availableArea.x, rowY, availableArea.width, static_cast<float>(rowH - 6)};
-        bool hovered = CheckCollisionPointRec(GetMousePosition(), row);
-        UiControlIcons::DrawPixelHudWidgetFrame(row, hovered);
-        UiText::DrawFit(label, Rectangle{row.x + 10.0f, row.y + 4.0f, row.width - 60.0f, row.height - 8.0f}, 17, UiTheme::Parchment);
-        UiText::DrawFit("+ Add", Rectangle{row.x + row.width - 56.0f, row.y + 4.0f, 48.0f, row.height - 8.0f}, 15, UiTheme::SageBright);
-
-        if (hovered && InputManager::IsMouseButtonPressed(MOUSE_BUTTON_LEFT))
-            selectedGroup.push_back(instanceId);
-
-        rowY += rowH;
+        UiText::DrawFit("No recruitable units", Rectangle{leftX, cardGridY, split, 24.0f},
+                        17, UiTheme::ParchmentDim);
     }
-    if (rowY == availableArea.y + 28.0f)
+    else
     {
-        UiText::DrawFit("No units ready to deploy — recruit some at a Barracks",
-                        Rectangle{availableArea.x, rowY, availableArea.width, 20.0f}, 15, UiTheme::ParchmentDim);
-    }
-
-    // --- Attack group: ordered, with reorder (up) and remove (x) controls ---
-    rowY = groupArea.y + 28.0f;
-    for (size_t i = 0; i < selectedGroup.size(); i++)
-    {
-        if (rowY + rowH > groupArea.y + groupArea.height)
-            break;
-
-        int instanceId = selectedGroup[i];
-        const BattleUnit* unit = player->roster.FindUnit(instanceId);
-        const UnitDefinition* def = unit != nullptr ? FindUnitDefinition(unit->unitDefId) : nullptr;
-        std::string label = std::to_string(i + 1) + ". " + (def != nullptr ? def->displayName :
-            (unit != nullptr ? unit->unitDefId : "?"));
-        if (i == 0)
-            label += " (spearhead)";
-
-        Rectangle row{groupArea.x, rowY, groupArea.width, static_cast<float>(rowH - 6)};
-        UiControlIcons::DrawPixelHudWidgetFrame(row);
-        UiText::DrawFit(label, Rectangle{row.x + 10.0f, row.y + 4.0f, row.width - 96.0f, row.height - 8.0f}, 16, UiTheme::Parchment);
-
-        Rectangle upRect{row.x + row.width - 84.0f, row.y + 4.0f, 34.0f, row.height - 8.0f};
-        Rectangle removeRect{row.x + row.width - 44.0f, row.y + 4.0f, 34.0f, row.height - 8.0f};
-        bool upHovered = i > 0 && CheckCollisionPointRec(GetMousePosition(), upRect);
-        bool removeHovered = CheckCollisionPointRec(GetMousePosition(), removeRect);
-
-        if (i > 0)
+        for (std::size_t index = 0; index < unitTypes.size(); ++index)
         {
-            UiControlIcons::DrawPixelHudWidgetFrame(upRect, upHovered);
-            UiText::DrawFit("Up", Rectangle{upRect.x + 2.0f, upRect.y + 3.0f, upRect.width - 4.0f, upRect.height - 6.0f}, 13, UiTheme::Parchment);
-            if (upHovered && InputManager::IsMouseButtonPressed(MOUSE_BUTTON_LEFT))
-                std::swap(selectedGroup[i], selectedGroup[i - 1]);
+            const auto& [unitId, definition] = unitTypes[index];
+            int totalCount = 0;
+            int selectedCount = 0;
+            for (const auto& [instanceId, unit] : player->roster.units)
+            {
+                if (unit.unitDefId != unitId || unit.assignment.provinceId != provinceId)
+                    continue;
+                ++totalCount;
+                if (unit.taskGroupId == selectedTaskGroupId)
+                    ++selectedCount;
+            }
+            Rectangle card{cardGridX + static_cast<float>(index % cardColumns) * (cardSize + unitCardGap),
+                           cardGridY + static_cast<float>(index / cardColumns) * (cardSize + unitCardGap),
+                           cardSize, cardSize};
+            const bool hovered = CheckCollisionPointRec(GetMousePosition(), card);
+            DrawUnitTypeCard(card, UnitTypeCardView{unitId, definition->displayName,
+                                                     totalCount, selectedCount, barracksId > 0},
+                             hovered);
+            if (!hovered || selectedTaskGroupId == InvalidTaskGroupId ||
+                barracksId <= 0 || !IsMouseButtonPressed(MOUSE_BUTTON_LEFT) &&
+                !IsMouseButtonPressed(MOUSE_BUTTON_RIGHT))
+                continue;
+            const TaskGroupView* selectedGroup = FindTaskGroupView(
+                scene->latestSnapshot, selectedTaskGroupId);
+            if (selectedGroup == nullptr || !selectedGroup->editable)
+                continue;
+            const bool remove = IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL);
+            const int limit = IsMouseButtonPressed(MOUSE_BUTTON_RIGHT) ? 5 : 1;
+            std::vector<int> ids;
+            for (const auto& [instanceId, unit] : player->roster.units)
+            {
+                if (unit.unitDefId != unitId || unit.assignment.provinceId != provinceId ||
+                    unit.assignment.kind != UnitAssignmentKind::BarracksReserve ||
+                    unit.assignment.buildingId != barracksId)
+                    continue;
+                if (remove ? unit.taskGroupId == selectedTaskGroupId
+                           : unit.taskGroupId == InvalidTaskGroupId)
+                    ids.push_back(instanceId);
+                if (static_cast<int>(ids.size()) == limit)
+                    break;
+            }
+            if (!ids.empty())
+                scene->SubmitLocalCommand(remove
+                    ? GameCommand::RemoveUnitsFromTaskGroup(
+                        scene->game->GetLocalPlayerId(), provinceId,
+                        selectedTaskGroupId, std::move(ids))
+                    : GameCommand::AddUnitsToTaskGroup(
+                        scene->game->GetLocalPlayerId(), provinceId,
+                        selectedTaskGroupId, std::move(ids)));
         }
+    }
+    EndScissorMode();
 
-        UiControlIcons::DrawPixelHudWidgetFrame(removeRect, removeHovered,
-                                                Color{180, 100, 96, 255});
-        UiText::DrawFit("X", Rectangle{removeRect.x + 2.0f, removeRect.y + 3.0f, removeRect.width - 4.0f, removeRect.height - 6.0f}, 14, UiTheme::Parchment);
-        if (removeHovered && InputManager::IsMouseButtonPressed(MOUSE_BUTTON_LEFT))
+    std::vector<const TaskGroupView*> groups;
+    for (const auto& group : scene->latestSnapshot.taskGroups)
+        if (group.stationProvinceId == provinceId && group.homeBarracksBuildingId == barracksId)
+            groups.push_back(&group);
+    if (std::none_of(groups.begin(), groups.end(),
+                     [this](const TaskGroupView* group)
+                     {
+                         return group != nullptr && group->id == selectedTaskGroupId;
+                     }))
+        selectedTaskGroupId = InvalidTaskGroupId;
+
+    const float cardGap = 10.0f;
+    const float cardWidth = std::max(120.0f, (rightWidth - cardGap) * 0.5f);
+    const float cardHeight = 66.0f;
+    const float groupTop = top + (barracksIds.size() > 1 ? 58.0f : 30.0f);
+    if (barracksIds.size() > 1)
+    {
+        UiText::DrawFit("Barracks #" + std::to_string(barracksId),
+                        {rightX, top + 28.0f, rightWidth - 58.0f, 20.0f},
+                        13, UiTheme::ParchmentDim);
+        const Rectangle previous{rightX + rightWidth - 52.0f, top + 27.0f, 22.0f, 22.0f};
+        const Rectangle next{rightX + rightWidth - 26.0f, top + 27.0f, 22.0f, 22.0f};
+        const bool previousHovered = CheckCollisionPointRec(GetMousePosition(), previous);
+        const bool nextHovered = CheckCollisionPointRec(GetMousePosition(), next);
+        UiControlIcons::DrawPixelHudWidgetFrame(previous, previousHovered, UiTheme::Bronze);
+        UiControlIcons::DrawPixelHudWidgetFrame(next, nextHovered, UiTheme::Bronze);
+        UiText::Draw("<", previous.x + 6.0f, previous.y + 2.0f, 15,
+                     previousHovered ? UiTheme::AmberBright : UiTheme::Parchment);
+        UiText::Draw(">", next.x + 6.0f, next.y + 2.0f, 15,
+                     nextHovered ? UiTheme::AmberBright : UiTheme::Parchment);
+        if (previousHovered && IsMouseButtonPressed(MOUSE_BUTTON_LEFT))
         {
-            selectedGroup.erase(selectedGroup.begin() + static_cast<long>(i));
-            break; // indices shifted; finish drawing the rest next frame
+            const auto it = std::find(barracksIds.begin(), barracksIds.end(), barracksId);
+            const std::size_t index = it == barracksIds.end() ? 0u
+                                                               : static_cast<std::size_t>(it - barracksIds.begin());
+            selectedBarracksId = barracksIds[(index + barracksIds.size() - 1) % barracksIds.size()];
         }
-
-        rowY += rowH;
+        if (nextHovered && IsMouseButtonPressed(MOUSE_BUTTON_LEFT))
+        {
+            const auto it = std::find(barracksIds.begin(), barracksIds.end(), barracksId);
+            const std::size_t index = it == barracksIds.end() ? 0u
+                                                               : static_cast<std::size_t>(it - barracksIds.begin());
+            selectedBarracksId = barracksIds[(index + 1) % barracksIds.size()];
+        }
     }
-    if (selectedGroup.empty())
+    const int columns = cardWidth >= 180.0f ? 2 : 1;
+    const float actualCardWidth = columns == 2 ? cardWidth : rightWidth;
+    const Rectangle plus{rightX, groupTop, actualCardWidth, cardHeight};
+    const bool plusHovered = CheckCollisionPointRec(GetMousePosition(), plus);
+    UiControlIcons::DrawPixelHudWidgetFrame(plus, plusHovered, UiTheme::SageBright);
+    UiText::DrawFit(barracksId > 0 ? "+  Create empty task group" :
+                                     "Build a completed Barracks first",
+                    Rectangle{plus.x + 10.0f, plus.y + 20.0f, plus.width - 20.0f, 24.0f},
+                    14, barracksId > 0 ? UiTheme::SageBright : UiTheme::ParchmentDim);
+    if (plusHovered && barracksId > 0 && IsMouseButtonPressed(MOUSE_BUTTON_LEFT))
+        scene->SubmitLocalCommand(GameCommand::CreateTaskGroup(
+            scene->game->GetLocalPlayerId(), provinceId, barracksId));
+
+    for (std::size_t index = 0; index < groups.size(); ++index)
     {
-        UiText::DrawFit("Click units on the left to add them to the attack group",
-                        Rectangle{groupArea.x, rowY, groupArea.width, 20.0f}, 15, UiTheme::ParchmentDim);
+        const TaskGroupView& group = *groups[index];
+        const int column = static_cast<int>(index % columns);
+        const int row = static_cast<int>(index / columns) + 1;
+        const Rectangle card{rightX + column * (actualCardWidth + cardGap),
+                             groupTop + row * (cardHeight + cardGap),
+                             actualCardWidth, cardHeight};
+        const bool selected = group.id == selectedTaskGroupId;
+        const bool hovered = CheckCollisionPointRec(GetMousePosition(), card);
+        UiControlIcons::DrawPixelHudWidgetFrame(card, hovered || selected,
+                                                 selected ? UiTheme::Gold : WHITE);
+        UiText::DrawFit("Task group #" + std::to_string(group.id),
+                        Rectangle{card.x + 8.0f, card.y + 6.0f, card.width - 32.0f, 18.0f},
+                        14, UiTheme::Parchment);
+        UiText::DrawFit(std::to_string(group.total) + " units  " +
+                            TaskGroupStatusLabel(group.status),
+                        Rectangle{card.x + 8.0f, card.y + 27.0f, card.width - 16.0f, 16.0f},
+                        13, group.editable ? UiTheme::SageBright : UiTheme::AmberBright);
+        UiText::DrawFit("Barracks #" + std::to_string(group.homeBarracksBuildingId),
+                        Rectangle{card.x + 8.0f, card.y + 45.0f, card.width - 16.0f, 15.0f},
+                        11, UiTheme::ParchmentDim);
+
+        const Rectangle disband{card.x + card.width - 25.0f, card.y + 5.0f, 20.0f, 20.0f};
+        const bool disbandHovered = CheckCollisionPointRec(GetMousePosition(), disband);
+        UiText::Draw("X", disband.x + 5.0f, disband.y + 1.0f, 15,
+                     disbandHovered ? UiTheme::RustBright : UiTheme::ParchmentDim);
+        if (disbandHovered && group.editable && IsMouseButtonPressed(MOUSE_BUTTON_LEFT))
+        {
+            scene->SubmitLocalCommand(GameCommand::DisbandTaskGroup(
+                scene->game->GetLocalPlayerId(), provinceId, group.id));
+            if (selectedTaskGroupId == group.id)
+                selectedTaskGroupId = InvalidTaskGroupId;
+        }
+        else if (hovered && IsMouseButtonPressed(MOUSE_BUTTON_LEFT))
+            selectedTaskGroupId = group.id;
     }
 
-    // --- Target picker + Deploy ---
-    float targetY = listBottom + 12.0f;
-    UiText::Draw("Target", static_cast<int>(bounds.x + margin), static_cast<int>(targetY), 18, UiTheme::AmberBright);
-    targetY += 24.0f;
-
-    std::vector<int> reachable = ReachableEnemyPlayerIds(scene, player->id);
-    if (selectedTargetPlayerId != -1 &&
-        std::find(reachable.begin(), reachable.end(), selectedTargetPlayerId) == reachable.end())
-        selectedTargetPlayerId = -1; // previous target no longer reachable (e.g. it was just eliminated)
-    if (selectedTargetPlayerId == -1 && reachable.size() == 1)
-        selectedTargetPlayerId = reachable.front(); // "w 1vs1 auto" generalized to "only one choice"
-
-    float targetX = bounds.x + margin;
-    if (reachable.empty())
-    {
-        UiText::DrawFit("No reachable enemy — build/hold the military road ring",
-                        Rectangle{targetX, targetY, bounds.width - margin * 2.0f, 20.0f}, 15, Color{238, 184, 84, 255});
-    }
-    for (int targetId : reachable)
-    {
-        auto& playerHandler = scene->game->GetPlayerHandler();
-        auto it = playerHandler.players.find(targetId);
-        std::string name = (it != playerHandler.players.end() && it->second != nullptr) ? it->second->name : "?";
-        Rectangle chip{targetX, targetY, 150.0f, 30.0f};
-        bool selected = targetId == selectedTargetPlayerId;
-        bool hovered = CheckCollisionPointRec(GetMousePosition(), chip);
-        UiControlIcons::DrawPixelHudWidgetFrame(chip, hovered,
-                                                selected ? Color{176, 210, 150, 255} : WHITE);
-        UiText::DrawFit(name, Rectangle{chip.x + 8.0f, chip.y + 4.0f, chip.width - 16.0f, chip.height - 8.0f}, 16, UiTheme::Parchment);
-        if (hovered && InputManager::IsMouseButtonPressed(MOUSE_BUTTON_LEFT))
-            selectedTargetPlayerId = targetId;
-        targetX += chip.width + 10.0f;
-    }
-
-    Rectangle deployRect{bounds.x + bounds.width - margin - 160.0f, bounds.y + bounds.height - 56.0f, 160.0f, 40.0f};
-    bool canDeploy = !selectedGroup.empty() && selectedTargetPlayerId != -1;
-    bool deployHovered = canDeploy && CheckCollisionPointRec(GetMousePosition(), deployRect);
-    UiControlIcons::DrawPixelHudWidgetFrame(
-        deployRect, deployHovered,
-        canDeploy ? Color{176, 210, 150, 255} : Color{135, 135, 135, 190});
-    UiText::DrawFit("Deploy", Rectangle{deployRect.x + 10.0f, deployRect.y + 6.0f, deployRect.width - 20.0f, deployRect.height - 12.0f},
-                    20, !canDeploy ? UiTheme::ParchmentDim : UiTheme::Parchment);
-
-    if (deployHovered && InputManager::IsMouseButtonPressed(MOUSE_BUTTON_LEFT))
-    {
-        scene->SubmitLocalCommand(GameCommand::DeployUnits(player->id, selectedTargetPlayerId, selectedGroup));
-        selectedGroup.clear();
-    }
+    if (selectedTaskGroupId != InvalidTaskGroupId)
+        UiText::DrawFit("LMB: add unit  |  Ctrl+LMB: remove unit",
+                        Rectangle{leftX, bottom - 18.0f, contentWidth, 18.0f},
+                        13, UiTheme::ParchmentDim);
 }
 
 // ─── RosterGuiSystem ─────────────────────────────────────────────────────────
@@ -224,9 +295,7 @@ void RosterPanelWidget::Update(double dt)
 RosterGuiSystem::RosterGuiSystem(GuiController* con)
     : GuiSystem(con)
 {
-    // A4 (docs/work_plan_2026-07-13.md): shadows GuiSystem::scene (Scene*).
     scene = dynamic_cast<GameScene*>(owner->scene);
-
     WireCommonSystemActions(*this, cameraMovement);
 
     rosterPanel.scene = scene;
@@ -234,6 +303,11 @@ RosterGuiSystem::RosterGuiSystem(GuiController* con)
     rosterPanel.ChangeSizeAnchor({0.88f, 0.82f});
     rosterPanel.UpdateSize({GetScreenWidth(), GetScreenHeight()});
     SetupStrategicHud(strategicHudWidget, scene);
+}
+
+bool RosterGuiSystem::CanActivate()
+{
+    return HasCompletedBarracks(scene);
 }
 
 void RosterGuiSystem::UpdateUiWidgets(Vec2i size)
@@ -312,18 +386,12 @@ void RosterGuiSystem::LmbPressed()
         return;
 
     Vector2 mouse = GetMousePosition();
-    Rectangle panelBounds{
-        static_cast<float>(rosterPanel.pos.x),
-        static_cast<float>(rosterPanel.pos.y),
-        static_cast<float>(rosterPanel.size.x),
-        static_cast<float>(rosterPanel.size.y)};
+    Rectangle panelBounds{static_cast<float>(rosterPanel.pos.x),
+                          static_cast<float>(rosterPanel.pos.y),
+                          static_cast<float>(rosterPanel.size.x),
+                          static_cast<float>(rosterPanel.size.y)};
     if (CheckCollisionPointRec(mouse, PanelCloseButtonRect(panelBounds)))
         EscPressed();
-
-    // Row/button clicks inside the panel are handled directly in
-    // RosterPanelWidget::Update via IsMouseButtonPressed — no separate
-    // HandleClick dispatch needed (same approach as GuiPanel's recruitment
-    // branch), so there is nothing else to do here.
 }
 
 void RosterGuiSystem::LmbReleased()
@@ -333,11 +401,10 @@ void RosterGuiSystem::LmbReleased()
 void RosterGuiSystem::RmbPressed()
 {
     Vector2 mouse = GetMousePosition();
-    Rectangle panelBounds{
-        static_cast<float>(rosterPanel.pos.x),
-        static_cast<float>(rosterPanel.pos.y),
-        static_cast<float>(rosterPanel.size.x),
-        static_cast<float>(rosterPanel.size.y)};
+    Rectangle panelBounds{static_cast<float>(rosterPanel.pos.x),
+                          static_cast<float>(rosterPanel.pos.y),
+                          static_cast<float>(rosterPanel.size.x),
+                          static_cast<float>(rosterPanel.size.y)};
     if (CheckCollisionPointRec(mouse, panelBounds))
     {
         cameraMovement.isMoving = false;

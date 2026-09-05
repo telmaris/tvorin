@@ -11,6 +11,7 @@
 #include <deque>
 #include <map>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -134,6 +135,15 @@ enum class ResourceType : uint8_t
 
 };
 
+// Stable value object shared by authoritative strategic transfers and their
+// serialized command/journey payloads. Resource types are ordered by their
+// numeric enum value at validation boundaries.
+struct ResourceAmount
+{
+    ResourceType type{ResourceType::Null};
+    int amount{0};
+};
+
 // Resource types supported by the data-driven resource catalog, in their
 // player-facing presentation order.  Keep this separate from the numeric
 // ResourceType ids: ids are serialized in saves and multiplayer snapshots,
@@ -142,7 +152,7 @@ enum class ResourceType : uint8_t
 // The order is grouped by material family, then by processing stage within a
 // family. This makes a full warehouse read as distinct thematic blocks rather
 // than one long production-chain timeline.
-constexpr ResourceType resourceTypes[] = 
+constexpr ResourceType resourceTypes[] =
 {
     // Timber
     ResourceType::WOOD,
@@ -325,9 +335,46 @@ inline std::string rt2s(ResourceType s)
         case ResourceType::BALLISTA: return "BALLISTA";
         case ResourceType::BATTERING_RAM: return "BATTERING_RAM";
         case ResourceType::CATAPULT: return "CATAPULT";
+        case ResourceType::ReservedCopperSwordSlot: return "ReservedCopperSwordSlot";
+        case ResourceType::ReservedWeaponSlot: return "ReservedWeaponSlot";
 
         default: return "Unknown";
     }
+}
+
+// Canonical data/config parser. Every named ResourceType, including retained
+// legacy slots, is resolved through the same table used by debug labels. An
+// unknown name returns false instead of silently becoming ResourceType::Null.
+inline bool TryParseResourceType(std::string_view value, ResourceType& out)
+{
+    if (value == "NULL")
+    {
+        out = ResourceType::Null;
+        return true;
+    }
+
+    constexpr ResourceType legacyTypes[] = {
+        ResourceType::ReservedCopperSwordSlot,
+        ResourceType::ReservedWeaponSlot,
+    };
+    for (ResourceType type : legacyTypes)
+    {
+        if (value == rt2s(type))
+        {
+            out = type;
+            return true;
+        }
+    }
+
+    for (ResourceType type : resourceTypes)
+    {
+        if (value == rt2s(type))
+        {
+            out = type;
+            return true;
+        }
+    }
+    return false;
 }
 
 // Player-facing resource name. Keep rt2s() as the stable, all-caps debug and
@@ -413,8 +460,8 @@ bool IsEquipmentCategory(ResourceCategory category);
 // True when the category is a primary weapon (Sword/Spear/Bow/Crossbow/Firearm).
 bool IsWeaponCategory(ResourceCategory category);
 
-// Transportable resource instance. Gameplay-created instances are owned by a
-// ResourceBuffer while stored or by a transport carrier while in flight.
+// Transportable resource instance. Instances come from one process-wide,
+// fixed-capacity pool; gameplay never allocates a Resource on the heap.
 struct Resource : Transportable
 {
     Resource() = default;
@@ -442,10 +489,12 @@ struct Resource : Transportable
     ~Resource() = default;
     static Resource* CreateOwned(ResourceType type);
     static void DestroyOwned(Resource* resource);
-    std::string tag{"[Resource]"};
+    std::string_view tag{"[Resource]"};
     ResourceType type{ResourceType::Null};
     // Broad economic/combat tag of this resource, derived from `type`.
     ResourceCategory category{ResourceCategory::None};
+    // Kept under the historical name to avoid a flag-day API break. True now
+    // means "checked out from the static pool", not heap ownership.
     bool ownedAllocation{false};
 };
 
@@ -518,19 +567,21 @@ class ResourceBuffer
         std::vector<Resource*> buffer;
 };
 
-// Compatibility facade for older callers. Resource allocation itself is lazy
-// and owned by each ResourceBuffer; no process-wide free-list is maintained.
+// Facade over the process-wide static resource free-list. All ResourcePool
+// instances address the same fixed storage; constructing a world or province
+// never creates another multi-megabyte pool.
 class ResourcePool
 {
 public:
-
     ResourcePool() = default;
 
     Resource* GetResource(ResourceType);
     void FreeResource(Resource*);
-    void Reset() noexcept {}
+    std::size_t Available() const noexcept;
+    static constexpr std::size_t Capacity = 1'000'000;
 };
 
-// Resource allocation is lazy and owned by individual buffers.
+// Stored buffers reuse checked-out objects; no per-resource construction or
+// destruction takes place during production, transport or loading.
 
 #endif

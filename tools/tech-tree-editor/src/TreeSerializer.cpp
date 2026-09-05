@@ -17,10 +17,10 @@ namespace
         "BuildTime", "BuildCost", "ProductionCycleTime", "ProductionOutputAmount",
         "WorkerCapacity", "TransportTime", "RoadCapacity", "RoadSpeed",
         "ManpowerRate", "PopulationCap", "BuilderAmount",
-        "UnitHp", "UnitRoadAttack", "UnitSiegeAttack", "UnitArmor",
+        "UnitHp", "UnitFieldAttack", "UnitSiegePower", "UnitArmor",
         "UnitMoveSpeed", "UnitAttackSpeed", "UnitRecruitTime", "UnitRecruitManpowerCost",
-        "HqMaxHp", "HqDefense", "HqThorns", "ConquestSpoilsFraction",
-        "TowerDamage", "TowerRange", "TowerAttackSpeed", "TowerAmmoEfficiency",
+        "ProvinceFortification", "ProvinceDefense", "ProvinceCounterattack", "ConquestSpoilsFraction",
+        "ProvinceDefensePower", "ProvinceDefenseCoverage", "ProvinceDefenseReadiness", "ProvinceDefenseSupplyUse",
         "TransportDispatchDelay"};
 
     const std::vector<BalanceStat> balanceStatValues{
@@ -28,19 +28,19 @@ namespace
         BalanceStat::ProductionOutputAmount, BalanceStat::WorkerCapacity, BalanceStat::TransportTime,
         BalanceStat::RoadCapacity, BalanceStat::RoadSpeed, BalanceStat::ManpowerRate,
         BalanceStat::PopulationCap, BalanceStat::BuilderAmount,
-        BalanceStat::UnitHp, BalanceStat::UnitRoadAttack, BalanceStat::UnitSiegeAttack,
+        BalanceStat::UnitHp, BalanceStat::UnitFieldAttack, BalanceStat::UnitSiegePower,
         BalanceStat::UnitArmor, BalanceStat::UnitMoveSpeed, BalanceStat::UnitAttackSpeed,
         BalanceStat::UnitRecruitTime, BalanceStat::UnitRecruitManpowerCost,
-        BalanceStat::HqMaxHp, BalanceStat::HqDefense, BalanceStat::HqThorns,
+        BalanceStat::ProvinceFortification, BalanceStat::ProvinceDefense, BalanceStat::ProvinceCounterattack,
         BalanceStat::ConquestSpoilsFraction,
-        BalanceStat::TowerDamage, BalanceStat::TowerRange, BalanceStat::TowerAttackSpeed,
-        BalanceStat::TowerAmmoEfficiency, BalanceStat::TransportDispatchDelay};
+        BalanceStat::ProvinceDefensePower, BalanceStat::ProvinceDefenseCoverage, BalanceStat::ProvinceDefenseReadiness,
+        BalanceStat::ProvinceDefenseSupplyUse, BalanceStat::TransportDispatchDelay};
 
     const std::vector<std::string> buildingTypeNames{
         "Headquarters", "Village", "StorageBuilding", "Woodcutter", "HuntersHut",
         "LumberMill", "Mine", "Foundry", "Well", "WheatFarm", "Windmill", "Bakery",
         "Inn", "Paperworks", "Smith", "Mint", "Glassworks", "Powderworks",
-        "University", "Barracks", "DefenseTower", "Road", "Bridge", "AnimalFarm",
+        "University", "Barracks", "Road", "AnimalFarm",
         "Butcher", "Tannery", "Tailor", "Armorer", "HorseStable", "Kiln",
         "HouseholdWorkshop", "Soapworks", "Inkworks", "Scriptorium", "Copperworks",
         "UrbanWorkshop", "HempFarm", "Ropery", "Weaver", "Bowyer",
@@ -52,8 +52,8 @@ namespace
         BuildingType::Mine, BuildingType::Foundry, BuildingType::Well, BuildingType::WheatFarm,
         BuildingType::Windmill, BuildingType::Bakery, BuildingType::Inn, BuildingType::Paperworks,
         BuildingType::Smith, BuildingType::Mint, BuildingType::Glassworks, BuildingType::Powderworks,
-        BuildingType::University, BuildingType::Barracks, BuildingType::DefenseTower,
-        BuildingType::Road, BuildingType::Bridge, BuildingType::AnimalFarm, BuildingType::Butcher,
+        BuildingType::University, BuildingType::Barracks, BuildingType::Road,
+        BuildingType::AnimalFarm, BuildingType::Butcher,
         BuildingType::Tannery, BuildingType::Tailor, BuildingType::Armorer, BuildingType::HorseStable,
         BuildingType::Kiln, BuildingType::HouseholdWorkshop, BuildingType::Soapworks,
         BuildingType::Inkworks, BuildingType::Scriptorium, BuildingType::Copperworks,

@@ -24,6 +24,11 @@ struct BalanceModifierScope
     std::optional<int> positionId;
     std::optional<Vec2i> center;
     int radius{0};
+    // Local building ids, tile ids and coordinates are only unique inside a
+    // province. A local scope must carry the map identity as well; otherwise
+    // an upgrade in one province can affect the same tile/building id in
+    // another province owned by the same player.
+    std::optional<ProvinceId> provinceId;
 
     static BalanceModifierScope Global()
     {
@@ -38,11 +43,26 @@ struct BalanceModifierScope
         return scope;
     }
 
+    static BalanceModifierScope Building(ProvinceId targetProvinceId, int targetBuildingId)
+    {
+        BalanceModifierScope scope = Building(targetBuildingId);
+        scope.provinceId = targetProvinceId;
+        return scope;
+    }
+
     static BalanceModifierScope BuildingAtPosition(int targetPositionId)
     {
         BalanceModifierScope scope;
         scope.type = BalanceModifierScopeType::Building;
         scope.positionId = targetPositionId;
+        return scope;
+    }
+
+    static BalanceModifierScope BuildingAtPosition(ProvinceId targetProvinceId,
+                                                   int targetPositionId)
+    {
+        BalanceModifierScope scope = BuildingAtPosition(targetPositionId);
+        scope.provinceId = targetProvinceId;
         return scope;
     }
 
@@ -52,6 +72,14 @@ struct BalanceModifierScope
         scope.type = BalanceModifierScopeType::Area;
         scope.center = areaCenter;
         scope.radius = std::max(0, areaRadius);
+        return scope;
+    }
+
+    static BalanceModifierScope Area(ProvinceId targetProvinceId, Vec2i areaCenter,
+                                     int areaRadius)
+    {
+        BalanceModifierScope scope = Area(areaCenter, areaRadius);
+        scope.provinceId = targetProvinceId;
         return scope;
     }
 };
@@ -67,6 +95,7 @@ struct BalanceModifierContext
     // TD(etap-3): unit-definition id (e.g. "swordsman") for BattleUnit stat
     // queries. Empty for every non-unit context.
     std::string unitDefId;
+    ProvinceId provinceId{InvalidProvinceId};
 };
 
 struct BalanceModifier
@@ -107,6 +136,10 @@ struct BalanceModifier
 
     bool AppliesToScope(const BalanceModifierContext& context) const
     {
+        if (scope.provinceId.has_value() &&
+            scope.provinceId.value() != context.provinceId)
+            return false;
+
         switch (scope.type)
         {
             case BalanceModifierScopeType::GlobalPlayer:

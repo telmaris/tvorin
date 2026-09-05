@@ -1,6 +1,9 @@
 #include "scenes/Scenes.h"
 #include "ui/ControlIcons.h"
+#include "ui/KeyBindings.h"
 
+#include <algorithm>
+#include <cmath>
 #include <sstream>
 
 // Initializes ControlsScene::ControlsScene.
@@ -17,6 +20,9 @@ ControlsScene::ControlsScene()
 
 namespace
 {
+    float controlsDensity = 1.0f;
+    float controlsColumnWidth = 360.0f;
+
     const char* ControlIconForWord(const std::string& word)
     {
         if (word == "Q") return "key_q";
@@ -27,7 +33,9 @@ namespace
         if (word == "F") return "key_f";
         if (word == "T") return "key_t";
         if (word == "U") return "key_u";
+        if (word == "G") return "key_g";
         if (word == "L") return "key_l";
+        if (word == "M") return "key_m";
         if (word == "Space") return "key_space";
         if (word == "ESC") return "key_escape";
         if (word == "LMB") return "mouse_lmb";
@@ -39,9 +47,10 @@ namespace
 
     void DrawControlLabel(const std::string& label, float x, float y, float maxWidth)
     {
+        const int labelFont = std::max(14, static_cast<int>(std::round(16.0f * controlsDensity)));
         if (!UiControlIcons::IsLoaded())
         {
-            UiText::Draw(label, x, y, 18, Color{255, 220, 120, 255});
+            UiText::Draw(label, x, y, labelFont, Color{255, 220, 120, 255});
             return;
         }
 
@@ -57,39 +66,48 @@ namespace
             const char* iconName = ControlIconForWord(token);
             if (iconName != nullptr)
             {
-                constexpr float iconSize = 22.0f;
+                const float iconSize = std::max(17.0f, 22.0f * controlsDensity);
                 if (cursor + iconSize <= x + maxWidth &&
                     !UiControlIcons::Draw(iconName, {cursor, y + 1.0f, iconSize, iconSize}))
                 {
-                    UiText::Draw(token, cursor, y + 2.0f, 16, Color{255, 220, 120, 255});
+                    UiText::Draw(token, cursor, y + 2.0f, labelFont, Color{255, 220, 120, 255});
                 }
                 cursor += iconSize;
             }
             else
             {
-                UiText::Draw(token, cursor, y + 2.0f, 16, Color{255, 220, 120, 255});
-                cursor += static_cast<float>(UiText::Measure(token, 16));
+                UiText::Draw(token, cursor, y + 2.0f, labelFont, Color{255, 220, 120, 255});
+                cursor += static_cast<float>(UiText::Measure(token, labelFont));
             }
             first = false;
         }
     }
 
     void DrawControlsSection(float x, float& y, const char* header,
-                             const std::vector<std::pair<const char*, const char*>>& rows)
+                             const std::vector<std::pair<std::string, std::string>>& rows)
     {
         {
             UiFontRoleScope displayRole{UiFontRole::Display};
-            UiText::Draw(header, x, y, 22, Color{210, 220, 240, 255});
+            UiText::Draw(header, x, y,
+                         std::max(17, static_cast<int>(std::round(22.0f * controlsDensity))),
+                         Color{210, 220, 240, 255});
         }
-        y += 30.0f;
+        y += 30.0f * controlsDensity;
         for (const auto& [key, desc] : rows)
         {
             float keyW = 130.0f;
             DrawControlLabel(key, x + 8.0f, y, keyW - 8.0f);
-            UiText::Draw(desc, x + keyW, y, 18, Color{190, 200, 216, 255});
-            y += 24.0f;
+            const int descriptionFont = std::max(
+                14, static_cast<int>(std::round(18.0f * controlsDensity)));
+            UiText::DrawFit(desc,
+                            {x + keyW, y,
+                             std::max(80.0f, controlsColumnWidth - keyW - 10.0f),
+                             22.0f * controlsDensity},
+                            descriptionFont,
+                            Color{190, 200, 216, 255});
+            y += 24.0f * controlsDensity;
         }
-        y += 10.0f;
+        y += 10.0f * controlsDensity;
     }
 }
 
@@ -109,6 +127,7 @@ void ControlsScene::Update(double dt)
     float panelY = sh * 0.07f;
 
     Rectangle panel{panelX, panelY, panelW, panelH};
+    controlsDensity = std::clamp((panelH - 90.0f) / 700.0f, 0.72f, 1.0f);
     if (!UiControlIcons::DrawPixelHudPanelFrame(panel))
     {
         DrawRectangleRounded(panel, 0.03f, 8, Color{18, 22, 30, 242});
@@ -122,54 +141,66 @@ void ControlsScene::Update(double dt)
     DrawLineEx({panelX + 24.0f, panelY + 54.0f}, {panelX + panelW - 24.0f, panelY + 54.0f}, 1.0f, Color{70, 84, 106, 200});
 
     const float columnWidth = (panelW - 64.0f) / 3.0f;
+    controlsColumnWidth = columnWidth;
     float col1X = panelX + 32.0f;
     float col2X = col1X + columnWidth;
     float col3X = col2X + columnWidth;
     float startY = panelY + 68.0f;
+    const KeyBindingMap& bindings = GetDefaultKeyBindings();
+    auto key = [&](GameAction action)
+    {
+        return GetBindingDisplayName(bindings, action);
+    };
 
     float y1 = startY;
     DrawControlsSection(col1X, y1, "Camera & navigation", {
-        {"Space",       "Center on Headquarters"},
-        {"RMB drag",    "Pan camera / tree view"},
-        {"MMB drag",    "Pan camera"},
-        {"Scroll",      "Zoom in / out"},
-        {"ESC",         "Open game menu / cancel mode"},
+        {key(GameAction::CenterCameraOnHeadquarters), "Center on Headquarters"},
+        {"RMB drag",    "Pan camera in map/build modes"},
+        {"MMB drag",    "Pan camera in every map mode"},
+        {"Scroll",      "Zoom map or active tree"},
+        {key(GameAction::ToggleLogisticsOverlay), "Toggle logistics load overlay"},
+        {"ESC",         "Close panel, cancel mode, or open menu"},
     });
 
-    DrawControlsSection(col1X, y1, "Panels", {
-        {"Q",           "Build panel"},
-        {"R",           "Road build mode"},
-        {"D",           "Destroy mode"},
-        {"E",           "Headquarters panel"},
-        {"L",           "Toggle road load overlay"},
-        {"S",           "Statistics & economy"},
-        {"F",           "Decisions"},
-        {"T",           "Technology research"},
-        {"U",           "Unit roster & deployment"},
+    DrawControlsSection(col1X, y1, "Modes & panels", {
+        {key(GameAction::EnterBuildMode), "Build browser / exit build mode"},
+        {key(GameAction::EnterRoadMode), "Road construction mode"},
+        {key(GameAction::EnterDestroyMode), "Demolition mode"},
+        {key(GameAction::EnterUpgradeMode), "Mass upgrade mode"},
+        {key(GameAction::OpenStockpilePanel), "Global stockpile overview"},
+        {key(GameAction::OpenStatsPanel), "Statistics and economy"},
+        {key(GameAction::OpenFocusTree), "Strategic decisions"},
+        {key(GameAction::OpenResearchPanel), "Technology tree (needs University)"},
+        {key(GameAction::OpenRosterPanel), "Unit roster"},
     });
 
-    DrawControlsSection(col1X, y1, "Selection", {
+    DrawControlsSection(col1X, y1, "Map selection & logistics", {
         {"LMB",         "Select building on map"},
-        {"LMB (build)", "Confirm building placement"},
-        {"RMB click",   "Connect selected building"},
-        {"Ctrl+RMB",    "Add alternative receiver"},
+        {"LMB (build)", "Open an existing building panel directly"},
+        {"RMB click",   "Set selected building's receiver"},
+        {"Ctrl+RMB",    "Set an alternative receiver"},
+        {key(GameAction::OpenGlobalMap), "Open/close global map; inspect known provinces, tracks, and scouting"},
     });
 
     float y2 = startY;
     DrawControlsSection(col2X, y2, "Building & roads", {
         {"LMB on card",  "Select building to place"},
         {"LMB on map",   "Place selected building"},
-        {"LMB drag",     "Paint an axis-locked road"},
-        {"Pause drag",   "Arm a road direction change"},
-        {"Scroll",       "Scroll build / info panels"},
-        {"ESC / Q",      "Cancel build mode"},
+        {"RMB drag",     "Move camera without leaving build mode"},
+        {"LMB drag",     "Paint a straight road segment"},
+        {"Pause drag",   "Allow a road direction change"},
+        {"Scroll",       "Scroll hovered panel; otherwise zoom"},
+        {"ESC / Q",      "Exit building placement"},
+        {"ESC / R",      "Exit road placement"},
     });
 
-    DrawControlsSection(col2X, y2, "Military", {
-        {"U",            "Open roster and choose a target"},
-        {"LMB unit",     "Select or order deployment group"},
-        {"LMB target",   "Choose an active enemy HQ"},
-        {"LMB Deploy",   "Send selected units"},
+    DrawControlsSection(col2X, y2, "Upgrade & demolition", {
+        {"G",            "Enter or leave mass upgrade mode"},
+        {"LMB",          "Upgrade one building or road"},
+        {"LMB drag",     "Upgrade every crossed road/building once"},
+        {"RMB",          "Cancel upgrade gesture and leave mode"},
+        {"D",            "Enter or leave demolition mode"},
+        {"LMB (destroy)","Demolish hovered owned building"},
     });
 
     DrawControlsSection(col2X, y2, "Research & decisions", {
@@ -181,22 +212,25 @@ void ControlsScene::Update(double dt)
 
     float y3 = startY;
     DrawControlsSection(col3X, y3, "Debug & rendering", {
-        {"F5",           "Toggle night preview"},
-        {"F6",           "Toggle day/night cycle"},
-        {"F7",           "Toggle dynamic lights"},
-        {"F8",           "Cycle renderer debug view"},
-        {"F10",          "Grant HQ resources (debug)"},
-        {"F11",          "Advance tutorial step"},
-        {"F12",          "Deploy 4 enemy militia (debug)"},
+        {key(GameAction::ToggleNightPreview), "Toggle night preview"},
+        {key(GameAction::ToggleDayNightCycle), "Toggle day/night cycle"},
+        {key(GameAction::ToggleDynamicLights), "Toggle dynamic lights"},
+        {key(GameAction::CycleRendererDebugView), "Cycle renderer debug view"},
+        {"Ctrl+" + key(GameAction::CaptureFinalFrame), "Capture the final rendered frame"},
+        {key(GameAction::GrantDebugResources), "Grant HQ resources (debug)"},
+        {key(GameAction::SpawnDebugRaid), "Spawn raid on active province (debug)"},
+        {key(GameAction::AdvanceTutorialStep), "Advance tutorial step"},
     });
 
     DrawControlsSection(col3X, y3, "Menus, lobby & text", {
         {"LMB",          "Activate buttons / fields"},
         {"Enter",        "Confirm / send lobby chat"},
         {"Up / Down",    "Navigate dropdown options"},
+        {"Scroll",       "Scroll long dropdown lists"},
+        {"ESC",          "Close dropdown or unfocus text"},
         {"Backspace",    "Delete text"},
-        {"Ctrl+C",       "Copy selected text"},
-        {"Ctrl+V",       "Paste text"},
+        {"Ctrl+C",       "Copy the whole focused field"},
+        {"Ctrl+V",       "Paste at the end of focused field"},
     });
 
     UiText::Draw("Tip: hover over widgets in the New Game screen for detailed descriptions.",

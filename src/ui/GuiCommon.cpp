@@ -23,6 +23,22 @@ Player* GuiLocalPlayer(GameScene* scene)
     return it != scene->game->GetPlayerHandler().players.end() ? it->second.get() : nullptr;
 }
 
+bool HasCompletedBarracks(GameScene* scene)
+{
+    Player* player = GuiLocalPlayer(scene);
+    if (scene == nullptr || scene->game == nullptr || player == nullptr)
+        return false;
+
+    for (const ProvinceId provinceId : scene->game->GetGlobalMap().GetProvinceIds())
+    {
+        const ProvinceSimulation* simulation = player->GetProvinceSimulation(provinceId);
+        if (simulation != nullptr && simulation->GetEconomy().dataTracker.HasBuilding(
+                BuildingType::Barracks, true))
+            return true;
+    }
+    return false;
+}
+
 bool HasUniversity(GameScene* scene)
 {
     Player* player = GuiLocalPlayer(scene);
@@ -88,17 +104,6 @@ void GrantDebugResources(GameScene* scene, int amount)
     Log::Msg("[Debug]", "granted ", amount, " of every resource to local HQ");
 }
 
-void DeployDebugEnemyUnits(GameScene* scene, int count)
-{
-    if (scene == nullptr || scene->game == nullptr ||
-        !scene->game->GetTileMap().params.debugMode || count <= 0)
-        return;
-
-    scene->SubmitLocalCommand(GameCommand::DebugDeployEnemyUnits(
-        scene->game->GetLocalPlayerId(), count));
-    Log::Msg("[Debug]", "requested immediate enemy deployment: ", count, " militia");
-}
-
 namespace
 {
     constexpr float StrategicHudScreenMargin = 4.0f;
@@ -111,10 +116,6 @@ namespace
         return std::clamp(windowSize.y * 0.114f, 106.0f, 130.0f);
     }
 
-    float StrategicHudTopPaddingForWindow(Vec2i windowSize)
-    {
-        return StrategicHudScreenMargin + StrategicHudHeightForWindow(windowSize) + 6.0f;
-    }
 }
 
 void UpdateStrategicHudLayout(StrategicResourceHudWidget& hud, Vec2i windowSize)
@@ -131,7 +132,6 @@ void ApplyStrategicHudCameraPadding(GameScene* scene)
         return;
 
     Vec2i windowSize{GetScreenWidth(), GetScreenHeight()};
-    scene->render.SetTopScreenPadding(StrategicHudTopPaddingForWindow(windowSize));
     scene->render.ClampCameraToMap(GetMapSize(scene));
 }
 
@@ -193,7 +193,8 @@ bool EndCameraDragWasClick(CameraMovement& cameraMovement)
 void ZoomCamera(GameScene* scene)
 {
     float wheel = InputManager::GetMouseWheelMove();
-    if (wheel == 0.0f)
+    if (wheel == 0.0f || scene == nullptr ||
+        scene->campaignSidebar.CapturesPointer(GetMousePosition()))
         return;
 
     ApplyStrategicHudCameraPadding(scene);
@@ -248,6 +249,35 @@ std::string FormatOneDecimal(double value)
     return stream.str();
 }
 
+std::string FormatSimulationTimestamp(std::uint64_t ticks)
+{
+    constexpr std::uint64_t TicksPerSecond = 100;
+    constexpr std::uint64_t SecondsPerDay = 24 * 60 * 60;
+    const std::uint64_t totalSeconds = ticks / TicksPerSecond;
+    const std::uint64_t day = totalSeconds / SecondsPerDay;
+    const std::uint64_t daySeconds = totalSeconds % SecondsPerDay;
+    const std::uint64_t hours = daySeconds / 3600;
+    const std::uint64_t minutes = (daySeconds / 60) % 60;
+    const std::uint64_t seconds = daySeconds % 60;
+    std::ostringstream stream;
+    stream << '[';
+    if (day > 0)
+        stream << 'D' << day + 1 << ' ';
+    stream << std::setfill('0') << std::setw(2) << hours << ':'
+           << std::setw(2) << minutes << ':' << std::setw(2) << seconds << ']';
+    return stream.str();
+}
+
+std::string FormatDurationTicks(std::uint64_t ticks)
+{
+    const double seconds = static_cast<double>(ticks) / 100.0;
+    if (seconds < 10.0)
+        return FormatOneDecimal(seconds) + " s";
+    if (seconds < 60.0)
+        return std::to_string(static_cast<int>(std::ceil(seconds))) + " s";
+    return FormatOneDecimal(seconds / 60.0) + " min";
+}
+
 std::vector<std::string> StockpileTooltipLines(Player* player, ResourceType type)
 {
     if (player == nullptr)
@@ -283,75 +313,91 @@ void DrawResourceTooltip(ResourceType type, const std::vector<std::string>& line
                   [type](Rectangle icon) { GuiPanel::DrawResourceIcon(type, icon); });
 }
 
+namespace
+{
+    constexpr float StrategicHudActionGap = 4.0f;
+    constexpr int StrategicHudActionButtonCount = 8;
+
+    Rectangle StrategicHudActionButtonRect(const StrategicResourceHudWidget& hud,
+                                           int index)
+    {
+        const float height = static_cast<float>(hud.size.y);
+        if (index < 0 || index >= StrategicHudActionButtonCount || hud.size.x <= 0 || hud.size.y <= 0)
+            return {};
+
+        constexpr float leftHudReserve = 450.0f;
+        constexpr float buttonAspect = 1.0f;
+        const float cornerScale = std::min({1.0f, height / 148.0f,
+                                            static_cast<float>(hud.size.x) / 256.0f});
+        const float contentRightInset = 128.0f * cornerScale + 16.0f;
+        // Keep the buttons visually compact even though the frame gained some
+        // vertical room. They must not grow with the taller top panel.
+        const float desiredButtonHeight = std::clamp(height - 52.0f, 44.0f, 60.0f);
+        const float desiredButtonWidth = desiredButtonHeight * buttonAspect;
+        const float widthLimitedButtonWidth =
+            (static_cast<float>(hud.size.x) - leftHudReserve - contentRightInset -
+             (StrategicHudActionButtonCount - 1) * StrategicHudActionGap) /
+            StrategicHudActionButtonCount;
+        const float buttonWidth = std::min(desiredButtonWidth,
+                                           std::max(42.0f, widthLimitedButtonWidth));
+        const float buttonHeight = std::min(desiredButtonHeight, buttonWidth / buttonAspect);
+        const float totalWidth = StrategicHudActionButtonCount * buttonWidth +
+                                 (StrategicHudActionButtonCount - 1) * StrategicHudActionGap;
+        const float contentRight = static_cast<float>(hud.pos.x + hud.size.x) -
+                                   contentRightInset;
+        const float left = contentRight - totalWidth;
+        return Rectangle{left + index * (buttonWidth + StrategicHudActionGap),
+                         static_cast<float>(hud.pos.y) + (height - buttonHeight) * 0.5f,
+                         buttonWidth, buttonHeight};
+    }
+}
+
 Rectangle StatsHudButtonRect(const StrategicResourceHudWidget& hud)
 {
-    const float height = static_cast<float>(hud.size.y);
-    constexpr float gap = 4.0f;
-    constexpr int buttonCount = 8;
-    constexpr int resourcesIndex = 4;
-    constexpr float leftHudReserve = 450.0f;
-    // Keep the action strip clear of the top frame's ornamental right cap.
-    // This also leaves a small visual breathing room between the last button
-    // and the screen-side frame margin.
-    constexpr float rightMargin = 96.0f;
-    constexpr float buttonAspect = 1.0f;
-    // Keep the buttons visually compact even though the frame gained some
-    // vertical room. They must not grow with the taller top panel.
-    const float desiredButtonHeight = std::clamp(height - 52.0f, 44.0f, 60.0f);
-    const float desiredButtonWidth = desiredButtonHeight * buttonAspect;
-    const float widthLimitedButtonWidth =
-        (static_cast<float>(hud.size.x) - leftHudReserve - rightMargin -
-         (buttonCount - 1) * gap) / buttonCount;
-    const float buttonWidth = std::min(desiredButtonWidth,
-                                       std::max(42.0f, widthLimitedButtonWidth));
-    const float buttonHeight = std::min(desiredButtonHeight, buttonWidth / buttonAspect);
-    const float totalWidth = buttonCount * buttonWidth + (buttonCount - 1) * gap;
-    const float left = static_cast<float>(hud.pos.x + hud.size.x) - totalWidth - rightMargin;
-    return Rectangle{left + resourcesIndex * (buttonWidth + gap),
-                     static_cast<float>(hud.pos.y) + (height - buttonHeight) * 0.5f,
-                     buttonWidth, buttonHeight};
+    constexpr int resourcesIndex = 3;
+    return StrategicHudActionButtonRect(hud, resourcesIndex);
 }
 
 Rectangle FocusHudButtonRect(const StrategicResourceHudWidget& hud)
 {
-    Rectangle stats = StatsHudButtonRect(hud);
-    return Rectangle{stats.x + (stats.width + 4.0f) * 2.0f, stats.y, stats.width, stats.height};
+    constexpr int focusIndex = 5;
+    return StrategicHudActionButtonRect(hud, focusIndex);
 }
 
 Rectangle TechHudButtonRect(const StrategicResourceHudWidget& hud)
 {
-    Rectangle focus = FocusHudButtonRect(hud);
-    return Rectangle{focus.x + focus.width + 4.0f, focus.y, focus.width, focus.height};
+    constexpr int technologyIndex = 6;
+    return StrategicHudActionButtonRect(hud, technologyIndex);
 }
 
 Rectangle DestroyHudButtonRect(const StrategicResourceHudWidget& hud)
 {
-    Rectangle stats = StatsHudButtonRect(hud);
-    return Rectangle{stats.x - (stats.width + 4.0f) * 3.0f, stats.y, stats.width, stats.height};
+    constexpr int destroyIndex = 1;
+    return StrategicHudActionButtonRect(hud, destroyIndex);
 }
 
 Rectangle RoadHudButtonRect(const StrategicResourceHudWidget& hud)
 {
-    Rectangle destroy = DestroyHudButtonRect(hud);
-    return Rectangle{destroy.x + destroy.width + 4.0f, destroy.y, destroy.width, destroy.height};
+    constexpr int roadIndex = 2;
+    return StrategicHudActionButtonRect(hud, roadIndex);
 }
 
 Rectangle BuildHudButtonRect(const StrategicResourceHudWidget& hud)
 {
-    Rectangle destroy = DestroyHudButtonRect(hud);
-    return Rectangle{destroy.x - destroy.width - 4.0f, destroy.y, destroy.width, destroy.height};
+    constexpr int buildIndex = 0;
+    return StrategicHudActionButtonRect(hud, buildIndex);
 }
 
 Rectangle RosterHudButtonRect(const StrategicResourceHudWidget& hud)
 {
-    Rectangle stats = StatsHudButtonRect(hud);
-    return Rectangle{stats.x + stats.width + 4.0f, stats.y, stats.width, stats.height};
+    constexpr int rosterIndex = 4;
+    return StrategicHudActionButtonRect(hud, rosterIndex);
 }
 
-Rectangle LogisticsHudButtonRect(const StrategicResourceHudWidget& hud)
+Rectangle GlobalMapHudButtonRect(const StrategicResourceHudWidget& hud)
 {
-    Rectangle road = RoadHudButtonRect(hud);
-    return Rectangle{road.x + road.width + 4.0f, road.y, road.width, road.height};
+    constexpr int globalMapIndex = 7;
+    return StrategicHudActionButtonRect(hud, globalMapIndex);
 }
 
 namespace
@@ -407,12 +453,14 @@ bool IsBuildHudButtonHovered(const StrategicResourceHudWidget& hud)
 
 bool IsRosterHudButtonHovered(const StrategicResourceHudWidget& hud)
 {
-    return CheckCollisionPointRec(GetMousePosition(), RosterHudButtonRect(hud));
+    return HasCompletedBarracks(hud.scene) &&
+           CheckCollisionPointRec(GetMousePosition(), RosterHudButtonRect(hud));
 }
 
-bool IsLogisticsHudButtonHovered(const StrategicResourceHudWidget& hud)
+bool IsGlobalMapHudButtonHovered(const StrategicResourceHudWidget& hud)
 {
-    return CheckCollisionPointRec(GetMousePosition(), LogisticsHudButtonRect(hud));
+    return HasCompletedBarracks(hud.scene) &&
+           CheckCollisionPointRec(GetMousePosition(), GlobalMapHudButtonRect(hud));
 }
 
 bool IsAnyHudButtonHovered(const StrategicResourceHudWidget& hud)
@@ -422,10 +470,15 @@ bool IsAnyHudButtonHovered(const StrategicResourceHudWidget& hud)
         ((hud.tutorialDisableDestroy || TutorialDestroyLocked(hud)) && CheckCollisionPointRec(mouse, DestroyHudButtonRect(hud))) ||
         ((hud.tutorialDisableDecisions || TutorialDecisionsLocked(hud)) && CheckCollisionPointRec(mouse, FocusHudButtonRect(hud))) ||
         ((hud.tutorialDisableStatistics || TutorialStatisticsLocked(hud)) && CheckCollisionPointRec(mouse, StatsHudButtonRect(hud)));
-    return disabledButtonHovered || IsBuildHudButtonHovered(hud) || IsRoadHudButtonHovered(hud) ||
+    const bool gatedButtonHovered =
+        (!HasCompletedBarracks(hud.scene) &&
+         (CheckCollisionPointRec(mouse, RosterHudButtonRect(hud)) ||
+          CheckCollisionPointRec(mouse, GlobalMapHudButtonRect(hud))));
+    return disabledButtonHovered || gatedButtonHovered || IsBuildHudButtonHovered(hud) || IsRoadHudButtonHovered(hud) ||
            IsDestroyHudButtonHovered(hud) || IsStatsHudButtonHovered(hud) ||
            IsFocusHudButtonHovered(hud) || IsTechHudButtonHovered(hud) ||
-           IsRosterHudButtonHovered(hud) || IsLogisticsHudButtonHovered(hud);
+           IsRosterHudButtonHovered(hud) ||
+           IsGlobalMapHudButtonHovered(hud);
 }
 
 bool DispatchHudButtonClick(GuiSystem& system, const StrategicResourceHudWidget& hud)
@@ -433,14 +486,22 @@ bool DispatchHudButtonClick(GuiSystem& system, const StrategicResourceHudWidget&
     // Disabled tutorial controls still consume the click so it cannot fall
     // through to map selection or camera interaction underneath the HUD.
     const Vector2 mouse = GetMousePosition();
+    if (hud.scene != nullptr && hud.scene->campaignSidebar.CapturesPointer(mouse))
+        return true;
+    if (!HasCompletedBarracks(hud.scene) &&
+        (CheckCollisionPointRec(mouse, RosterHudButtonRect(hud)) ||
+         CheckCollisionPointRec(mouse, GlobalMapHudButtonRect(hud))))
+        return true;
     if (((hud.tutorialDisableDestroy || TutorialDestroyLocked(hud)) && CheckCollisionPointRec(mouse, DestroyHudButtonRect(hud))) ||
         ((hud.tutorialDisableDecisions || TutorialDecisionsLocked(hud)) && CheckCollisionPointRec(mouse, FocusHudButtonRect(hud))) ||
         ((hud.tutorialDisableStatistics || TutorialStatisticsLocked(hud)) && CheckCollisionPointRec(mouse, StatsHudButtonRect(hud))))
         return true;
 
-    if (IsLogisticsHudButtonHovered(hud))
+    if (IsGlobalMapHudButtonHovered(hud))
     {
-        SetLogisticsOverlayPreferenceEnabled(!IsLogisticsOverlayPreferenceEnabled());
+        auto it = system.actionMap.find("global_map");
+        if (it != system.actionMap.end())
+            it->second();
         return true;
     }
 

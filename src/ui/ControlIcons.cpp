@@ -29,6 +29,7 @@ namespace
     tvorin::ui::TextureHandle pixelHudWidgetFrame{};
     tvorin::ui::TextureHandle pixelHudCrest{};
     tvorin::ui::TextureHandle pixelHudGlyphs{};
+    tvorin::ui::TextureHandle pixelGlobalMapGlyph{};
     tvorin::ui::TextureHandle pixelPopulationGlyph{};
     tvorin::ui::ShaderHandle pixelHudGlowShader{};
     int pixelGlowTexelSizeLocation{-1};
@@ -39,8 +40,8 @@ namespace
     tvorin::ui::TextureHandle unitPortraitAtlas{};
     tvorin::ui::TextureHandle militaryStatAtlas{};
 
-    constexpr std::array<const char*, 24> ActiveIconNames{
-        "key_q", "key_r", "key_d", "key_e", "key_s", "key_f", "key_t", "key_u", "key_l",
+    constexpr std::array<const char*, 25> ActiveIconNames{
+        "key_q", "key_r", "key_d", "key_e", "key_s", "key_f", "key_t", "key_u", "key_l", "key_m",
         "key_space", "key_escape", "key_f6", "key_f7", "key_f8", "key_f10", "key_ctrl",
         "key_up", "key_down", "key_enter", "key_backspace", "mouse_lmb", "mouse_rmb",
         "mouse_mmb", "mouse_wheel"};
@@ -84,9 +85,49 @@ namespace
          PixelGlyphSize, PixelGlyphSize}                                       // Builders
     }};
 
+    void DrawGlobalMapGlyph(Rectangle destination, Color tint)
+    {
+        if (destination.width <= 0.0f || destination.height <= 0.0f)
+            return;
+
+        const float centerX = destination.x + destination.width * 0.5f;
+        const float centerY = destination.y + destination.height * 0.5f;
+        const float radius = std::max(2.0f,
+                                      std::min(destination.width, destination.height) * 0.33f);
+        const float stroke = std::max(1.0f,
+                                      std::min(destination.width, destination.height) * 0.055f);
+        const Vector2 center{centerX, centerY};
+        const Color innerTint = Fade(tint, 0.22f);
+
+        DrawCircleV(center, radius, innerTint);
+        DrawCircleLines(static_cast<int>(std::round(centerX)),
+                        static_cast<int>(std::round(centerY)), radius, tint);
+        DrawLineEx({centerX, centerY - radius * 0.78f},
+                   {centerX, centerY + radius * 0.78f}, stroke, tint);
+        DrawLineEx({centerX - radius * 0.78f, centerY},
+                   {centerX + radius * 0.78f, centerY}, stroke, tint);
+        DrawLineEx({centerX - radius * 0.54f, centerY - radius * 0.54f},
+                   {centerX + radius * 0.54f, centerY + radius * 0.54f},
+                   stroke, Fade(tint, 0.72f));
+        DrawLineEx({centerX + radius * 0.54f, centerY - radius * 0.54f},
+                   {centerX - radius * 0.54f, centerY + radius * 0.54f},
+                   stroke, Fade(tint, 0.72f));
+        DrawCircleV(center, std::max(1.0f, radius * 0.12f), tint);
+    }
+
     bool ResolvePixelHudGlyph(UiControlIcons::HudIcon icon, Texture2D& texture,
                               Rectangle& source)
     {
+        if (icon == UiControlIcons::HudIcon::GlobalMap)
+        {
+            if (!pixelGlobalMapGlyph.IsValid())
+                return false;
+            texture = pixelGlobalMapGlyph.Get();
+            source = {0.0f, 0.0f, static_cast<float>(texture.width),
+                      static_cast<float>(texture.height)};
+            return true;
+        }
+
         if (icon == UiControlIcons::HudIcon::Manpower)
         {
             if (!pixelPopulationGlyph.IsValid())
@@ -105,20 +146,21 @@ namespace
         source = PixelHudGlyphSources[index];
         return true;
     }
-    constexpr std::array<const char*, 12> UnitPortraitIds{{
+    constexpr std::array<const char*, 13> UnitPortraitIds{{
         "militia", "swordsman", "armored_swordsman",
         "heavy_infantry", "archer", "heavy_archer",
         "spearman", "light_cavalry", "knight",
-        "ballista", "ram", "catapult"
+        "ballista", "ram", "catapult", "scout"
     }};
     constexpr int UnitPortraitColumns = 3;
+    constexpr int UnitPortraitRows = 5;
     constexpr int MilitaryStatColumns = 3;
     // Tight subject bounds inside each 362x362 source cell. The generated
     // atlas has a few disconnected pixels from the neighbouring row near the
     // bottom of some cells; drawing whole cells made those fragments visible
     // and also stretched every portrait to a square. These authored crops keep
     // only the actual unit while retaining a small safety margin.
-    constexpr std::array<Rectangle, 12> UnitPortraitCrops{{
+    constexpr std::array<Rectangle, 13> UnitPortraitCrops{{
         {86.0f, 61.0f, 184.0f, 269.0f},
         {70.0f, 62.0f, 216.0f, 279.0f},
         {41.0f, 69.0f, 232.0f, 266.0f},
@@ -130,7 +172,8 @@ namespace
         {1.0f, 0.0f, 278.0f, 270.0f},
         {29.0f, 0.0f, 289.0f, 267.0f},
         {14.0f, 0.0f, 306.0f, 243.0f},
-        {11.0f, 0.0f, 293.0f, 271.0f}
+        {11.0f, 0.0f, 293.0f, 271.0f},
+        {83.0f, 49.0f, 195.0f, 263.0f}
     }};
 
     bool DrawNineSlice(Texture2D texture, Rectangle source, float sourceCap,
@@ -481,6 +524,8 @@ void UiControlIcons::Load(const std::string& directory)
     constexpr const char* PixelHudWidgetFramePath = "assets/ui/hud/pixel_pilot/widget_frame.png";
     constexpr const char* PixelHudCrestPath = "assets/ui/hud/pixel_pilot/top_hud_crest.png";
     constexpr const char* PixelGlyphAtlasPath = "assets/ui/hud/pixel_pilot/action_glyphs.png";
+    constexpr const char* PixelGlobalMapGlyphPath =
+        "assets/ui/hud/pixel_pilot/global_map_glyph.png";
     constexpr const char* PixelPopulationPath = "assets/ui/hud/pixel_pilot/population_farmer.png";
     constexpr const char* PixelGlowShaderPath = "assets/shaders/ui_icon_glow.fs";
     constexpr const char* UnitPortraitAtlasPath = "assets/ui/barracks/unit_portraits_atlas.png";
@@ -504,6 +549,7 @@ void UiControlIcons::Load(const std::string& directory)
     pixelHudWidgetFrame = loadPixelTexture(PixelHudWidgetFramePath);
     pixelHudCrest = loadPixelTexture(PixelHudCrestPath);
     pixelHudGlyphs = loadPixelTexture(PixelGlyphAtlasPath);
+    pixelGlobalMapGlyph = loadPixelTexture(PixelGlobalMapGlyphPath);
     pixelPopulationGlyph = loadPixelTexture(PixelPopulationPath);
     if (FileExists(PixelGlowShaderPath))
     {
@@ -544,6 +590,7 @@ void UiControlIcons::Unload()
     pixelHudWidgetFrame.Reset();
     pixelHudCrest.Reset();
     pixelHudGlyphs.Reset();
+    pixelGlobalMapGlyph.Reset();
     pixelPopulationGlyph.Reset();
     pixelHudGlowShader.Reset();
     pixelGlowTexelSizeLocation = -1;
@@ -574,6 +621,21 @@ bool UiControlIcons::Draw(const std::string& name, Rectangle destination, Color 
 
 bool UiControlIcons::DrawHud(HudIcon icon, Rectangle destination, bool hovered, Color tint)
 {
+    if (icon == HudIcon::GlobalMap)
+    {
+        if (pixelGlobalMapGlyph.IsValid())
+        {
+            DrawTexturePro(pixelGlobalMapGlyph.Get(),
+                           {0.0f, 0.0f,
+                            static_cast<float>(pixelGlobalMapGlyph.Get().width),
+                            static_cast<float>(pixelGlobalMapGlyph.Get().height)},
+                           destination, {0.0f, 0.0f}, 0.0f, tint);
+            return true;
+        }
+        DrawGlobalMapGlyph(destination, hovered ? Color{172, 229, 224, 255} : tint);
+        return true;
+    }
+
     const Texture2D& texture = hovered && hudHoverAtlas.IsValid() ? hudHoverAtlas.Get() : hudAtlas.Get();
     if (texture.id == 0)
         return false;
@@ -592,6 +654,21 @@ bool UiControlIcons::DrawHud(HudIcon icon, Rectangle destination, bool hovered, 
 
 bool UiControlIcons::DrawHudGlyph(HudIcon icon, Rectangle destination, Color tint)
 {
+    if (icon == HudIcon::GlobalMap)
+    {
+        if (pixelGlobalMapGlyph.IsValid())
+        {
+            DrawTexturePro(pixelGlobalMapGlyph.Get(),
+                           {0.0f, 0.0f,
+                            static_cast<float>(pixelGlobalMapGlyph.Get().width),
+                            static_cast<float>(pixelGlobalMapGlyph.Get().height)},
+                           destination, {0.0f, 0.0f}, 0.0f, tint);
+            return true;
+        }
+        DrawGlobalMapGlyph(destination, tint);
+        return true;
+    }
+
     if (!hudAtlas.IsValid())
         return false;
 
@@ -728,6 +805,21 @@ bool UiControlIcons::DrawPixelTopHudCrest(Rectangle destination, Color tint)
 
 bool UiControlIcons::DrawPixelHudGlyph(HudIcon icon, Rectangle destination, Color tint)
 {
+    if (icon == HudIcon::GlobalMap)
+    {
+        if (pixelGlobalMapGlyph.IsValid())
+        {
+            DrawTexturePro(pixelGlobalMapGlyph.Get(),
+                           {0.0f, 0.0f,
+                            static_cast<float>(pixelGlobalMapGlyph.Get().width),
+                            static_cast<float>(pixelGlobalMapGlyph.Get().height)},
+                           destination, {0.0f, 0.0f}, 0.0f, tint);
+            return true;
+        }
+        DrawGlobalMapGlyph(destination, tint);
+        return true;
+    }
+
     Texture2D texture{};
     Rectangle source{};
     if (!ResolvePixelHudGlyph(icon, texture, source))
@@ -794,7 +886,8 @@ bool UiControlIcons::DrawUnitPortrait(const std::string& unitDefId,
 
     const int index = static_cast<int>(std::distance(UnitPortraitIds.begin(), it));
     const float cellWidth = unitPortraitAtlas.Get().width / static_cast<float>(UnitPortraitColumns);
-    const float cellHeight = unitPortraitAtlas.Get().height / 4.0f;
+    const float cellHeight = unitPortraitAtlas.Get().height /
+                             static_cast<float>(UnitPortraitRows);
     const Rectangle crop = UnitPortraitCrops[static_cast<size_t>(index)];
     Rectangle source{
         static_cast<float>(index % UnitPortraitColumns) * cellWidth + crop.x,

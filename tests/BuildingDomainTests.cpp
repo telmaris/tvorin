@@ -5,6 +5,7 @@
 #include "simulation/RoadNetwork.h"
 #include "core/GameWorld.h"
 #include "ui/GuiController.h"
+#include "warfare/UnitDefinition.h"
 
 #include <gtest/gtest.h>
 
@@ -23,8 +24,6 @@ static_assert(!std::is_copy_constructible_v<Barracks>);
 static_assert(!std::is_move_constructible_v<Barracks>);
 static_assert(!std::is_copy_constructible_v<LumberMill>);
 static_assert(!std::is_move_constructible_v<LumberMill>);
-static_assert(!std::is_copy_constructible_v<DefenseTower>);
-static_assert(!std::is_move_constructible_v<DefenseTower>);
 
 namespace
 {
@@ -117,9 +116,6 @@ TEST(BuildingDomainTests, BuildingCapabilitiesExposeAttachedComponents)
     EXPECT_FALSE(barracks.HasComponent<StorageComponent>());
     EXPECT_TRUE(barracks.HasComponent<LocalResourceBufferComponent>());
 
-    DefenseTower tower{6};
-    EXPECT_FALSE(tower.HasComponent<StorageComponent>());
-    EXPECT_TRUE(tower.HasComponent<LocalResourceBufferComponent>());
 }
 
 TEST(BuildingDomainTests, RoadTrafficTelemetryAveragesLoadAndHoldsSaturationWarning)
@@ -374,7 +370,7 @@ TEST(BuildingDomainTests, ProductionBuildingRequestsFromMultipleSuppliers)
     Player player{0, map};
     FillOwnedGrass(map, &player);
     RoadNetwork network{map};
-    player.roadNetwork = std::make_unique<RoadNetwork>(map);
+    player.GetProvinceEconomy()->roadNetwork = std::make_unique<RoadNetwork>(map);
 
     Woodcutter building{8};
     building.owner = &player;
@@ -413,7 +409,7 @@ TEST(BuildingDomainTests, MultipleProducersPushOutputToSameConsumerUntilInputIsR
     FillOwnedGrass(map, &player, 12, 9);
     auto network = std::make_unique<RoadNetwork>(map);
     RoadNetwork* networkPtr = network.get();
-    player.roadNetwork = std::move(network);
+    player.GetProvinceEconomy()->roadNetwork = std::move(network);
 
     auto* woodcutterA = PlaceAndRegister<Woodcutter>(map, *networkPtr, &player, {0, 0}, 1);
     auto* woodcutterB = PlaceAndRegister<Woodcutter>(map, *networkPtr, &player, {0, 3}, 2);
@@ -468,7 +464,7 @@ TEST(BuildingDomainTests, ProducerWithNoReceiverPushesFullOutputToNearestHeadqua
     FillOwnedGrass(map, &player, 10, 6);
     auto network = std::make_unique<RoadNetwork>(map);
     RoadNetwork* networkPtr = network.get();
-    player.roadNetwork = std::move(network);
+    player.GetProvinceEconomy()->roadNetwork = std::move(network);
 
     Vec2i woodAnchor{0, 1};
     Paint(map, woodAnchor, GetBuildingDefinition(BuildingType::Woodcutter).footprint, TileType::WOOD, 10);
@@ -504,7 +500,7 @@ TEST(BuildingDomainTests, ConcurrentHqSupplyDoesNotPreventProducerDispatchToHq)
     FillOwnedGrass(map, &player, 16, 9);
     auto network = std::make_unique<RoadNetwork>(map);
     RoadNetwork* networkPtr = network.get();
-    player.roadNetwork = std::move(network);
+    player.GetProvinceEconomy()->roadNetwork = std::move(network);
 
     Vec2i woodAnchor{0, 1};
     Paint(map, woodAnchor, GetBuildingDefinition(BuildingType::Woodcutter).footprint,
@@ -553,7 +549,7 @@ TEST(BuildingDomainTests, ProducerPushesResourceImmediatelyWhenProductionComplet
     FillOwnedGrass(map, &player, 10, 6);
     auto network = std::make_unique<RoadNetwork>(map);
     RoadNetwork* networkPtr = network.get();
-    player.roadNetwork = std::move(network);
+    player.GetProvinceEconomy()->roadNetwork = std::move(network);
 
     Vec2i woodAnchor{0, 1};
     Paint(map, woodAnchor, GetBuildingDefinition(BuildingType::Woodcutter).footprint, TileType::WOOD, 10);
@@ -671,7 +667,7 @@ TEST(BuildingDomainTests, SaveAndLoadPreservesRoadUpgradeLevelAndReappliesModifi
     params.sizePreset = MapSizePreset::S;
     params.aiOpponentCount = 1;
     params.seed = 4242;
-    world.InitWorld("test", nullptr, nullptr, params);
+    world.InitWorld("test", nullptr, params);
 
     Player* player = world.GetPlayerHandler().players.at(0).get();
     ASSERT_NE(player, nullptr);
@@ -693,12 +689,12 @@ TEST(BuildingDomainTests, SaveAndLoadPreservesRoadUpgradeLevelAndReappliesModifi
     ASSERT_TRUE(world.SaveToFile(path));
 
     GameWorld loaded;
-    ASSERT_TRUE(loaded.LoadFromFile(path, nullptr, nullptr));
+    ASSERT_TRUE(loaded.LoadFromFile(path, nullptr));
     std::filesystem::remove(path);
 
     Player* loadedPlayer = loaded.GetPlayerHandler().players.at(0).get();
     ASSERT_NE(loadedPlayer, nullptr);
-    ASSERT_EQ(loadedPlayer->tilemap, &loaded.GetTileMap());
+    ASSERT_EQ(loadedPlayer->GetTileMap(), &loaded.GetTileMap());
     Road* loadedRoad = nullptr;
     for (auto* building : loadedPlayer->GetTrackedBuildings())
         if (auto* candidate = dynamic_cast<Road*>(building))
@@ -856,7 +852,7 @@ TEST(BuildingDomainTests, VillageRequestsFoodProvisionsFromOwnedStorage)
     TileMap map;
     Player player{0, map};
     FillOwnedGrass(map, &player, 12, 8);
-    player.roadNetwork = std::make_unique<RoadNetwork>(map);
+    player.GetProvinceEconomy()->roadNetwork = std::make_unique<RoadNetwork>(map);
 
     auto* storage = dynamic_cast<StorageBuilding*>(
         map.PlaceLoadedBuilding(map.GetIdFromCoords({0, 1}), &player, std::make_unique<StorageBuilding>(1)));
@@ -865,9 +861,9 @@ TEST(BuildingDomainTests, VillageRequestsFoodProvisionsFromOwnedStorage)
     ASSERT_NE(storage, nullptr);
     ASSERT_NE(village, nullptr);
     for (int tileId : map.GetBuildingTileIds(storage))
-        player.roadNetwork->UpdateNavMap(tileId, storage);
+        player.GetRoadNetwork()->UpdateNavMap(tileId, storage);
     for (int tileId : map.GetBuildingTileIds(village))
-        player.roadNetwork->UpdateNavMap(tileId, village);
+        player.GetRoadNetwork()->UpdateNavMap(tileId, village);
 
     auto* roadA = dynamic_cast<Road*>(
         map.PlaceLoadedBuilding(map.GetIdFromCoords({3, 2}), &player, std::make_unique<Road>(3)));
@@ -878,9 +874,9 @@ TEST(BuildingDomainTests, VillageRequestsFoodProvisionsFromOwnedStorage)
     ASSERT_NE(roadA, nullptr);
     ASSERT_NE(roadB, nullptr);
     ASSERT_NE(roadC, nullptr);
-    player.roadNetwork->UpdateNavMap(roadA->positionId, roadA);
-    player.roadNetwork->UpdateNavMap(roadB->positionId, roadB);
-    player.roadNetwork->UpdateNavMap(roadC->positionId, roadC);
+    player.GetRoadNetwork()->UpdateNavMap(roadA->positionId, roadA);
+    player.GetRoadNetwork()->UpdateNavMap(roadB->positionId, roadB);
+    player.GetRoadNetwork()->UpdateNavMap(roadC->positionId, roadC);
 
     storage->storage.buffers.clear();
     storage->storage.buffers[ResourceType::FOOD_PROVISIONS] = ResourceBuffer{ResourceType::FOOD_PROVISIONS, 3};
@@ -925,14 +921,14 @@ TEST(BuildingDomainTests, ConstructionQueueLimitsActiveBuildersAndTracksPosition
     ASSERT_NE(third, nullptr);
 
     // One builder: only the earliest (lowest-id) building actually progresses.
-    player.construction.builders = 1;
-    player.construction.Refresh(player);
-    EXPECT_EQ(player.construction.QueueLength(), 3);
-    EXPECT_EQ(player.construction.QueuePosition(first->id), 1);
-    EXPECT_EQ(player.construction.QueuePosition(second->id), 2);
-    EXPECT_EQ(player.construction.QueuePosition(third->id), 3);
-    EXPECT_TRUE(player.construction.IsActive(first->id));
-    EXPECT_FALSE(player.construction.IsActive(second->id));
+    player.GetProvinceEconomy()->construction.builders = 1;
+    player.GetProvinceEconomy()->construction.Refresh(player);
+    EXPECT_EQ(player.GetProvinceEconomy()->construction.QueueLength(), 3);
+    EXPECT_EQ(player.GetProvinceEconomy()->construction.QueuePosition(first->id), 1);
+    EXPECT_EQ(player.GetProvinceEconomy()->construction.QueuePosition(second->id), 2);
+    EXPECT_EQ(player.GetProvinceEconomy()->construction.QueuePosition(third->id), 3);
+    EXPECT_TRUE(player.GetProvinceEconomy()->construction.IsActive(first->id));
+    EXPECT_FALSE(player.GetProvinceEconomy()->construction.IsActive(second->id));
     EXPECT_TRUE(first->constructionActive);
     EXPECT_FALSE(second->constructionActive);
 
@@ -946,17 +942,17 @@ TEST(BuildingDomainTests, ConstructionQueueLimitsActiveBuildersAndTracksPosition
     player.balanceModifiers.AddModifier(BalanceModifier{
         BalanceStat::BuilderAmount, 1.0, 1.0, BalanceModifierScope::Global(),
         std::nullopt, std::nullopt, "tech:masons"});
-    EXPECT_EQ(player.construction.EffectiveBuilders(player), 2);
-    player.construction.Refresh(player);
-    EXPECT_TRUE(player.construction.IsActive(second->id));
-    EXPECT_FALSE(player.construction.IsActive(third->id));
+    EXPECT_EQ(player.GetProvinceEconomy()->construction.EffectiveBuilders(player), 2);
+    player.GetProvinceEconomy()->construction.Refresh(player);
+    EXPECT_TRUE(player.GetProvinceEconomy()->construction.IsActive(second->id));
+    EXPECT_FALSE(player.GetProvinceEconomy()->construction.IsActive(third->id));
 
     // Removing the front building (cancel) renumbers the rest of the queue.
     player.UnregisterBuilding(first);
-    player.construction.Refresh(player);
-    EXPECT_EQ(player.construction.QueuePosition(first->id), 0);
-    EXPECT_EQ(player.construction.QueuePosition(second->id), 1);
-    EXPECT_EQ(player.construction.QueuePosition(third->id), 2);
+    player.GetProvinceEconomy()->construction.Refresh(player);
+    EXPECT_EQ(player.GetProvinceEconomy()->construction.QueuePosition(first->id), 0);
+    EXPECT_EQ(player.GetProvinceEconomy()->construction.QueuePosition(second->id), 1);
+    EXPECT_EQ(player.GetProvinceEconomy()->construction.QueuePosition(third->id), 2);
 }
 
 TEST(BuildingDomainTests, RefundBuildCostReturnsResourcesToStorageAndDropsOverflow)
@@ -1150,7 +1146,7 @@ TEST(BuildingDomainTests, ReproSwitchingSupplierAwayFromHqFallback)
     FillOwnedGrass(map, &player, 16, 6);
     auto network = std::make_unique<RoadNetwork>(map);
     RoadNetwork* networkPtr = network.get();
-    player.roadNetwork = std::move(network);
+    player.GetProvinceEconomy()->roadNetwork = std::move(network);
 
     Vec2i woodAnchor{0, 1};
     Paint(map, woodAnchor, GetBuildingDefinition(BuildingType::Woodcutter).footprint, TileType::WOOD, 10);
@@ -1160,7 +1156,7 @@ TEST(BuildingDomainTests, ReproSwitchingSupplierAwayFromHqFallback)
     ASSERT_NE(headquarters, nullptr);
     ASSERT_NE(lumberMill, nullptr);
     ASSERT_NE(woodcutter, nullptr);
-    player.storages.push_back(headquarters);
+    player.GetProvinceEconomy()->storages.push_back(headquarters);
 
     // Mirrors GameWorld.Commands.cpp's placement path: each new building
     // auto-connects, so LumberMill's WOOD input should fall back to HQ.
@@ -1195,22 +1191,22 @@ TEST(BuildingDomainTests, ReproSwitchingSupplierAwayFromHqFallback)
     EXPECT_FALSE(stillPullingFromHq) << "LumberMill should have dropped the HQ fallback supplier";
 }
 
-TEST(BuildingDomainTests, AutoConnectUsesHeadquartersInsteadOfDefenseTowerStorage)
+TEST(BuildingDomainTests, AutoConnectUsesHeadquartersInsteadOfPrivateBuildingBuffer)
 {
     TileMap map;
     Player player{0, map};
     FillOwnedGrass(map, &player, 24, 8);
     auto network = std::make_unique<RoadNetwork>(map);
     RoadNetwork* networkPtr = network.get();
-    player.roadNetwork = std::move(network);
+    player.GetProvinceEconomy()->roadNetwork = std::move(network);
 
     auto* headquarters = PlaceAndRegister<Headquarters>(map, *networkPtr, &player, {0, 1}, 1);
-    auto* tower = PlaceAndRegister<DefenseTower>(map, *networkPtr, &player, {14, 1}, 2);
+    auto* barracks = PlaceAndRegister<Barracks>(map, *networkPtr, &player, {14, 1}, 2);
     auto* bowyer = dynamic_cast<ConfiguredProductionBuilding*>(map.PlaceLoadedBuilding(
         map.GetIdFromCoords({17, 1}), &player,
         std::make_unique<ConfiguredProductionBuilding>(3, BuildingType::Bowyer)));
     ASSERT_NE(headquarters, nullptr);
-    ASSERT_NE(tower, nullptr);
+    ASSERT_NE(barracks, nullptr);
     ASSERT_NE(bowyer, nullptr);
 
     map.AutoConnectBuilding(bowyer);
@@ -1219,16 +1215,16 @@ TEST(BuildingDomainTests, AutoConnectUsesHeadquartersInsteadOfDefenseTowerStorag
     for (const auto& input : bowyer->GetInputBufferViews())
     {
         bool suppliedByHeadquarters = false;
-        bool suppliedByTower = false;
+        bool suppliedByBarracks = false;
         for (const auto& supplier : bowyer->GetSupplierViews())
         {
             if (supplier.type != input.type)
                 continue;
             suppliedByHeadquarters |= supplier.building == headquarters;
-            suppliedByTower |= supplier.building == tower;
+            suppliedByBarracks |= supplier.building == barracks;
         }
         EXPECT_TRUE(suppliedByHeadquarters) << "input " << static_cast<int>(input.type);
-        EXPECT_FALSE(suppliedByTower) << "input " << static_cast<int>(input.type);
+        EXPECT_FALSE(suppliedByBarracks) << "input " << static_cast<int>(input.type);
     }
 }
 
@@ -1239,7 +1235,7 @@ TEST(BuildingDomainTests, ConsumerStopsPullingFromHqAfterSupplierReassignment)
     FillOwnedGrass(map, &player, 16, 6);
     auto network = std::make_unique<RoadNetwork>(map);
     RoadNetwork* networkPtr = network.get();
-    player.roadNetwork = std::move(network);
+    player.GetProvinceEconomy()->roadNetwork = std::move(network);
     // Production buildings only request inputs once they are staffed
     // (ProductionComponent::Update), and workers come out of manpower.
     player.strategicResources.Set(StrategicResourceType::Manpower, 200);
@@ -1250,8 +1246,8 @@ TEST(BuildingDomainTests, ConsumerStopsPullingFromHqAfterSupplierReassignment)
     ASSERT_NE(headquarters, nullptr);
     ASSERT_NE(lumberMill, nullptr);
     ASSERT_NE(woodcutter, nullptr);
-    player.dataTracker.RegisterBuilding(headquarters);
-    player.dataTracker.RegisterBuilding(lumberMill);
+    player.GetProvinceEconomy()->dataTracker.RegisterBuilding(headquarters);
+    player.GetProvinceEconomy()->dataTracker.RegisterBuilding(lumberMill);
 
     for (int x = 3; x <= 5; x++)
     {
@@ -1306,14 +1302,14 @@ TEST(BuildingDomainTests, NewStorageBuildingDoesNotDrainExistingWarehouses)
     FillOwnedGrass(map, &player, 20, 8);
     auto network = std::make_unique<RoadNetwork>(map);
     RoadNetwork* networkPtr = network.get();
-    player.roadNetwork = std::move(network);
+    player.GetProvinceEconomy()->roadNetwork = std::move(network);
     // Production buildings only request inputs once they are staffed
     // (ProductionComponent::Update), and workers come out of manpower.
     player.strategicResources.Set(StrategicResourceType::Manpower, 200);
 
     auto* headquarters = PlaceAndRegister<Headquarters>(map, *networkPtr, &player, {0, 1}, 1);
     ASSERT_NE(headquarters, nullptr);
-    player.dataTracker.RegisterBuilding(headquarters);
+    player.GetProvinceEconomy()->dataTracker.RegisterBuilding(headquarters);
 
     // A Headquarters starts with a stock from buildings.rtsdata; clear it so
     // the assertions below are about exactly the 12 units placed here.
@@ -1326,7 +1322,7 @@ TEST(BuildingDomainTests, NewStorageBuildingDoesNotDrainExistingWarehouses)
     // ambient push, which needed only "accepts WOOD and has room".
     auto* depot = PlaceAndRegister<StorageBuilding>(map, *networkPtr, &player, {8, 1}, 2);
     ASSERT_NE(depot, nullptr);
-    player.dataTracker.RegisterBuilding(depot);
+    player.GetProvinceEconomy()->dataTracker.RegisterBuilding(depot);
     for (int x = 3; x <= 7; x++)
     {
         auto* road = PlaceAndRegister<Road>(map, *networkPtr, &player, {x, 2}, 100 + x);
@@ -1358,7 +1354,7 @@ TEST(BuildingDomainTests, ConsumerPullsFromUnwiredWarehouseThatHoldsTheStock)
     FillOwnedGrass(map, &player, 24, 8);
     auto network = std::make_unique<RoadNetwork>(map);
     RoadNetwork* networkPtr = network.get();
-    player.roadNetwork = std::move(network);
+    player.GetProvinceEconomy()->roadNetwork = std::move(network);
     // Production buildings only request inputs once they are staffed
     // (ProductionComponent::Update), and workers come out of manpower.
     player.strategicResources.Set(StrategicResourceType::Manpower, 200);
@@ -1369,9 +1365,9 @@ TEST(BuildingDomainTests, ConsumerPullsFromUnwiredWarehouseThatHoldsTheStock)
     ASSERT_NE(headquarters, nullptr);
     ASSERT_NE(lumberMill, nullptr);
     ASSERT_NE(depot, nullptr);
-    player.dataTracker.RegisterBuilding(headquarters);
-    player.dataTracker.RegisterBuilding(lumberMill);
-    player.dataTracker.RegisterBuilding(depot);
+    player.GetProvinceEconomy()->dataTracker.RegisterBuilding(headquarters);
+    player.GetProvinceEconomy()->dataTracker.RegisterBuilding(lumberMill);
+    player.GetProvinceEconomy()->dataTracker.RegisterBuilding(depot);
 
     // All three buildings are 3x3 (assets/data/buildings.rtsdata), so the
     // road line skips x:[6,8] — that span is the LumberMill's own footprint.
@@ -1423,7 +1419,7 @@ TEST(BuildingDomainTests, RankSourcesForSkipsWarehousesWithNoRoadPath)
     FillOwnedGrass(map, &player, 24, 8);
     auto network = std::make_unique<RoadNetwork>(map);
     RoadNetwork* networkPtr = network.get();
-    player.roadNetwork = std::move(network);
+    player.GetProvinceEconomy()->roadNetwork = std::move(network);
     // Production buildings only request inputs once they are staffed
     // (ProductionComponent::Update), and workers come out of manpower.
     player.strategicResources.Set(StrategicResourceType::Manpower, 200);
@@ -1434,9 +1430,9 @@ TEST(BuildingDomainTests, RankSourcesForSkipsWarehousesWithNoRoadPath)
     ASSERT_NE(headquarters, nullptr);
     ASSERT_NE(lumberMill, nullptr);
     ASSERT_NE(strandedDepot, nullptr);
-    player.dataTracker.RegisterBuilding(headquarters);
-    player.dataTracker.RegisterBuilding(lumberMill);
-    player.dataTracker.RegisterBuilding(strandedDepot);
+    player.GetProvinceEconomy()->dataTracker.RegisterBuilding(headquarters);
+    player.GetProvinceEconomy()->dataTracker.RegisterBuilding(lumberMill);
+    player.GetProvinceEconomy()->dataTracker.RegisterBuilding(strandedDepot);
 
     // Roads reach the HQ only; the far depot has none.
     for (int x = 3; x <= 5; x++)
@@ -1464,8 +1460,8 @@ TEST(BuildingDomainTests, RankSourcesForSkipsWarehousesWithNoRoadPath)
 }
 
 // StockpileIndex is the single answer to "how much do I have", and it counts
-// warehouses only — a tower's ammo and a Barracks' queued unit costs are that
-// building's own consumption buffer, not stock anything else can spend.
+// warehouses only — a Barracks' queued unit costs are that building's own
+// consumption buffer, not stock anything else can spend.
 TEST(BuildingDomainTests, StockpileIndexCountsWarehousesOnly)
 {
     TileMap map;
@@ -1473,33 +1469,29 @@ TEST(BuildingDomainTests, StockpileIndexCountsWarehousesOnly)
     FillOwnedGrass(map, &player, 20, 8);
     auto network = std::make_unique<RoadNetwork>(map);
     RoadNetwork* networkPtr = network.get();
-    player.roadNetwork = std::move(network);
+    player.GetProvinceEconomy()->roadNetwork = std::move(network);
     // Production buildings only request inputs once they are staffed
     // (ProductionComponent::Update), and workers come out of manpower.
     player.strategicResources.Set(StrategicResourceType::Manpower, 200);
 
     auto* headquarters = PlaceAndRegister<Headquarters>(map, *networkPtr, &player, {0, 1}, 1);
     auto* depot = PlaceAndRegister<StorageBuilding>(map, *networkPtr, &player, {6, 1}, 2);
-    auto* tower = PlaceAndRegister<DefenseTower>(map, *networkPtr, &player, {12, 1}, 3);
+    auto* barracks = PlaceAndRegister<Barracks>(map, *networkPtr, &player, {12, 1}, 3);
     ASSERT_NE(headquarters, nullptr);
     ASSERT_NE(depot, nullptr);
-    ASSERT_NE(tower, nullptr);
+    ASSERT_NE(barracks, nullptr);
 
     // The configured HQ may start with arrows (currently 40). This test owns
-    // its fixture amounts, so clear all three buffers before adding the
-    // exact warehouse and local-ammo holdings asserted below.
+    // its fixture amounts, so clear both warehouse buffers before adding the
+    // exact warehouse holdings asserted below.
     headquarters->storage.buffers[ResourceType::ARROWS].Clear();
     depot->storage.buffers[ResourceType::ARROWS].Clear();
-    tower->storage.buffers[ResourceType::ARROWS].Clear();
     for (int i = 0; i < 3; i++)
         headquarters->storage.buffers[ResourceType::ARROWS].GenerateResource(ResourceType::ARROWS);
     for (int i = 0; i < 2; i++)
         depot->storage.buffers[ResourceType::ARROWS].GenerateResource(ResourceType::ARROWS);
-    for (int i = 0; i < 7; i++)
-        tower->storage.buffers[ResourceType::ARROWS].GenerateResource(ResourceType::ARROWS);
-
     EXPECT_EQ(StockpileIndex::GetTotal(player, ResourceType::ARROWS), 5)
-        << "the tower's 7 loaded arrows are its own ammo, not shared stock";
+        << "only warehouse arrows count as shared stock";
 
     auto holdings = StockpileIndex::GetHoldings(player, ResourceType::ARROWS);
     ASSERT_EQ(holdings.size(), 2u) << "holdings name the warehouses, by building id";
@@ -1508,7 +1500,7 @@ TEST(BuildingDomainTests, StockpileIndexCountsWarehousesOnly)
     EXPECT_EQ(holdings[1].buildingId, depot->id);
     EXPECT_EQ(holdings[1].amount, 2);
 
-    EXPECT_FALSE(StockpileIndex::IsWarehouse(tower));
+    EXPECT_FALSE(StockpileIndex::IsWarehouse(barracks));
     EXPECT_TRUE(StockpileIndex::IsWarehouse(headquarters));
     EXPECT_TRUE(StockpileIndex::IsWarehouse(depot));
 }

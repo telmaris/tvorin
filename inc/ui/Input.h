@@ -2,6 +2,7 @@
 #define INPUT_H
 
 #include "raylib.h"
+#include "ui/KeyBindings.h"
 
 class GuiController;
 
@@ -19,9 +20,11 @@ enum InputMap
     OPEN_FOCUS_GUI,
     OPEN_TECH_GUI,
     OPEN_ROSTER_GUI,
+    OPEN_UPGRADE_GUI,
+    OPEN_GLOBAL_MAP_GUI,
     CENTER_CAMERA_ON_HEADQUARTERS,
     DEBUG_GRANT_RESOURCES,
-    DEBUG_DEPLOY_ENEMY_UNITS,
+    DEBUG_SPAWN_RAID,
 
     LEFT_BUTTON_DOWN,
     LEFT_BUTTON_UP,
@@ -74,18 +77,29 @@ inline void InputProcessor::Init(GuiController* gui)
 {
     controller = gui;
 
+    for (auto& input : actionInputs)
+        input = {};
+
+    const KeyBindingMap& bindings = GetDefaultKeyBindings();
+    auto bind = [&](int action, GameAction gameAction)
+    {
+        actionInputs[action].key = bindings.GetKeyForAction(gameAction);
+    };
+
     actionInputs[CLOSE_TOP_GUI].key = KEY_ESCAPE;
-    actionInputs[OPEN_BUILD_GUI].key = KEY_Q;
-    actionInputs[OPEN_ROAD_BUILD_GUI].key = KEY_R;
-    actionInputs[OPEN_DESTROY_GUI].key = KEY_D;
-    actionInputs[OPEN_HEADQUARTERS_GUI].key = KEY_E;
-    actionInputs[OPEN_STATS_GUI].key = KEY_S;
-    actionInputs[OPEN_FOCUS_GUI].key = KEY_F;
-    actionInputs[OPEN_TECH_GUI].key = KEY_T;
-    actionInputs[OPEN_ROSTER_GUI].key = KEY_U;
-    actionInputs[CENTER_CAMERA_ON_HEADQUARTERS].key = KEY_SPACE;
-    actionInputs[DEBUG_GRANT_RESOURCES].key = KEY_F10;
-    actionInputs[DEBUG_DEPLOY_ENEMY_UNITS].key = KEY_F12;
+    bind(OPEN_BUILD_GUI, GameAction::EnterBuildMode);
+    bind(OPEN_ROAD_BUILD_GUI, GameAction::EnterRoadMode);
+    bind(OPEN_DESTROY_GUI, GameAction::EnterDestroyMode);
+    bind(OPEN_HEADQUARTERS_GUI, GameAction::OpenStockpilePanel);
+    bind(OPEN_STATS_GUI, GameAction::OpenStatsPanel);
+    bind(OPEN_FOCUS_GUI, GameAction::OpenFocusTree);
+    bind(OPEN_TECH_GUI, GameAction::OpenResearchPanel);
+    bind(OPEN_ROSTER_GUI, GameAction::OpenRosterPanel);
+    bind(OPEN_UPGRADE_GUI, GameAction::EnterUpgradeMode);
+    bind(OPEN_GLOBAL_MAP_GUI, GameAction::OpenGlobalMap);
+    bind(CENTER_CAMERA_ON_HEADQUARTERS, GameAction::CenterCameraOnHeadquarters);
+    bind(DEBUG_GRANT_RESOURCES, GameAction::GrantDebugResources);
+    bind(DEBUG_SPAWN_RAID, GameAction::SpawnDebugRaid);
     
     actionInputs[LEFT_BUTTON_DOWN].button = MOUSE_BUTTON_LEFT;
     actionInputs[LEFT_BUTTON_UP].button = MOUSE_BUTTON_LEFT;
@@ -98,6 +112,9 @@ inline void InputProcessor::Init(GuiController* gui)
 inline void InputProcessor::InitMenu(GuiController* gui)
 {
     controller = gui;
+
+    for (auto& input : actionInputs)
+        input = {};
 
     actionInputs[CLOSE_TOP_GUI].key = KEY_ESCAPE;
 

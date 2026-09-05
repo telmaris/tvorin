@@ -5,6 +5,7 @@ building Headquarters
     name "Headquarters"
     tag "[Headquarters]"
     placement_category core
+    build_category materials
     texture "assets/textures/building/generated/headquarters_idle/headquarters_idle_sheet_5x1_4x4.png"
     build_cost "Starting building"
     build_time 0.0
@@ -59,13 +60,14 @@ building Headquarters
     storage SAND 100 0
     storage GLASS 80 0
     storage SPEAR 40 0
-    hq max_hp 500 hard_defense 10 thorns_damage 3 thorns_interval 3.0 capture_stock_fraction 0.4 conquest_ramp_duration 600.0
+    storage LEATHER_ARMOR 60
 end
 
 building Village
     name "Village"
     tag "[Village]"
     placement_category food
+    build_category food
     texture "assets/textures/building/generated/cottage_idle/cottage_idle_sheet_5x1_4x4_pixellab.png"
     build_cost WOOD 45
     build_cost STONE 20
@@ -82,6 +84,7 @@ building StorageBuilding
     name "Storage Building"
     tag "[StorageBuilding]"
     placement_category infrastructure
+    build_category materials
     texture "assets/textures/building/generated/storage_idle_v2/storage_style_v2_pixellab_3x3.png"
     build_cost WOOD 65
     build_cost STONE 40
@@ -144,6 +147,7 @@ building Woodcutter
     name "Woodcutter"
     tag "[Woodcutter]"
     placement_category wood
+    build_category materials
     texture "assets/textures/building/generated/woodcutter_idle/woodcutter_pixellab_2x2.png"
     build_cost WOOD 20
     build_cost STONE 10
@@ -162,6 +166,7 @@ building HuntersHut
     name "Hunter's Hut"
     tag "[HuntersHut]"
     placement_category food
+    build_category food
     texture "assets/textures/building/generated/hunter_idle/hunter_pixellab_2x2.png"
     build_cost WOOD 35
     build_cost STONE 15
@@ -181,6 +186,7 @@ building LumberMill
     name "Lumber Mill"
     tag "[LumberMill]"
     placement_category wood
+    build_category materials
     texture "assets/textures/building/generated/lumbermill_idle/lumbermill_idle_sheet_5x1_waterwheel.png"
     build_cost WOOD 40
     build_cost STONE 25
@@ -202,6 +208,7 @@ building Mine
     name "Mine"
     tag "[Mine]"
     placement_category metal
+    build_category materials
     texture "assets/textures/building/generated/mine_idle_v2/mine_idle_2x2.png"
     build_cost WOOD 40
     build_cost STONE 10
@@ -258,6 +265,7 @@ building Foundry
     name "Foundry"
     tag "[Foundry]"
     placement_category metal
+    build_category materials
     texture "assets/textures/building/generated/foundry_idle_v2/foundry_idle_sheet_5x1.png"
     build_cost WOOD 50
     build_cost STONE 30
@@ -302,6 +310,7 @@ building Well
     name "Well"
     tag "[Well]"
     placement_category food
+    build_category food
     texture "assets/textures/building/generated/well_idle_v2/well_idle_2x2.png"
     build_cost WOOD 25
     build_cost STONE 30
@@ -320,6 +329,7 @@ building WheatFarm
     name "Wheat Farm"
     tag "[WheatFarm]"
     placement_category food
+    build_category food
     texture "assets/textures/building/generated/wheat_farm_idle_v2/wheat_farm_idle_4x4.png"
     build_cost WOOD 30
     build_cost STONE 15
@@ -341,6 +351,7 @@ building Windmill
     name "Windmill"
     tag "[Windmill]"
     placement_category food
+    build_category food
     texture "assets/textures/building/generated/windmill_idle_v2/windmill_idle_4x4.png"
     build_cost WOOD 30
     build_cost STONE 35
@@ -362,6 +373,7 @@ building Bakery
     name "Bakery"
     tag "[Bakery]"
     placement_category food
+    build_category food
     texture "assets/textures/building/generated/bakery_idle_v3/bakery_idle_sheet_5x1.png"
     build_cost WOOD 35
     build_cost STONE 40
@@ -385,6 +397,7 @@ building Inn
     name "Inn"
     tag "[Inn]"
     placement_category food
+    build_category food
     texture "assets/textures/building/generated/inn_idle_v3/inn_idle_sheet_5x1.png"
     build_cost WOOD 40
     build_cost STONE 40
@@ -410,6 +423,7 @@ building Paperworks
     name "Paperworks"
     tag "[Paperworks]"
     placement_category wood
+    build_category goods
     texture "assets/textures/building/generated/paperworks_idle_v2/paperworks_idle_3x3.png"
     build_cost WOOD 50
     build_cost STONE 60
@@ -454,6 +468,7 @@ building Smith
     name "Smith"
     tag "[Smith]"
     placement_category metal
+    build_category goods
     texture "assets/textures/building/generated/smith_idle_v2/smith_idle_2x2.png"
     build_cost WOOD 50
     build_cost STONE 40
@@ -498,6 +513,7 @@ building Mint
     name "Mint"
     tag "[Mint]"
     placement_category metal
+    build_category goods
     texture "assets/textures/building/generated/mint_idle_v2/mint_idle_2x2.png"
     build_cost WOOD 40
     build_cost STONE 60
@@ -537,6 +553,7 @@ building Glassworks
     name "Glassworks"
     tag "[Glassworks]"
     placement_category construction
+    build_category materials
     texture "assets/textures/building/generated/glassworks_idle_v2/glassworks_idle_3x3.png"
     build_cost WOOD 40
     build_cost STONE 50
@@ -560,6 +577,7 @@ building Powderworks
     name "Powderworks"
     tag "[Powderworks]"
     placement_category military
+    build_category military
     texture "assets/textures/building/generated/powderworks_idle_v2/powderworks_idle_3x3.png"
     build_cost WOOD 50
     build_cost STONE 60
@@ -586,6 +604,7 @@ building University
     name "University"
     tag "[University]"
     placement_category knowledge
+    build_category science
     texture "assets/textures/building/generated/university_idle_v2/university_idle_sheet_5x1.png"
     build_cost WOOD 100
     build_cost STONE 150
@@ -608,6 +627,7 @@ building Barracks
     name "Barracks"
     tag "[Barracks]"
     placement_category military
+    build_category military
     texture "assets/textures/building/generated/barracks_idle_v2/barracks_idle_4x4.png"
     build_cost WOOD 50
     build_cost STONE 40
@@ -651,42 +671,11 @@ building Road
     upgrade level 4 cost STONE 4 cost HORSE 1 cost MECHANICAL_PARTS 2 build_time 12 capacity_additive 6 speed_multiplier 1.2
 end
 
-building Bridge
-    name "Bridge"
-    tag "[Bridge]"
-    placement_category infrastructure
-    texture "assets/textures/roads/generated/roads_bridges_4x8_64px.png"
-    build_cost PLANKS 6
-    build_cost STONE 6
-    build_time 1.0
-    footprint 1 1
-    texture_id 5
-    transport_time 1.0
-    road upgrade_level 1 max_capacity 5 speed_modifier 1.0
-    upgrade level 2 cost STONE 2 build_time 5 capacity_additive 2 speed_multiplier 1.1
-    upgrade level 3 cost STONE 3 cost HORSE 1 build_time 8 capacity_additive 4 speed_multiplier 1.1
-    upgrade level 4 cost STONE 4 cost HORSE 1 cost MECHANICAL_PARTS 2 build_time 12 capacity_additive 6 speed_multiplier 1.2
-end
-
-building DefenseTower
-    name "Defense Tower"
-    tag "[DefenseTower]"
-    placement_category military
-    texture "assets/textures/building/generated/guard_tower_idle_v2/guard_tower_idle_2x2.png"
-    build_cost WOOD 40
-    build_cost STONE 20
-    build_cost PLANKS 40
-    build_time 10.0
-    footprint 2 2
-    texture_id 6
-    storage ARROWS 20 0
-    tower damage 3.5 range 6.0 attack_speed 1.0 ammo_resource ARROWS ammo_per_shot 1 worker_capacity 2
-end
-
 building AnimalFarm
     name "Animal Farm"
     tag "[AnimalFarm]"
     placement_category food
+    build_category food
     texture "assets/textures/building/generated/animal_farm_idle_v2/animal_farm_idle_4x4.png"
     build_cost WOOD 45
     build_cost PLANKS 25
@@ -710,6 +699,7 @@ building Butcher
     name "Butcher"
     tag "[Butcher]"
     placement_category food
+    build_category food
     texture "assets/textures/building/generated/butcher_idle_v2/butcher_idle_2x2.png"
     build_cost WOOD 40
     build_cost PLANKS 40
@@ -735,6 +725,7 @@ building Tannery
     name "Tannery"
     tag "[Tannery]"
     placement_category construction
+    build_category goods
     texture "assets/textures/building/generated/tannery_idle_v2/tannery_idle_4x4.png"
     build_cost WOOD 40
     build_cost PLANKS 40
@@ -758,6 +749,7 @@ building Tailor
     name "Tailor"
     tag "[Tailor]"
     placement_category construction
+    build_category goods
     texture "assets/textures/building/generated/tailor_idle_v2/tailor_idle_3x3.png"
     build_cost WOOD 35
     build_cost PLANKS 30
@@ -796,6 +788,7 @@ building Armorer
     name "Armorer"
     tag "[Armorer]"
     placement_category military
+    build_category military
     texture "assets/textures/building/generated/armorer_idle_v2/armorer_idle_3x3.png"
     build_cost PLANKS 45
     build_cost STONE 50
@@ -852,6 +845,7 @@ building HorseStable
     name "Horse Stable"
     tag "[HorseStable]"
     placement_category food
+    build_category food
     texture "assets/textures/building/generated/horse_stable_idle_v2/horse_stable_idle_4x4.png"
     build_cost WOOD 60
     build_cost PLANKS 60
@@ -875,6 +869,7 @@ building Kiln
     name "Kiln"
     tag "[Kiln]"
     placement_category construction
+    build_category materials
     texture "assets/textures/building/generated/kiln_idle_v2/kiln_idle_3x3.png"
     build_cost WOOD 50
     build_cost STONE 80
@@ -929,6 +924,7 @@ building HouseholdWorkshop
     name "Household Workshop"
     tag "[HouseholdWorkshop]"
     placement_category construction
+    build_category goods
     texture "assets/textures/building/generated/household_workshop_idle_v2/household_workshop_idle_3x3.png"
     build_cost WOOD 35
     build_cost PLANKS 35
@@ -954,6 +950,7 @@ building Soapworks
     name "Soapworks"
     tag "[Soapworks]"
     placement_category construction
+    build_category goods
     texture "assets/textures/building/generated/soapworks_idle_v2/soapworks_idle_3x3.png"
     build_cost PLANKS 35
     build_cost STONE 35
@@ -977,6 +974,7 @@ building Inkworks
     name "Inkworks"
     tag "[Inkworks]"
     placement_category knowledge
+    build_category science
     texture "assets/textures/building/generated/inkworks_idle_v2/inkworks_idle_3x3.png"
     build_cost PLANKS 30
     build_cost STONE 25
@@ -999,6 +997,7 @@ building Scriptorium
     name "Scriptorium"
     tag "[Scriptorium]"
     placement_category knowledge
+    build_category science
     texture "assets/textures/building/generated/scriptorium_idle_v2/scriptorium_idle_3x3.png"
     build_cost PLANKS 60
     build_cost STONE 50
@@ -1022,6 +1021,7 @@ building Copperworks
     name "Copperworks"
     tag "[Copperworks]"
     placement_category metal
+    build_category materials
     texture "assets/textures/building/generated/copperworks_idle_v2/copperworks_idle_3x3.png"
     build_cost WOOD 40
     build_cost STONE 50
@@ -1080,6 +1080,7 @@ building UrbanWorkshop
     name "Urban Workshop"
     tag "[UrbanWorkshop]"
     placement_category construction
+    build_category goods
     texture "assets/textures/building/generated/urban_workshop_idle_v2/urban_workshop_idle_3x3.png"
     build_cost PLANKS 65
     build_cost STONE 65
@@ -1106,6 +1107,7 @@ building HempFarm
     name "Hemp Farm"
     tag "[HempFarm]"
     placement_category food
+    build_category materials
     texture "assets/textures/building/generated/hemp_farm_idle_v2/hemp_farm_idle_4x4.png"
     build_cost WOOD 50
     build_cost PLANKS 50
@@ -1127,6 +1129,7 @@ building Ropery
     name "Ropery"
     tag "[Ropery]"
     placement_category construction
+    build_category goods
     texture "assets/textures/building/generated/ropery_idle_v2/ropery_idle_3x3.png"
     build_cost WOOD 35
     build_cost PLANKS 35
@@ -1163,6 +1166,7 @@ building Weaver
     name "Weaver"
     tag "[Weaver]"
     placement_category construction
+    build_category goods
     texture "assets/textures/building/generated/cottage_idle/cottage_idle_sheet_2x1.png"
     build_cost WOOD 35
     build_cost PLANKS 30
@@ -1183,6 +1187,7 @@ building Bowyer
     name "Bowyer"
     tag "[Bowyer]"
     placement_category military
+    build_category military
     texture "assets/textures/building/generated/bowyer_idle_v2/bowyer_idle_2x2.png"
     build_cost PLANKS 40
     build_cost STONE 25
@@ -1237,6 +1242,7 @@ building SpearWorkshop
     name "Spear Workshop"
     tag "[SpearWorkshop]"
     placement_category military
+    build_category military
     texture "assets/textures/building/generated/spear_workshop_idle_v2/spear_workshop_idle_2x2.png"
     build_cost PLANKS 35
     build_cost STONE 25
@@ -1260,6 +1266,7 @@ building SiegeWorkshop
     name "Engineers' Workshop"
     tag "[SiegeWorkshop]"
     placement_category military
+    build_category military
     texture "assets/textures/building/generated/siege_workshop_idle_v2/siege_workshop_idle_4x4.png"
     build_cost PLANKS 90
     build_cost STONE 70
@@ -1319,4 +1326,40 @@ building SiegeWorkshop
         input_buffer MECHANICAL_PARTS 10
         output_buffer CATAPULT 4
     end
+end
+
+building GuardTower
+    name "Guard Tower"
+    tag "[GuardTower]"
+    placement_category military
+    build_category military
+    texture "assets/textures/building/generated/guard_tower_idle_v2/guard_tower_idle_2x2.png"
+    build_cost WOOD 45
+    build_cost STONE 55
+    build_cost PLANKS 20
+    build_cost TOOLS 4
+    build_time 16.0
+    footprint 2 2
+    texture_id 16
+    storage FOOD_PROVISIONS 40
+    defense coverage_radius 10.0 base_protection 18.0 required_state Chiefdom garrison_capacity 12 upkeep_interval 60.0 upkeep_package 1.0
+    safety resilience 0.35 raid_destructible 1 raid_stock_loss 1
+end
+
+building Fortress
+    name "Fortress"
+    tag "[Fortress]"
+    placement_category military
+    build_category military
+    texture "assets/textures/building/generated/fortress_idle_v2/fortress_idle_4x4.png"
+    build_cost PLANKS 100
+    build_cost STONE 150
+    build_cost IRON 45
+    build_cost TOOLS 12
+    build_time 32.0
+    footprint 4 4
+    texture_id 18
+    storage FOOD_PROVISIONS 100
+    defense coverage_radius 16.0 base_protection 36.0 required_state Kingdom garrison_capacity 36 upkeep_interval 60.0 upkeep_package 1.0
+    safety resilience 0.60 raid_destructible 1 raid_stock_loss 1
 end

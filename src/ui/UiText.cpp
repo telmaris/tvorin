@@ -11,19 +11,46 @@
 #include <array>
 #include <cmath>
 #include <map>
+#include <optional>
 #include <sstream>
+#include <tuple>
 
 namespace
 {
     tvorin::ui::FontHandle uiFont{};
     bool uiFontLoaded{false};
     std::string uiFontPath;
-    std::map<int, tvorin::ui::FontHandle> uiFontsBySize;
+    struct FontCacheKey
+    {
+        UiFontRole role{UiFontRole::Display};
+        int rasterSize{0};
+        int textureFilter{TEXTURE_FILTER_POINT};
+
+        bool operator<(const FontCacheKey& other) const
+        {
+            return std::tie(role, rasterSize, textureFilter) <
+                std::tie(other.role, other.rasterSize, other.textureFilter);
+        }
+    };
+
+    std::map<FontCacheKey, tvorin::ui::FontHandle> uiFontCache;
     tvorin::ui::FontHandle plainFont{};
     bool plainFontLoaded{false};
     std::string plainFontPath;
-    std::map<int, tvorin::ui::FontHandle> plainFontsBySize;
     UiFontRole activeRole{UiFontRole::Display};
+    UiText::DebugInfo debugInfo{};
+
+    struct TooltipRequest
+    {
+        std::string title;
+        std::vector<std::string> lines;
+        float preferredWidth{0.0f};
+        std::function<void(Rectangle)> titleIcon;
+        int titleFontSize{24};
+        float titleIconWidth{0.0f};
+    };
+
+    std::optional<TooltipRequest> queuedTooltip;
 
     std::string StripTooltipLinePrefix(const std::string& line)
     {
@@ -104,27 +131,26 @@ namespace
     // through to the Display font rather than raylib's blocky built-in, unless
     // nothing is loaded at all.
     bool ExactSizeFont(const std::string& path, const tvorin::ui::FontHandle& base,
-                       std::map<int, tvorin::ui::FontHandle>& cache,
-                       int requestedSize, const Font*& out)
+                       UiFontRole role,
+                       int rasterSize, int textureFilter, const Font*& out)
     {
-        requestedSize = std::max(8, requestedSize);
-        if (requestedSize == base.Get().baseSize || path.empty())
+        rasterSize = std::max(8, rasterSize);
+        if ((rasterSize == base.Get().baseSize && textureFilter == TEXTURE_FILTER_POINT) ||
+            path.empty())
         {
             out = &base.Get();
             return base.IsValid();
         }
 
-        auto cached = cache.find(requestedSize);
-        if (cached == cache.end())
+        const FontCacheKey key{role, rasterSize, textureFilter};
+        auto cached = uiFontCache.find(key);
+        if (cached == uiFontCache.end())
         {
-            tvorin::ui::FontHandle font{LoadFontEx(path.c_str(), requestedSize, nullptr, 0)};
+            tvorin::ui::FontHandle font{LoadFontEx(path.c_str(), rasterSize, nullptr, 0)};
             if (!font)
                 return false;
-            // The glyph atlas is rasterized at the exact requested size, so
-            // point sampling preserves its authored antialiasing without a
-            // second blurry interpolation pass.
-            SetTextureFilter(font.Get().texture, TEXTURE_FILTER_POINT);
-            cached = cache.emplace(requestedSize, std::move(font)).first;
+            SetTextureFilter(font.Get().texture, textureFilter);
+            cached = uiFontCache.emplace(key, std::move(font)).first;
         }
         out = &cached->second.Get();
         return true;
@@ -132,13 +158,40 @@ namespace
 
     bool ActiveFont(const Font*& out, int requestedSize)
     {
+        const Vector2 dpiScale = GetWindowScaleDPI();
+        const int rasterSize = UiText::ResolveRasterSize(requestedSize, dpiScale);
+        const int textureFilter = UiText::ResolveTextureFilter(requestedSize, dpiScale);
+        bool loaded = false;
         if (activeRole == UiFontRole::Plain && plainFontLoaded)
-            return ExactSizeFont(plainFontPath, plainFont, plainFontsBySize,
-                                 requestedSize, out);
-        if (uiFontLoaded)
-            return ExactSizeFont(uiFontPath, uiFont, uiFontsBySize,
-                                 requestedSize, out);
-        return false;
+            loaded = ExactSizeFont(
+                plainFontPath, plainFont, activeRole, rasterSize, textureFilter, out);
+        else if (uiFontLoaded)
+            loaded = ExactSizeFont(
+                uiFontPath, uiFont, activeRole, rasterSize, textureFilter, out);
+
+        debugInfo.role = activeRole;
+        debugInfo.logicalPx = requestedSize;
+        debugInfo.rasterPx = rasterSize;
+        debugInfo.atlasBaseSize = loaded && out != nullptr ? out->baseSize : 0;
+        debugInfo.textureFilter = loaded
+            ? (textureFilter == TEXTURE_FILTER_POINT ? "POINT" : "BILINEAR")
+            : "DEFAULT";
+        debugInfo.cachedAtlasCount = static_cast<int>(uiFontCache.size());
+        return loaded;
+    }
+
+    void ClearCachedRole(UiFontRole role)
+    {
+        for (auto it = uiFontCache.begin(); it != uiFontCache.end();)
+        {
+            if (it->first.role != role)
+            {
+                ++it;
+                continue;
+            }
+            it->second.Reset();
+            it = uiFontCache.erase(it);
+        }
     }
 
     float InlineRunWidth(const UiInlineRun& run, int fontSize, float iconSize)
@@ -169,6 +222,25 @@ namespace
     }
 }
 
+int UiText::ResolveRasterSize(int logicalPx, Vector2 dpiScale)
+{
+    const float dpi = std::max(1.0f, std::max(dpiScale.x, dpiScale.y));
+    return static_cast<int>(std::ceil(std::max(8, logicalPx) * dpi));
+}
+
+int UiText::ResolveTextureFilter(int logicalPx, Vector2 dpiScale)
+{
+    (void)logicalPx;
+    (void)dpiScale;
+    return TEXTURE_FILTER_POINT;
+}
+
+float UiText::SnapToPhysicalPixel(float logicalPosition, float dpiScale)
+{
+    const float safeScale = std::max(1.0f, dpiScale);
+    return std::round(logicalPosition * safeScale) / safeScale;
+}
+
 void UiTextFont::Load(const std::string& path)
 {
     if (!FileExists(path.c_str()))
@@ -180,9 +252,9 @@ void UiTextFont::Load(const std::string& path)
 
     SetTextureFilter(next.Get().texture, TEXTURE_FILTER_POINT);
     uiFont.Reset();
-    for (auto& [size, font] : uiFontsBySize)
+    for (auto& [key, font] : uiFontCache)
         font.Reset();
-    uiFontsBySize.clear();
+    uiFontCache.clear();
     uiFontPath = path;
     uiFont = std::move(next);
     uiFontLoaded = true;
@@ -198,10 +270,8 @@ void UiTextFont::LoadPlain(const std::string& path, int baseSize)
         return;
 
     SetTextureFilter(next.Get().texture, TEXTURE_FILTER_POINT);
+    ClearCachedRole(UiFontRole::Plain);
     plainFont.Reset();
-    for (auto& [size, font] : plainFontsBySize)
-        font.Reset();
-    plainFontsBySize.clear();
     plainFontPath = path;
 
     // LoadFontEx (not LoadFont) so the rasterization size can be chosen: dense
@@ -232,16 +302,18 @@ UiFontRole UiText::GetRole()
     return activeRole;
 }
 
+UiText::DebugInfo UiText::GetDebugInfo()
+{
+    return debugInfo;
+}
+
 void UiTextFont::Unload()
 {
-    for (auto& [size, font] : uiFontsBySize)
+    for (auto& [key, font] : uiFontCache)
         font.Reset();
-    uiFontsBySize.clear();
+    uiFontCache.clear();
     uiFontPath.clear();
     uiFontLoaded = false;
-    for (auto& [size, font] : plainFontsBySize)
-        font.Reset();
-    plainFontsBySize.clear();
     plainFontPath.clear();
     plainFontLoaded = false;
     uiFont.Reset();
@@ -276,20 +348,48 @@ void UiText::Draw(const std::string& text, float x, float y, int fontSize, Color
 {
     const Font* font = nullptr;
     if (ActiveFont(font, fontSize))
-        DrawTextEx(*font, text.c_str(), {std::round(x), std::round(y)},
+    {
+        const Vector2 dpiScale = GetWindowScaleDPI();
+        DrawTextEx(*font, text.c_str(),
+                   {SnapToPhysicalPixel(x, dpiScale.x),
+                    SnapToPhysicalPixel(y, dpiScale.y)},
                    static_cast<float>(fontSize), 0.0f, color);
+    }
     else
         DrawText(text.c_str(), static_cast<int>(x), static_cast<int>(y), fontSize, color);
 }
 
 void UiText::DrawFit(const std::string& text, Rectangle bounds, int fontSize, Color color)
 {
-    int measured = Measure(text, fontSize);
-    while (fontSize > 8 && measured > bounds.width)
+    // Measure every binary-search candidate against one already-resolved
+    // atlas. Resolving through Measure() at each step used to populate the
+    // cache with several intermediate raster sizes for one label.
+    const Font* referenceFont = nullptr;
+    const bool hasReferenceFont = ActiveFont(referenceFont, fontSize);
+    auto measureCandidate = [&](int candidate)
     {
-        fontSize--;
-        measured = Measure(text, fontSize);
+        if (hasReferenceFont && referenceFont != nullptr)
+            return static_cast<int>(std::ceil(MeasureTextEx(
+                *referenceFont, text.c_str(), static_cast<float>(candidate), 0.0f).x));
+        return MeasureText(text.c_str(), candidate);
+    };
+
+    int low = 8;
+    int high = std::max(low, fontSize);
+    int fitted = low;
+    while (low <= high)
+    {
+        const int candidate = low + (high - low) / 2;
+        if (measureCandidate(candidate) <= bounds.width)
+        {
+            fitted = candidate;
+            low = candidate + 1;
+        }
+        else
+            high = candidate - 1;
     }
+    fontSize = fitted;
+    int measured = Measure(text, fontSize);
 
     Draw(text,
         bounds.x + (bounds.width - measured) * 0.5f,
@@ -505,8 +605,12 @@ void Utf8::RemoveLast(std::string& value)
     value.erase(index);
 }
 
-void Tooltip::Draw(const std::string& title, const std::vector<std::string>& lines, float preferredWidth,
-                   const std::function<void(Rectangle)>& titleIcon, int titleFontSize)
+namespace
+{
+    void DrawTooltipImmediate(const std::string& title, const std::vector<std::string>& lines,
+                              float preferredWidth,
+                              const std::function<void(Rectangle)>& titleIcon,
+                              int titleFontSize, float titleIconWidth)
 {
     // Tooltips are intentionally self-contained: their descriptive body
     // remains sans even if a caller is currently drawing a display heading.
@@ -518,13 +622,16 @@ void Tooltip::Draw(const std::string& title, const std::vector<std::string>& lin
     float paragraphGap = 5.0f;
 
     const float iconSize = titleIcon ? 36.0f : 0.0f;
+    const float iconWidth = titleIcon
+        ? std::max(iconSize, titleIconWidth)
+        : 0.0f;
     const float iconGap = titleIcon ? 8.0f : 0.0f;
     const float headerHeight = std::max(static_cast<float>(titleFont), iconSize);
 
     float width = std::max(240.0f, preferredWidth);
     {
         UiFontRoleScope displayRole{UiFontRole::Display};
-        width = std::max(width, std::min(520.0f, static_cast<float>(UiText::Measure(title, titleFont)) + padding * 2.0f + iconSize + iconGap));
+        width = std::max(width, std::min(520.0f, static_cast<float>(UiText::Measure(title, titleFont)) + padding * 2.0f + iconWidth + iconGap));
     }
     width = std::min(width, 520.0f);
     float textWidth = width - padding * 2.0f;
@@ -599,10 +706,10 @@ void Tooltip::Draw(const std::string& title, const std::vector<std::string>& lin
         DrawRectangleRoundedLines(inner, 0.045f, 8, 1.0f, Fade(UiTheme::Bronze, 0.68f));
     }
     if (titleIcon)
-        titleIcon(Rectangle{bounds.x + padding, bounds.y + padding, iconSize, iconSize});
+        titleIcon(Rectangle{bounds.x + padding, bounds.y + padding, iconWidth, iconSize});
     {
         UiFontRoleScope displayRole{UiFontRole::Display};
-        UiText::Draw(title, bounds.x + padding + iconSize + iconGap,
+        UiText::Draw(title, bounds.x + padding + iconWidth + iconGap,
                      bounds.y + padding + (headerHeight - titleFont) * 0.5f - 1.0f,
                      titleFont, UiTheme::Parchment);
     }
@@ -644,4 +751,39 @@ void Tooltip::Draw(const std::string& title, const std::vector<std::string>& lin
         if (paragraphIndex + 1 < wrappedLines.size() && !wrappedLines[paragraphIndex + 1].separator)
             y += paragraphGap;
     }
+}
+
+}
+
+void Tooltip::BeginFrame()
+{
+    queuedTooltip.reset();
+}
+
+void Tooltip::Queue(const std::string& title, const std::vector<std::string>& lines,
+                   float preferredWidth,
+                   const std::function<void(Rectangle)>& titleIcon,
+                   int titleFontSize, float titleIconWidth)
+{
+    queuedTooltip = TooltipRequest{title, lines, preferredWidth, titleIcon,
+                                   titleFontSize, titleIconWidth};
+}
+
+void Tooltip::Flush()
+{
+    if (!queuedTooltip.has_value())
+        return;
+
+    TooltipRequest request = std::move(*queuedTooltip);
+    queuedTooltip.reset();
+    DrawTooltipImmediate(request.title, request.lines, request.preferredWidth,
+                          request.titleIcon, request.titleFontSize,
+                          request.titleIconWidth);
+}
+
+void Tooltip::Draw(const std::string& title, const std::vector<std::string>& lines, float preferredWidth,
+                  const std::function<void(Rectangle)>& titleIcon, int titleFontSize,
+                  float titleIconWidth)
+{
+    Queue(title, lines, preferredWidth, titleIcon, titleFontSize, titleIconWidth);
 }

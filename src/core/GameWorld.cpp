@@ -7,20 +7,28 @@
 std::size_t GameWorld::GetLiveShipmentCount() const
 {
     std::size_t count = 0;
-    for (const auto& [id, player] : playerHandler.players)
-        if (player != nullptr)
-            count += player->GetLiveShipmentCount();
+    for (ProvinceId provinceId : globalMap.GetProvinceIds())
+    {
+        const auto* province = globalMap.FindBuildableProvince(provinceId);
+        const auto* simulation = province != nullptr ? province->GetSimulation() : nullptr;
+        const auto* network = simulation != nullptr
+            ? simulation->GetEconomy().roadNetwork.get() : nullptr;
+        if (network != nullptr)
+            count += network->GetLiveShipmentCount();
+    }
     return count;
 }
 
 int GameWorld::GetStoredResourceUnits() const
 {
     int total = 0;
-    for (const auto& [id, player] : playerHandler.players)
+    for (ProvinceId provinceId : globalMap.GetProvinceIds())
     {
-        if (player == nullptr)
+        const auto* province = globalMap.FindBuildableProvince(provinceId);
+        const auto* simulation = province != nullptr ? province->GetSimulation() : nullptr;
+        if (simulation == nullptr)
             continue;
-        for (Building* building : player->GetTrackedBuildings())
+        for (Building* building : simulation->GetEconomy().dataTracker.buildings)
         {
             if (building == nullptr)
                 continue;

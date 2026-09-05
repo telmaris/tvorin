@@ -3,6 +3,7 @@
 
 #include "core/Types.h"
 #include "core/GameWorld.h"
+#include "core/CampaignGeneration.h"
 
 class EventBroker;
 class Event;
@@ -99,7 +100,7 @@ struct NewGameEvent : Event
 {
     NewGameEvent() {msgName = "NewGameEvent";}
 
-    MapParameters params;
+    CampaignGenerationParameters params;
     std::string name;
 };
 
@@ -108,7 +109,7 @@ struct TutorialGameEvent : Event
 {
     TutorialGameEvent() {msgName = "TutorialGameEvent";}
 
-    MapParameters params;
+    CampaignGenerationParameters params;
     std::string name;
 };
 
@@ -124,7 +125,7 @@ enum class TutorialTriggerType
     BasicProductionComplete,
     FoodChainComplete,
     DecisionSelected,
-    DefenseRepelled
+    RecruitmentComplete
 };
 
 struct TutorialTriggerEvent : Event
@@ -140,7 +141,7 @@ struct HostMultiplayerGameEvent : Event
 {
     HostMultiplayerGameEvent() {msgName = "HostMultiplayerGameEvent";}
 
-    MapParameters params;
+    CampaignGenerationParameters params;
     std::string name;
     unsigned short port{27015};
     std::shared_ptr<IGameTransport> transport;
@@ -151,7 +152,7 @@ struct JoinMultiplayerGameEvent : Event
 {
     JoinMultiplayerGameEvent() {msgName = "JoinMultiplayerGameEvent";}
 
-    MapParameters params;
+    CampaignGenerationParameters params;
     std::string name;
     std::string address{"127.0.0.1"};
     unsigned short port{27015};

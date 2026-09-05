@@ -1,0 +1,16 @@
+# Route definitions. Level zero is an unbuilt trail.
+
+route land_route
+level 0 1.00 0 0
+level 1 0.85 1000 120
+cost 1 WOOD 50
+cost 1 STONE 25
+level 2 0.70 2200 240
+cost 2 PLANKS 75
+cost 2 STONE 50
+end
+
+# Deterministic fixed-point timing fixture for JourneyTimingTests.
+route timing_test_route
+level 0 0.90 0 0
+end

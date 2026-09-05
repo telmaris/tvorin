@@ -86,12 +86,18 @@ add_library(rts_data STATIC
     src/data/RtsDataFile.cpp
     src/data/Resource.cpp
     src/data/Equipment.cpp
-    src/data/TextureConfig.cpp)
+    src/data/TextureConfig.cpp
+    src/world/ProvinceDefinition.cpp
+    src/world/ColonizationDefinition.cpp
+    src/world/ProvinceConnection.cpp
+    src/world/WorldEventDefinition.cpp
+    src/warfare/BattleSimulator.cpp)
 target_include_directories(rts_data PUBLIC "${CMAKE_SOURCE_DIR}/inc")
 
 add_library(rts_ui_common STATIC
     src/economy/BalanceStatDisplay.cpp
     src/ui/ControlIcons.cpp
+    src/ui/KeyBindings.cpp
     src/ui/UiText.cpp
     src/ui/UiWidgets.cpp)
 target_include_directories(rts_ui_common PUBLIC "${CMAKE_SOURCE_DIR}/inc")

@@ -32,6 +32,11 @@ public:
     // Draws and updates widget state for the current frame.
     virtual void Update(double dt) = 0;
 
+    // Draws screen-space content that must sit above the ordinary widget pass.
+    // The default is intentionally empty; current overlays only need two
+    // explicit passes instead of a general z-index system.
+    virtual void DrawOverlay(double dt) { (void)dt; }
+
     // Sets absolute pixel position.
     inline void ChangePosition(int x, int y)
     {
@@ -620,16 +625,27 @@ class GuiPanel : public UiWidget
         UiButton lockButton;
         UiButton destroyButton;
         UiButton recipeButton;
-        UiButton towerTargetButton;
         bool destroyRequested{false};
         bool tutorialHighlight{false};
         bool dragging{false};
         Vec2i dragOffset{0, 0};
         float contentScrollOffset{0.0f};
         float maxContentScrollOffset{0.0f};
+        float recruitmentQueueScrollOffset{0.0f};
+        float recruitmentQueueMaxScrollOffset{0.0f};
+        bool recruitmentQueueScrollbarDragging{false};
+        float recruitmentQueueScrollbarDragOffset{0.0f};
+        std::uint64_t selectedGarrisonTaskGroupId{0};
         bool contentScrollbarDragging{false};
         float contentScrollbarDragOffset{0.0f};
         bool roadPriorityPickerOpen{false};
+        // Connectivity is expensive to query, so the selected panel keeps a
+        // short-lived presentation cache instead of walking the road network
+        // on every draw.
+        int presentationConnectivityBuildingId{-1};
+        double presentationConnectivityAge{0.0};
+        bool presentationConnectivityKnown{false};
+        bool presentationRoadDisconnected{false};
 
         // ESC closes this panel (ETAP 6.1): the wrapped subscriber
         // (de)registers itself with InputManager via RAII, so a panel that

@@ -23,6 +23,14 @@ enum class MovementType
     Flying
 };
 
+enum class UnitRole
+{
+    Line,
+    Scout,
+    Supply,
+    Garrison
+};
+
 struct UnitCostEntry
 {
     ResourceType type{ResourceType::Null};
@@ -41,11 +49,12 @@ struct UnitDefinition
     // Base stats — effective values go through BalanceModifierSet (see
     // BattleUnit::GetEffective*), never used directly by gameplay code.
     double maxHp{1.0};
-    double roadAttack{0.0};
-    double siegeAttack{0.0};
+    double fieldAttack{0.0};
+    double siegePower{0.0};
     double armor{0.0};
     double moveSpeed{1.0};
     double attackSpeed{1.0};
+    UnitRole role{UnitRole::Line};
 
     // Extensibility seams (ETAP 5+ consumes these; parser accepts them now so
     // future units are pure data additions).
@@ -67,6 +76,7 @@ struct UnitDefinition
     double recruitTime{10.0};
     std::vector<UnitCostEntry> cost;
     double manpowerCost{0.0};
+    double garrisonFoodUpkeepPerMinute{0.5};
 
     std::vector<std::string> equipmentSlots; // accepted, ignored until ETAP 3.4's equipment system lands
 

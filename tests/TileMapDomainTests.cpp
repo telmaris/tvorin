@@ -148,7 +148,7 @@ TEST(TileMapDomainTests, CardinalRoadMaskCoversAllSixteenConfigurations)
     }
 }
 
-TEST(TileMapDomainTests, RoadMaskIgnoresAdjacentNonRoadBuildingsAndIncludesBridges)
+TEST(TileMapDomainTests, RoadMaskIgnoresAdjacentNonRoadBuildings)
 {
     TileMap map;
     Player player{0, map};
@@ -163,10 +163,6 @@ TEST(TileMapDomainTests, RoadMaskIgnoresAdjacentNonRoadBuildingsAndIncludesBridg
 
     EXPECT_EQ(map.GetRoadAutotileMask({3, 3}), RoadTopology::North);
 
-    map.DestroyBuildingAt(eastBuilding->positionId);
-    auto* eastBridge = map.PlaceLoadedBuilding(map.GetIdFromCoords({4, 3}), &player, std::make_unique<Bridge>(4));
-    ASSERT_NE(eastBridge, nullptr);
-    EXPECT_EQ(map.GetRoadAutotileMask({3, 3}), RoadTopology::North | RoadTopology::East);
 }
 
 TEST(TileMapDomainTests, AutoConnectConsumerDoesNotChangeExistingProducerDestination)

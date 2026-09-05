@@ -23,7 +23,6 @@ atlas 16 smith_idle "assets/textures/building/generated/smith_idle_v2/smith_idle
 atlas 17 university_idle "assets/textures/building/generated/university_idle_v2/university_idle_sheet_5x1.png" 256 256
 atlas 18 barracks_idle "assets/textures/building/generated/barracks_idle_v2/barracks_idle_4x4.png" 256 256
 atlas 19 road_autotiles "assets/textures/roads/generated/roads_bridges_4x8_64px.png" 64 64
-atlas 20 guard_tower_idle "assets/textures/building/generated/guard_tower_idle_v2/guard_tower_idle_2x2.png" 128 128
 atlas 21 tannery_idle "assets/textures/building/generated/tannery_idle_v2/tannery_idle_4x4.png" 256 256
 atlas 22 tailor_idle "assets/textures/building/generated/tailor_idle_v2/tailor_idle_3x3.png" 192 192
 atlas 23 armorer_idle "assets/textures/building/generated/armorer_idle_v2/armorer_idle_3x3.png" 192 192
@@ -120,9 +119,7 @@ atlas 140 rework_catapult "assets/textures/resources/official/catapult.png" 64 6
 atlas 141 glassworks_idle_v2 "assets/textures/building/generated/glassworks_idle_v2/glassworks_idle_3x3.png" 192 192
 atlas 142 powderworks_idle_v2 "assets/textures/building/generated/powderworks_idle_v2/powderworks_idle_3x3.png" 192 192
 atlas 143 mint_idle_v2 "assets/textures/building/generated/mint_idle_v2/mint_idle_2x2.png" 128 128
-atlas 144 military_road_autotiles "assets/textures/military_roads/generated/military_road_autotiles_4x4_64px.png" 64 64
 atlas 145 road_autotile_variants "assets/textures/roads/generated/roads_autotile_variants_3x4_64px.png" 64 64
-atlas 146 military_road_variants "assets/textures/military_roads/generated/military_road_variants_3x4_64px.png" 64 64
 
 # Transparent deposits: draw after terrain and before roads/buildings.
 # Transparent deposits: four full variants and eight directional rim cells per resource.
@@ -523,14 +520,6 @@ end
 
 building Road
     sprite atlas 19 texture 0
-end
-
-building Bridge
-    sprite atlas 19 texture 0
-end
-
-building DefenseTower
-    sprite atlas 20 texture 0
 end
 
 resource COPPER_ORE

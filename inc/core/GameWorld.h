@@ -6,16 +6,21 @@
 #include "ai/Controller.h"
 #include "core/GameCommand.h"
 #include "core/GameSnapshot.h"
+#include "core/CampaignGeneration.h"
 #include "simulation/MapGenerator.h"
-#include "simulation/MilitaryRoadNetwork.h"
-#include "simulation/PathingService.h"
 #include "economy/Player.h"
 #include "ui/Renderer.h"
-#include "warfare/BattleUnit.h"
-#include "warfare/CombatPipeline.h"
-#include "warfare/CombatTelemetry.h"
+#include "world/GlobalMap.h"
+#include "world/ColonizationDefinition.h"
+#include "world/ScoutExpeditionService.h"
+#include "world/PlayerState.h"
+#include "world/ProvinceSimulation.h"
+#include "world/Trade.h"
+#include "warfare/BattleLifecycle.h"
+#include "world/WorldEventSystem.h"
+#include "warfare/WarfareViews.h"
 
-class AudioSystem;
+#include <cstdint>
 
 enum class BuildPaymentPolicy
 {
@@ -23,9 +28,34 @@ enum class BuildPaymentPolicy
     FreeDebugHuman
 };
 
-#include <cstdint>
+enum class ColonizationPhase : std::uint8_t
+{
+    Traveling,
+    Establishing,
+    Completed,
+    Failed
+};
+
+struct ColonizationProgressView
+{
+    ColonizationPhase phase{ColonizationPhase::Traveling};
+    float progress{0.0f};
+    std::uint64_t remainingTicks{0};
+};
+
+enum class WorldLayoutFailure
+{
+    None,
+    InvalidPlayerCount,
+    InvalidAnchors,
+    MissingStartingVillagePlan,
+    InternalError
+};
+
 #include <deque>
+#include <functional>
 #include <iosfwd>
+#include <optional>
 #include <string_view>
 #include <utility>
 #include <vector>
@@ -52,13 +82,27 @@ class GameWorld
         // Creates a new world with generated terrain and starting entities.
         // Returns false when bounded world generation cannot produce a valid
         // layout. In that case no playable session is started.
-        bool InitWorld(std::string, Renderer*, AudioSystem* audio = nullptr, MapParameters params = {});
+        using GenerationProgressCallback = std::function<void(float, const std::string&)>;
+        bool InitWorld(std::string, Renderer*, MapParameters params = {},
+                       const GenerationProgressCallback& progress = {});
+        bool InitWorld(std::string, Renderer*, CampaignGenerationParameters params,
+                       const GenerationProgressCallback& progress = {});
         // Creates a deterministic multiplayer world with server-assigned player slots.
-        bool InitMultiplayerWorld(std::string name, Renderer* renderer, AudioSystem* audio, MapParameters params, int localPlayerId, bool authoritativeHost);
+        bool InitMultiplayerWorld(std::string name, Renderer* renderer, MapParameters params,
+                                  int localPlayerId,
+                                  bool authoritativeHost,
+                                  const GenerationProgressCallback& progress = {});
+        bool InitMultiplayerWorld(std::string name, Renderer* renderer,
+                                  CampaignGenerationParameters params, int localPlayerId,
+                                  bool authoritativeHost,
+                                  const GenerationProgressCallback& progress = {});
+        // Binds main-thread presentation services after CPU-only background
+        // generation and centers the camera on the local headquarters.
+        void AttachPresentation(Renderer* renderer);
         // Writes the current world state to a save file.
         bool SaveToFile(const std::string& path) const;
         // Rebuilds the world state from a save file.
-        bool LoadFromFile(const std::string& path, Renderer* renderer, AudioSystem* audio = nullptr);
+        bool LoadFromFile(const std::string& path, Renderer* renderer);
         // Canonical full simulation state used by multiplayer initial sync and
         // recovery. Unlike GameSnapshot, this includes gameplay state rather
         // than only render data.
@@ -85,28 +129,81 @@ class GameWorld
         GameSnapshot BuildSnapshot() const;
         // Computes a deterministic low-cost gameplay checksum for mirror validation.
         std::uint64_t BuildChecksum() const;
-        // Bounded AI diagnostics for failed harness scenarios; not simulation state.
-        std::string GetAITrace(int playerId) const;
+        GlobalMap& GetGlobalMap() { return globalMap; }
+        const GlobalMap& GetGlobalMap() const { return globalMap; }
+        const CampaignGenerationParameters& GetCampaignGenerationParameters() const
+        {
+            return campaignGenerationParameters;
+        }
+        GlobalMapView BuildGlobalMapViewFor(PlayerId playerId) const
+        {
+            return globalMap.BuildViewFor(playerId);
+        }
+        ProvinceId GetPlayerProvinceId(PlayerId playerId) const
+        {
+            const auto it = playerHandler.players.find(static_cast<int>(playerId));
+            return it == playerHandler.players.end() || it->second == nullptr
+                ? InvalidProvinceId : it->second->homeProvinceId;
+        }
+        ProvinceId GetLocalProvinceId() const { return GetPlayerProvinceId(localPlayerId); }
+        ProvinceId GetLocalActiveProvinceId() const
+        {
+            const auto it = playerHandler.players.find(localPlayerId);
+            return it == playerHandler.players.end() || it->second == nullptr
+                ? InvalidProvinceId : it->second->GetActiveProvinceId();
+        }
+        bool SetLocalActiveProvince(ProvinceId provinceId)
+        {
+            const auto it = playerHandler.players.find(localPlayerId);
+            if (it == playerHandler.players.end() || it->second == nullptr ||
+                !it->second->SetActiveProvince(provinceId))
+                return false;
+
+            // Province selection is presentation state. Force the cached world
+            // layers to sample the newly selected map even when the camera and
+            // simulation tick have not changed (notably while paused).
+            if (TileMap* map = it->second->GetTileMap(provinceId); map != nullptr)
+            {
+                map->terrainDirty = true;
+                map->buildingsDirty = true;
+            }
+            cachedCameraTarget = {std::numeric_limits<float>::max(),
+                                  std::numeric_limits<float>::max()};
+            cachedCameraZoom = -1.0f;
+            return true;
+        }
+        std::size_t GetColonizationOperationCount() const
+        {
+            return pendingColonizations.size();
+        }
+        bool IsColonizationInProgress(ProvinceId targetProvinceId) const
+        {
+            return pendingColonizations.contains(targetProvinceId);
+        }
+        std::optional<ColonizationProgressView> GetColonizationProgress(
+            ProvinceId targetProvinceId) const;
+        WorldJourneySystem& GetArmyJourneySystem() { return armyJourneySystem; }
+        const WorldJourneySystem& GetArmyJourneySystem() const { return armyJourneySystem; }
+        BattleLifecycleSystem& GetBattleSystem() { return battleSystem; }
+        const BattleLifecycleSystem& GetBattleSystem() const { return battleSystem; }
+        const std::map<std::uint64_t, TradeOrder>& GetActiveTradeOrders() const
+        {
+            return activeTradeOrders;
+        }
+        ProvinceEventSystem& GetEventSystem() { return eventSystem; }
+        const ProvinceEventSystem& GetEventSystem() const { return eventSystem; }
+        const PlayerState* FindPlayerState(PlayerId playerId) const
+        {
+            const auto it = playerHandler.players.find(static_cast<int>(playerId));
+            return it == playerHandler.players.end() || it->second == nullptr
+                ? nullptr : static_cast<const PlayerState*>(it->second.get());
+        }
         // Returns the player controlled by local UI.
         int GetLocalPlayerId() const { return localPlayerId; }
-        // True when a player's Headquarters has been captured (player eliminated).
-        bool IsPlayerDefeated(int playerId) const;
-        // Id of the sole surviving player once every other has been eliminated
-        // (a decided game); -1 while two or more players remain. Deterministic.
-        int GetVictorPlayerId() const;
-        // Returns whether every tile of a proposed footprint is currently
-        // revealed to this player by deterministic gameplay fog sources.
-        // The renderer's soft mask is deliberately not consulted here.
+        // Compatibility query for local placement. Local province maps are
+        // fully visible in the campaign rework, so every valid footprint is
+        // considered visible; the renderer's soft mask is not consulted.
         bool IsBuildFootprintVisibleToPlayer(int playerId, Vec2i anchor, Vec2i footprint) const;
-        // TD(etap-6.3): eliminates a player whose HQ has fallen — flags them
-        // defeated, clears their deployed units/roster/spawn queues,
-        // transfers their production buildings to the conqueror with a
-        // productivity ramp (ConqueredEconomy), and drains their storage
-        // (conqueror keeps HqComponent::captureStockFraction of each
-        // resource, the rest is lost). Called from HqCombatSystem the tick
-        // an HQ's currentHp reaches 0. A no-op if defeatedPlayerId is already
-        // defeated (idempotent against being invoked more than once).
-        void EliminatePlayer(int defeatedPlayerId, int conquerorPlayerId);
         // Returns the authoritative simulation tick counter.
         std::uint64_t GetSimulationTick() const { return simulationTick; }
         // Generation status for callers that need to avoid starting a session
@@ -118,9 +215,6 @@ class GameWorld
         // inputs.
         std::size_t GetLiveShipmentCount() const;
         int GetStoredResourceUnits() const;
-        // Returns the global pathfinding service (ETAP 3.4 integration point)
-        PathingService* GetPathingService() const { return pathingService.get(); }
-
         // ETAP 12.1 — tilemap/playerHandler are private; this is the only access
         // point. Const-qualified callers (e.g. code holding a `const GameWorld&`)
         // get a read-only view; non-const callers still get a mutable one, since
@@ -129,50 +223,51 @@ class GameWorld
         // docs/tech_debt.md). Even so, gameplay state must only
         // be MUTATED through GameCommand (ProcessCommands) or persistence; UI code
         // reading through the non-const overload must not write.
-        TileMap& GetTileMap() { return tilemap; }
-        const TileMap& GetTileMap() const { return tilemap; }
+        TileMap& GetTileMap()
+        {
+            auto it = playerHandler.players.find(localPlayerId);
+            if (it != playerHandler.players.end() && it->second != nullptr &&
+                it->second->GetTileMap() != nullptr)
+                return *it->second->GetTileMap();
+            static TileMap emptyMap;
+            return emptyMap;
+        }
+        const TileMap& GetTileMap() const
+        {
+            const auto it = playerHandler.players.find(localPlayerId);
+            if (it != playerHandler.players.end() && it->second != nullptr &&
+                it->second->GetTileMap() != nullptr)
+                return *it->second->GetTileMap();
+            static const TileMap emptyMap;
+            return emptyMap;
+        }
+        TileMap* GetTileMapForPlayer(PlayerId playerId)
+        {
+            const auto it = playerHandler.players.find(static_cast<int>(playerId));
+            return it == playerHandler.players.end() || it->second == nullptr
+                       ? nullptr : it->second->GetTileMap();
+        }
+        const TileMap* GetTileMapForPlayer(PlayerId playerId) const
+        {
+            const auto it = playerHandler.players.find(static_cast<int>(playerId));
+            return it == playerHandler.players.end() || it->second == nullptr
+                       ? nullptr : it->second->GetTileMap();
+        }
         PlayerHandler& GetPlayerHandler() { return playerHandler; }
         const PlayerHandler& GetPlayerHandler() const { return playerHandler; }
-        // Immutable HQ-ring military road network (TD etap-2).
-        MilitaryRoadNetwork& GetMilitaryRoads() { return militaryRoads; }
-        const MilitaryRoadNetwork& GetMilitaryRoads() const { return militaryRoads; }
-        // TD(etap-4): deployed (marching/fighting/arrived) BattleUnit instances,
-        // keyed by instanceId across every player (ids are already globally
-        // unique — see Player::nextUnitInstanceId). Advanced by
-        // UnitMarchSystem::Update, called from UpdateSimulation.
-        std::map<int, BattleUnit>& GetDeployedUnits() { return deployedUnits; }
-        const std::map<int, BattleUnit>& GetDeployedUnits() const { return deployedUnits; }
-        // FIFO of unit instance ids waiting for their column's gate tile to
-        // free up, keyed by (fromPlayerId, toPlayerId) marching direction.
-        std::map<std::pair<int, int>, std::deque<int>>& GetSpawnQueues() { return spawnQueues; }
-        const std::map<std::pair<int, int>, std::deque<int>>& GetSpawnQueues() const { return spawnQueues; }
-        // TD(etap-7.2): in-flight tower projectiles (homing AttackEmissions),
-        // keyed by an id from AllocateProjectileId(). Persisted in simulation
-        // state so recovery snapshots preserve an in-flight tower attack.
-        std::map<int, AttackEmission>& GetProjectiles() { return projectiles; }
-        const std::map<int, AttackEmission>& GetProjectiles() const { return projectiles; }
-        int AllocateProjectileId() { return nextProjectileId++; }
-        CombatTelemetry& GetCombatTelemetry() { return combatTelemetry; }
-        const CombatTelemetry& GetCombatTelemetry() const { return combatTelemetry; }
-        // Mutable escape hatch for tests that construct simulation objects
-        // directly (e.g. a standalone Player) — same object as GetTileMap(),
-        // named separately so call sites make the intent explicit.
-        TileMap& GetTileMapForTesting() { return tilemap; }
         PlayerHandler& GetPlayerHandlerForTesting() { return playerHandler; }
 
     private:
-        // B5 (docs/work_plan_2026-07-13.md): generates terrain, HQ anchors
-        // (B1) and the military road ring (B2) for `playerCount` players,
-        // retrying with a deterministically perturbed seed (up to a bounded
-        // attempt count) if the resulting ring or starting-village layout
-        // fails validation. Entirely before any Player/Building exists, so a
-        // retry never needs to undo player-visible state — each attempt just
-        // regenerates the tilemap terrain and ring from scratch. Returns the
-        // (fixed) HQ footprint and the accepted anchors (one per player id
-        // 0..playerCount-1). A failed result never represents a playable map.
+        // Generates terrain, HQ anchors and a valid starting-settlement plan
+        // for `playerCount` players. A bounded deterministic retry changes
+        // the seed when terrain or starting-settlement validation fails.
+        // This runs before any Player/Building exists, so a retry only
+        // regenerates the tilemap. A failed result never represents a
+        // playable map.
         struct WorldLayoutResult
         {
             bool success{false};
+            WorldLayoutFailure failure{WorldLayoutFailure::None};
             Vec2i hqFootprint{};
             std::vector<Vec2i> anchors;
             unsigned int requestedSeed{0};
@@ -180,59 +275,85 @@ class GameWorld
             int attempts{0};
             std::string failureReason;
         };
-        WorldLayoutResult GenerateWorldLayout(MapParameters& params, int playerCount);
+        WorldLayoutResult GenerateWorldLayout(TileMap& map, MapParameters& params, int playerCount);
         // Creates one player and initializes display/controller metadata.
-        Player* CreatePlayer(int id, PlayerControllerType controllerType, const std::string& name, Color color);
-        // Places just the Headquarters (and clears its starting area) — must
-        // run BEFORE the military road is generated, so the road's
-        // impassable-rectangle fallback can never land on a not-yet-built HQ.
+        Player* CreatePlayer(int id, PlayerControllerType controllerType, const std::string& name, Color color,
+                             TileMap& map);
+        // Places just the Headquarters and clears its starting area.
         // Returns the clamped HQ anchor actually used.
-        Vec2i CreateStartingHq(Player* player, Vec2i hqAnchor, unsigned int seed);
+        Vec2i CreateStartingHq(Player* player, Vec2i hqAnchor, unsigned int seed, TileMap& map);
         // Places the village, its start road to the HQ, and the starting
-        // resource patches — must run AFTER the military road is generated,
-        // so TileMap::CanBuildFootprint's existing isMilitaryRoad check keeps
-        // all of this off the road automatically.
-        void CreateStartingVillageAndResources(Player* player, Vec2i hqAnchor, unsigned int seed);
+        // resource patches.
+        void CreateStartingVillageAndResources(Player* player, Vec2i hqAnchor, unsigned int seed,
+                                               TileMap& map);
         // Attaches the right controller implementation for one player.
         void AttachControllerForPlayer(Player* player);
         // Advances all input/AI/network controllers.
         void UpdateControllers(double dt);
+        void UpdateOwnedProvinceSimulations(double dt);
+        void UpdateColonizationOperations();
+        void ProcessNonBattleJourneyEvents();
+        void ProcessResourceTransfers();
+        void ProcessArmyTransfers();
+        void ProcessTradeOrders();
+        void UpdateBattles();
+        struct ColonizationOperation;
         // Executes every queued command in submission order.
         void ProcessCommands();
         // Validates and applies one command to the simulation.
         bool ExecuteCommand(const GameCommand& command);
-        // Advances deployed BattleUnit marching/spawning (TD etap-4). Thin
-        // delegator (GameWorld.Units.cpp) to UnitMarchSystem::Update.
-        void UpdateUnits(double dt);
-        // Recomputes current visibility from owned buildings and deployed units.
+        // Recomputes current visibility from owned buildings.
         // Derived state is intentionally rebuilt after load/snapshot rather than
         // serialized as a visual texture or GPU resource.
         void UpdateFogOfWar();
         void RebindMovedState();
+        bool InitializeGlobalCampaign(int playerCount,
+                                      const GlobalMapGenerationParameters& parameters);
+        bool InitializeGlobalCampaign(int playerCount, std::uint32_t seed);
+        bool BindPlayersToGlobalCampaign();
+        bool CompleteColonization(const ColonizationOperation& operation);
+        bool CompleteAutomaticColonization(Player& player, ProvinceId targetProvinceId);
         bool SaveToStream(std::ostream& out) const;
-        bool LoadFromStream(std::istream& in, Renderer* renderer, AudioSystem* audio,
-                            int localPlayerIdOverride);
+        bool LoadFromStream(std::istream& in, Renderer* renderer, int localPlayerIdOverride);
     
     public:
         Renderer*     render{nullptr};
-        AudioSystem*  audio{nullptr};
         std::string worldName{"default"};
         int localPlayerId{0};
 
     private:
-        TileMap tilemap;
+        GlobalMap globalMap;
+        CampaignGenerationParameters campaignGenerationParameters{};
+        WorldJourneySystem armyJourneySystem;
+        BattleLifecycleSystem battleSystem;
+        ProvinceEventSystem eventSystem;
+        // Home provinces are generated before runtime Player objects exist.
+        // This short-lived map is discarded once players are bound; the
+        // durable global state is the PlayerState base owned by each Player.
+        std::map<PlayerId, ProvinceId> pendingHomeProvinceByPlayer;
+        struct ColonizationOperation
+        {
+            PlayerId playerId{InvalidPlayerId};
+            ProvinceId sourceProvinceId{InvalidProvinceId};
+            ProvinceId targetProvinceId{InvalidProvinceId};
+            WorldJourneyId journeyId{InvalidWorldJourneyId};
+            ColonizationPhase phase{ColonizationPhase::Traveling};
+            std::uint64_t phaseCompletionTick{0};
+            std::uint64_t settlementDurationTicks{0};
+            std::vector<ColonizationCost> cost;
+        };
+        std::map<ProvinceId, ColonizationOperation> pendingColonizations;
+        // Authoritative trade orders remain here until the cargo is unloaded
+        // into the origin province. The city and journey are separate domain
+        // objects, so this ledger is the join point used by update, save and
+        // checksum code.
+        std::map<std::uint64_t, TradeOrder> activeTradeOrders;
+        std::uint64_t nextTradeOrderId{1};
+        static constexpr std::size_t MaxActiveTradeOrders = 256;
         PlayerHandler playerHandler;
-        MilitaryRoadNetwork militaryRoads;
-        std::map<int, BattleUnit> deployedUnits;
-        std::map<std::pair<int, int>, std::deque<int>> spawnQueues;
-        std::map<int, AttackEmission> projectiles;
-        std::map<int, FogOfWarState> fogOfWarByPlayer;
-        CombatTelemetry combatTelemetry;
-        int nextProjectileId{1};
         std::deque<GameCommand> pendingCommands;
         std::vector<GameCommandResult> commandResults;
         std::vector<std::unique_ptr<IController>> controllers;
-        std::unique_ptr<PathingService> pathingService;
         std::uint64_t nextCommandId{1};
         std::uint64_t simulationTick{0};
         bool initialized{false};

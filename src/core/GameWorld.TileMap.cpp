@@ -67,6 +67,10 @@ void TileMap::BuildOnTile(int id, Player *player, std::unique_ptr<Building> &&bu
     {
         Log::Msg(building->tag, building->id, " Created");
         building->owner = player;
+        building->ownerId = player != nullptr ? player->id : InvalidPlayerId;
+        building->provinceId = provinceEconomy != nullptr
+            ? provinceEconomy->provinceId : InvalidProvinceId;
+        building->provinceEconomy = provinceEconomy;
         building->positionId = id;
 
         Tile &anchorTile = tilemap[id];
@@ -77,7 +81,9 @@ void TileMap::BuildOnTile(int id, Player *player, std::unique_ptr<Building> &&bu
             matchedTerrain = terrain.matchedTerrainType;
         anchorTile.CreateBuilding(std::move(building), matchedTerrain);
         Building* placed = anchorTile.building.get();
-        if (player != nullptr)
+        if (provinceEconomy != nullptr)
+            provinceEconomy->RegisterBuilding(placed);
+        else if (player != nullptr)
             player->RegisterBuilding(placed);
 
         for (int y = 0; y < footprint.y; y++)
@@ -109,6 +115,8 @@ void TileMap::DestroyBuildingAt(int id)
         return;
 
     Player* owner = building->owner;
+    ProvinceEconomy* economy = building->provinceEconomy != nullptr
+        ? building->provinceEconomy : provinceEconomy;
     Vec2i anchor = GetCoordsFromId(building->positionId);
     Vec2i footprint = building->GetFootprint();
     std::vector<int> occupiedTileIds = GetBuildingTileIds(building);
@@ -172,8 +180,8 @@ void TileMap::DestroyBuildingAt(int id)
             // completed delivery may have released its resource before an
             // obsolete carrier entry is removed, so prove registry ownership
             // without dereferencing the pointer first.
-            if (transport == nullptr || owner == nullptr || owner->roadNetwork == nullptr ||
-                !owner->roadNetwork->IsTrackingShipment(transport))
+            if (transport == nullptr || owner == nullptr || economy == nullptr || economy->roadNetwork == nullptr ||
+                !economy->roadNetwork->IsTrackingShipment(transport))
             {
                 it = other->transportables.erase(it);
                 continue;
@@ -190,7 +198,7 @@ void TileMap::DestroyBuildingAt(int id)
                 // network. Do not call Transportable::ReleaseShipment here:
                 // its legacy back-pointer may reference a network that was
                 // destroyed during an earlier ownership change.
-                owner->roadNetwork->ReleaseShipment(transport);
+                economy->roadNetwork->ReleaseShipment(transport);
                 it = other->transportables.erase(it);
                 continue;
             }
@@ -200,7 +208,9 @@ void TileMap::DestroyBuildingAt(int id)
         }
     }
 
-    if (owner != nullptr)
+    if (economy != nullptr)
+        economy->UnregisterBuilding(building);
+    else if (owner != nullptr)
         owner->UnregisterBuilding(building);
     if (auto* workers = building->GetComponent<WorkerComponent>())
     {
@@ -214,10 +224,10 @@ void TileMap::DestroyBuildingAt(int id)
     }
     tilemap[id].DestroyBuilding();
 
-    if (owner != nullptr && owner->roadNetwork != nullptr)
+    if (economy != nullptr && economy->roadNetwork != nullptr)
     {
         for (int tileId : occupiedTileIds)
-            owner->roadNetwork->UpdateNavMap(tileId, nullptr);
+            economy->roadNetwork->UpdateNavMap(tileId, nullptr);
     }
 
     if (wasRoad)
@@ -238,12 +248,18 @@ Building* TileMap::PlaceLoadedBuilding(int id, Player *player, std::unique_ptr<B
         return nullptr;
 
     building->owner = player;
+    building->ownerId = player != nullptr ? player->id : InvalidPlayerId;
+    building->provinceId = provinceEconomy != nullptr
+        ? provinceEconomy->provinceId : InvalidProvinceId;
+    building->provinceEconomy = provinceEconomy;
     building->positionId = id;
 
     Tile &anchorTile = tilemap[id];
     anchorTile.CreateBuilding(std::move(building));
     Building* placed = anchorTile.building.get();
-    if (player != nullptr)
+    if (provinceEconomy != nullptr)
+        provinceEconomy->RegisterBuilding(placed);
+    else if (player != nullptr)
         player->RegisterBuilding(placed);
 
     for (int y = 0; y < footprint.y; y++)
@@ -276,11 +292,11 @@ void TileMap::UpdateBuildings(double dt)
             // Construction just finished — redraw the cached building layer so the
             // in-progress shade is replaced by the finished sprite.
             buildingsDirty = true;
-            Player* owner = tile.building->owner;
-            if (owner->roadNetwork != nullptr)
+            ProvinceEconomy* economy = tile.building->provinceEconomy;
+            if (economy != nullptr && economy->roadNetwork != nullptr)
             {
                 for (int tileId : GetBuildingTileIds(tile.building.get()))
-                    owner->roadNetwork->UpdateNavMap(tileId, tile.building.get());
+                    economy->roadNetwork->UpdateNavMap(tileId, tile.building.get());
             }
 
             AutoConnectBuilding(tile.building.get());
@@ -346,12 +362,6 @@ bool TileMap::CanBuildFootprint(Vec2i anchor, Vec2i footprint, Player* player, B
     if (!IsInsideFootprint(anchor, footprint))
         return false;
 
-    // B6 (docs/work_plan_2026-07-13.md): Bridge is the sole exception to the
-    // TD(etap-2) rule below — it REQUIRES isMilitaryRoad ground instead of
-    // refusing it, so a resource road can cross the immutable unit track
-    // (which would otherwise wall off whatever lies on the far side).
-    bool requiresMilitaryRoad = type == BuildingType::Bridge;
-
     for (int y = 0; y < footprint.y; y++)
     {
         for (int x = 0; x < footprint.x; x++)
@@ -359,97 +369,12 @@ bool TileMap::CanBuildFootprint(Vec2i anchor, Vec2i footprint, Player* player, B
             const Tile& tile = tilemap[GetIdFromCoords({anchor.x + x, anchor.y + y})];
             if (tile.HasBuilding())
                 return false;
-            // TD(etap-2): the immutable military road track is disjoint from
-            // buildings/resource roads — nothing may ever be placed on it,
-            // except Bridge, which may ONLY be placed on it (see above).
-            if (tile.isMilitaryRoad != requiresMilitaryRoad)
-                return false;
         }
     }
 
-    // TD(etap-1) reguła bliskości: 3 kratki od wrogiej struktury (replaces the old
-    // "must already own this ground" territory gate).
-    constexpr int kEnemyProximityRadius = 3;
-    if (IsWithinEnemyProximity(anchor, footprint, player, kEnemyProximityRadius))
-        return false;
-
-    // User request (2026-07-17): keep a clear apron around every HQ so the
-    // base exit doesn't jam with buildings ("szybko się klinuje"). Roads and
-    // Bridges are exempt — logistics must be able to reach the HQ. Defense
-    // Towers are exempt as well so the protected apron can be fortified.
-    constexpr int kHqClearanceRadius = 6;
-    if (type != BuildingType::Road && type != BuildingType::Bridge &&
-        type != BuildingType::Headquarters && type != BuildingType::DefenseTower &&
-        IsWithinHqClearance(anchor, footprint, kHqClearanceRadius))
-        return false;
-
-    // B6 follow-up (playtest 2026-07-14): two Bridges sitting edge-to-edge
-    // would form a single, longer crossing rather than the intended one-tile
-    // gap in the track — reject placement if any orthogonal neighbour is
-    // already a Bridge (regardless of owner).
-    if (type == BuildingType::Bridge)
-    {
-        for (int neighbourId : GetAdjacentTileIds(anchor, footprint))
-        {
-            const Building* neighbourBuilding = tilemap[neighbourId].GetBuilding();
-            if (neighbourBuilding != nullptr && neighbourBuilding->buildingType == BuildingType::Bridge)
-                return false;
-        }
-    }
-
+    (void)player;
+    (void)type;
     return true;
-}
-
-// True when any tile within `radius` of the footprint (expanded bounding box) is
-// occupied by a building owned by a different player. Own buildings and unowned
-// ground never block; distance is Chebyshev (grid-square), not Euclidean.
-bool TileMap::IsWithinEnemyProximity(Vec2i anchor, Vec2i footprint, const Player* player, int radius) const
-{
-    if (player == nullptr || radius <= 0)
-        return false;
-
-    int minX = std::max(0, anchor.x - radius);
-    int maxX = std::min(params.sizeX - 1, anchor.x + footprint.x - 1 + radius);
-    int minY = std::max(0, anchor.y - radius);
-    int maxY = std::min(params.sizeY - 1, anchor.y + footprint.y - 1 + radius);
-
-    for (int y = minY; y <= maxY; y++)
-    {
-        for (int x = minX; x <= maxX; x++)
-        {
-            const Building* building = tilemap[GetIdFromCoords({x, y})].GetBuilding();
-            if (building != nullptr && building->owner != nullptr && building->owner != player)
-                return true;
-        }
-    }
-    return false;
-}
-
-// True when any tile within `radius` (Chebyshev, expanded bounding box) of the
-// footprint belongs to ANY player's Headquarters. Scanned with a stride of 2 —
-// the HQ footprint is 3x3 (MapGenerator::HeadquartersFootprint), so a stride-2
-// grid cannot step over it, at a quarter of the tile reads (this runs per
-// candidate tile inside the AI's anchor search).
-bool TileMap::IsWithinHqClearance(Vec2i anchor, Vec2i footprint, int radius) const
-{
-    if (radius <= 0)
-        return false;
-
-    int minX = std::max(0, anchor.x - radius);
-    int maxX = std::min(params.sizeX - 1, anchor.x + footprint.x - 1 + radius);
-    int minY = std::max(0, anchor.y - radius);
-    int maxY = std::min(params.sizeY - 1, anchor.y + footprint.y - 1 + radius);
-
-    for (int y = minY; y <= maxY; y += 2)
-    {
-        for (int x = minX; x <= maxX; x += 2)
-        {
-            const Building* building = tilemap[GetIdFromCoords({x, y})].GetBuilding();
-            if (building != nullptr && building->buildingType == BuildingType::Headquarters)
-                return true;
-        }
-    }
-    return false;
 }
 
 TerrainPlacementEvaluation TileMap::EvaluateTerrainPlacement(
@@ -703,9 +628,13 @@ Building* TileMap::FindNearestStorage(Building* source, Player* player)
     Building* best = nullptr;
     int bestDistance = std::numeric_limits<int>::max();
 
-    // ETAP 10: Use Player.storages[] registry instead of scanning entire map.
+    // Use the province-local storage registry instead of scanning the map.
     // storages[] contains all StorageComponent buildings owned by player.
-    for (Building* storage : player->storages)
+    ProvinceEconomy* economy = source->provinceEconomy != nullptr
+        ? source->provinceEconomy : player->GetProvinceEconomy();
+    if (economy == nullptr)
+        return nullptr;
+    for (Building* storage : economy->storages)
     {
         if (storage == nullptr || storage == source)
             continue;
@@ -728,7 +657,11 @@ Building* TileMap::FindDefaultStorage(Building* source, Player* player)
         return nullptr;
 
     Building* headquarters = nullptr;
-    for (Building* warehouse : StockpileIndex::Warehouses(*player))
+    ProvinceEconomy* economy = source->provinceEconomy != nullptr
+        ? source->provinceEconomy : player->GetProvinceEconomy();
+    if (economy == nullptr)
+        return nullptr;
+    for (Building* warehouse : StockpileIndex::Warehouses(*economy))
     {
         if (warehouse == source)
             continue;
@@ -744,7 +677,7 @@ Building* TileMap::FindDefaultStorage(Building* source, Player* player)
     Vec2i origin = GetCoordsFromId(source->positionId);
     Building* best = nullptr;
     int bestDistance = std::numeric_limits<int>::max();
-    for (Building* warehouse : StockpileIndex::Warehouses(*player))
+    for (Building* warehouse : StockpileIndex::Warehouses(*economy))
     {
         if (warehouse == source)
             continue;
@@ -765,6 +698,20 @@ void TileMap::ConnectReceiver(Building* source, Building* receiver, bool alterna
 {
     if (source == nullptr || receiver == nullptr || source == receiver)
         return;
+
+    // Storage hubs expose outgoing buffers rather than producer outputs, so
+    // there is no output view to iterate below. A SetReceiver command from a
+    // hub is therefore interpreted as an explicit supplier assignment for
+    // every input the target can accept. This keeps the command meaningful
+    // for Barracks with local resource buffers and gives the AI job a
+    // verifiable postcondition.
+    if (source->IsStorageLike())
+    {
+        for (const auto& input : receiver->GetInputBufferViews())
+            if (receiver->CanAcceptResource(input.type))
+                receiver->SetSupplier(input.type, source);
+        return;
+    }
 
     for (const auto& output : source->GetOutputBufferViews())
     {
@@ -820,8 +767,11 @@ void TileMap::AutoConnectBuilding(Building* building)
         // GetTrackedBuildings() orders by Building* (heap address), which is
         // NOT deterministic across separately-constructed GameWorld
         // instances (found via a flaky lockstep-determinism test).
-        std::vector<Building*> ordered(building->owner->GetTrackedBuildings().begin(),
-                                        building->owner->GetTrackedBuildings().end());
+        const ProvinceEconomy* economy = building->provinceEconomy;
+        if (economy == nullptr)
+            return;
+        std::vector<Building*> ordered(economy->dataTracker.buildings.begin(),
+                                       economy->dataTracker.buildings.end());
         std::sort(ordered.begin(), ordered.end(), [](Building* a, Building* b) { return a->id < b->id; });
         for (Building* other : ordered)
         {
@@ -836,8 +786,23 @@ void TileMap::AutoConnectBuilding(Building* building)
                 // to a producer of an unrelated resource silently hijacked
                 // that producer's receiver, blocking its real fallback
                 // delivery to the nearest storage.
-                if (!other->HasReceiver(output.type) && building->CanAcceptResource(output.type))
+                if (!building->CanAcceptResource(output.type))
+                    continue;
+
+                if (!other->HasReceiver(output.type))
+                {
                     other->SetReceiver(output.type, building);
+                    continue;
+                }
+
+                // A newly completed warehouse must become a usable overflow
+                // sink even when the producer already has the HQ as its
+                // primary receiver. Without this alternative lane, adding
+                // storage increases aggregate capacity but leaves every
+                // producer pointed at the full original warehouse, so a full
+                // output buffer can deadlock the entire material chain.
+                if (building->buildingType == BuildingType::StorageBuilding)
+                    other->SetAlternativeReceiver(output.type, building);
             }
 
             for (const auto& input : other->GetInputBufferViews())

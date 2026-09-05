@@ -16,6 +16,7 @@ struct ShipmentRenderState
     int toTileId{-1};
     float progress{0.0f};
     bool waitingForCapacity{false};
+    TransportPhase phase{TransportPhase::InTransit};
 };
 
 #endif

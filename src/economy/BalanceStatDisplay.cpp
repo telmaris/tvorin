@@ -19,25 +19,37 @@ const char* BalanceStatLabel(BalanceStat stat)
         case BalanceStat::PopulationCap: return "Population cap";
         case BalanceStat::VillageSupplyConsumption: return "Village supply consumption";
         case BalanceStat::BuilderAmount: return "Builders";
-        // T5 (docs/post_pivot_audit_2026-07-12.md): the rest of the enum used to
-        // fall through to "Effect" — every modifier touching a unit/HQ/tower
-        // stat showed no real label.
         case BalanceStat::UnitHp: return "Unit HP";
-        case BalanceStat::UnitRoadAttack: return "Unit road attack";
-        case BalanceStat::UnitSiegeAttack: return "Unit siege attack";
+        case BalanceStat::UnitFieldAttack: return "Unit field attack";
+        case BalanceStat::UnitSiegePower: return "Unit siege power";
         case BalanceStat::UnitArmor: return "Unit armor";
         case BalanceStat::UnitMoveSpeed: return "Unit move speed";
         case BalanceStat::UnitAttackSpeed: return "Unit attack speed";
         case BalanceStat::UnitRecruitTime: return "Unit recruit time";
         case BalanceStat::UnitRecruitManpowerCost: return "Unit manpower cost";
-        case BalanceStat::HqMaxHp: return "HQ max HP";
-        case BalanceStat::HqDefense: return "HQ hard defense";
-        case BalanceStat::HqThorns: return "HQ thorns damage";
+        case BalanceStat::ProvinceFortification: return "Province fortification";
+        case BalanceStat::ProvinceDefense: return "Province defense";
+        case BalanceStat::ProvinceCounterattack: return "Province counterattack";
         case BalanceStat::ConquestSpoilsFraction: return "Conquest spoils";
-        case BalanceStat::TowerDamage: return "Tower damage";
-        case BalanceStat::TowerRange: return "Tower range";
-        case BalanceStat::TowerAttackSpeed: return "Tower attack speed";
-        case BalanceStat::TowerAmmoEfficiency: return "Tower ammo per shot";
+        case BalanceStat::ProvinceDefensePower: return "Province defense power";
+        case BalanceStat::ProvinceDefenseCoverage: return "Province defense coverage";
+        case BalanceStat::ProvinceDefenseReadiness: return "Province defense readiness";
+        case BalanceStat::ProvinceDefenseSupplyUse: return "Province defense supply use";
+        case BalanceStat::RouteTravelSpeed: return "Route travel speed";
+        case BalanceStat::RouteIncidentChance: return "Route incident chance";
+        case BalanceStat::TradeExchangeRate: return "Trade exchange rate";
+        case BalanceStat::TradeScoreGain: return "Trade score gain";
+        case BalanceStat::BattleAttack: return "Battle attack";
+        case BalanceStat::BattleCasualtyRate: return "Battle casualty rate";
+        case BalanceStat::BattleDuration: return "Battle duration";
+        case BalanceStat::GarrisonCapacity: return "Garrison capacity";
+        case BalanceStat::GarrisonFoodUpkeep: return "Garrison food upkeep";
+        case BalanceStat::RaidBuildingDestructionChance: return "Raid building destruction chance";
+        case BalanceStat::RaidStockLossFraction: return "Raid stock loss fraction";
+        case BalanceStat::ProvinceEventChance: return "Province event chance";
+        case BalanceStat::ProvinceEventWeight: return "Province event weight";
+        case BalanceStat::ProvinceEventDuration: return "Province event duration";
+        case BalanceStat::ColonizationDuration: return "Colonization duration";
         default: return "Effect";
     }
 }
@@ -56,12 +68,19 @@ bool LowerValueIsBetter(BalanceStat stat)
         // people tied up in buildings as possible, so MORE worker capacity is a
         // nerf and has to render as one.
         case BalanceStat::WorkerCapacity:
-        // T5: "less" is the improvement for these three, same reasoning as the
-        // build/production timers above — a lower recruit time, lower manpower
-        // cost, or fewer arrows burned per shot is the bonus direction.
         case BalanceStat::UnitRecruitTime:
         case BalanceStat::UnitRecruitManpowerCost:
-        case BalanceStat::TowerAmmoEfficiency:
+        case BalanceStat::ProvinceDefenseSupplyUse:
+        case BalanceStat::RouteIncidentChance:
+        case BalanceStat::TradeExchangeRate:
+        case BalanceStat::BattleCasualtyRate:
+        case BalanceStat::BattleDuration:
+        case BalanceStat::GarrisonFoodUpkeep:
+        case BalanceStat::RaidBuildingDestructionChance:
+        case BalanceStat::RaidStockLossFraction:
+        case BalanceStat::ProvinceEventChance:
+        case BalanceStat::ProvinceEventDuration:
+        case BalanceStat::ColonizationDuration:
             return true;
         default:
             return false;
@@ -114,9 +133,7 @@ const char* BalanceBuildingLabel(BuildingType type)
         case BuildingType::Powderworks: return "Powderworks";
         case BuildingType::University: return "University";
         case BuildingType::Barracks: return "Barracks";
-        case BuildingType::DefenseTower: return "Defense Tower";
         case BuildingType::Road: return "Road";
-        case BuildingType::Bridge: return "Bridge";
         case BuildingType::AnimalFarm: return "Animal Farm";
         case BuildingType::Butcher: return "Butcher";
         case BuildingType::Tannery: return "Tannery";

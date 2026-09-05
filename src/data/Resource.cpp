@@ -2,6 +2,36 @@
 #include "economy/Building.h"
 #include "data/Equipment.h"
 
+#include <array>
+#include <cstdint>
+#include <mutex>
+
+namespace
+{
+    // One shared slab handles skewed economies better than N equally-sized
+    // per-type slabs (WOOD can legitimately outnumber a late-game weapon by
+    // orders of magnitude). Type/category are assigned on checkout.
+    struct StaticResourceStorage
+    {
+        std::array<Resource, ResourcePool::Capacity> resources{};
+        std::array<std::uint32_t, ResourcePool::Capacity> freeIndices{};
+        std::size_t freeCount{ResourcePool::Capacity};
+        std::mutex freeListMutex;
+
+        StaticResourceStorage()
+        {
+            for (std::size_t index = 0; index < freeIndices.size(); ++index)
+                freeIndices[index] = static_cast<std::uint32_t>(freeIndices.size() - index - 1);
+        }
+    };
+
+    StaticResourceStorage& SharedResourceStorage()
+    {
+        static StaticResourceStorage storage;
+        return storage;
+    }
+}
+
 // Maps an equipment role (Equipment.h) onto its economic tag. Keeping the weapon
 // categories derived from the equipment table means the two taxonomies can never
 // disagree — add one profile row and both layers see the new gear.
@@ -192,17 +222,16 @@ bool IsWeaponCategory(ResourceCategory category)
 
 Resource* Resource::CreateOwned(ResourceType type)
 {
-    Resource* resource = new Resource(type);
-    resource->ownedAllocation = true;
-    return resource;
+    static ResourcePool pool;
+    return pool.GetResource(type);
 }
 
 void Resource::DestroyOwned(Resource* resource)
 {
     if (resource == nullptr || !resource->ownedAllocation)
         return;
-    resource->ownedAllocation = false;
-    delete resource;
+    static ResourcePool pool;
+    pool.FreeResource(resource);
 }
 
 ResourceBuffer::~ResourceBuffer()
@@ -303,15 +332,57 @@ void ResourceBuffer::SetStoredAmount(int amount)
         GenerateResource(type);
 }
 
-// Compatibility facade for callers that still request an owned resource
-// directly. New gameplay code uses ResourceBuffer::GenerateResource.
 Resource* ResourcePool::GetResource(ResourceType type)
 {
-    return Resource::CreateOwned(type);
+    if (type == ResourceType::Null)
+        return nullptr;
+
+    auto& storage = SharedResourceStorage();
+    const std::lock_guard<std::mutex> lock(storage.freeListMutex);
+    if (storage.freeCount == 0)
+        return nullptr;
+
+    const std::uint32_t index = storage.freeIndices[--storage.freeCount];
+    Resource& resource = storage.resources[index];
+    static_cast<Transportable&>(resource) = Transportable{};
+    resource.type = type;
+    resource.category = ResourceCategoryOf(type);
+    resource.ownedAllocation = true;
+    return &resource;
 }
 
-// Releases an owned resource, ignoring external stack-backed values.
 void ResourcePool::FreeResource(Resource* res)
 {
-    Resource::DestroyOwned(res);
+    if (res == nullptr)
+        return;
+
+    auto& storage = SharedResourceStorage();
+    Resource* first = storage.resources.data();
+    const auto firstAddress = reinterpret_cast<std::uintptr_t>(first);
+    const auto resourceAddress = reinterpret_cast<std::uintptr_t>(res);
+    const std::size_t storageBytes = sizeof(Resource) * storage.resources.size();
+    if (resourceAddress < firstAddress || resourceAddress >= firstAddress + storageBytes ||
+        (resourceAddress - firstAddress) % sizeof(Resource) != 0)
+        return;
+
+    const std::lock_guard<std::mutex> lock(storage.freeListMutex);
+    if (!res->ownedAllocation)
+        return;
+    // In-flight ownership is released by Building/RoadNetwork before the
+    // payload returns here. Keeping the pool independent of RoadNetwork also
+    // lets data-only tools link resource definitions without the simulation.
+    const std::size_t index = (resourceAddress - firstAddress) / sizeof(Resource);
+    static_cast<Transportable&>(*res) = Transportable{};
+    res->type = ResourceType::Null;
+    res->category = ResourceCategory::None;
+    res->ownedAllocation = false;
+    if (storage.freeCount < storage.freeIndices.size())
+        storage.freeIndices[storage.freeCount++] = static_cast<std::uint32_t>(index);
+}
+
+std::size_t ResourcePool::Available() const noexcept
+{
+    auto& storage = SharedResourceStorage();
+    const std::lock_guard<std::mutex> lock(storage.freeListMutex);
+    return storage.freeCount;
 }

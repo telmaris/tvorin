@@ -1,14 +1,18 @@
 #include "ui/Gui.h"
 #include "ui/ControlIcons.h"
+#include "ui/BuildingPresentation.h"
 #include "ui/BuildingUpgradeView.h"
 #include "ui/UiTheme.h"
+#include "ui/UnitTypeCard.h"
 #include "economy/Building.h"
 #include "economy/BuildingConfig.h"
 #include "economy/Player.h"
 #include "economy/StockpileIndex.h"
 #include "research/ResearchCatalog.h"
 #include "research/Technology.h"
+#include "warfare/GarrisonService.h"
 #include "warfare/UnitDefinition.h"
+#include "warfare/WarfareViews.h"
 #include "core/GameCommand.h"
 #include "scenes/Scenes.h"
 
@@ -32,15 +36,6 @@ namespace
     ResourceIconAtlas resourceIconAtlas;
 
     void DrawTextFit(const std::string& text, Rectangle bounds, int fontSize, Color color);
-
-    struct PendingTooltip
-    {
-        bool visible{false};
-        std::string title;
-        std::vector<std::string> lines;
-        float preferredWidth{0.0f};
-        ResourceType resourceType{ResourceType::Null};
-    };
 
     bool HasNodeTag(const ResearchNodeView& node, const std::string& tag)
     {
@@ -70,7 +65,7 @@ namespace
         float x = bounds.x;
         auto drawButton = [&](const std::string& label, const std::string& value)
         {
-            float width = std::min(112.0f, std::max(54.0f, static_cast<float>(MeasureText(label.c_str(), 14) + 22)));
+            float width = std::min(112.0f, std::max(54.0f, static_cast<float>(UiText::Measure(label, 14) + 22)));
             Rectangle rect{x, bounds.y, width, bounds.height};
             bool selected = selectedTag == value;
             bool hover = CheckCollisionPointRec(mouse, rect);
@@ -89,8 +84,6 @@ namespace
             if (!drawButton(tag, tag))
                 break;
     }
-
-    PendingTooltip pendingTooltip;
 
     // Returns the current rectangle occupied by a UI widget.
     Rectangle WidgetBounds(const UiWidget& widget)
@@ -305,41 +298,6 @@ namespace
             DrawUiText(line, bounds.x + (bounds.width - measured) * 0.5f, y, fontSize, color);
             y += lineH;
         }
-    }
-
-    // Queues a tooltip for the final overlay pass.
-    void QueueTooltip(const std::string& title, std::vector<std::string> lines, float preferredWidth = 0.0f)
-    {
-        pendingTooltip.visible = true;
-        pendingTooltip.title = title;
-        pendingTooltip.lines = std::move(lines);
-        pendingTooltip.preferredWidth = preferredWidth;
-        pendingTooltip.resourceType = ResourceType::Null;
-    }
-
-    void QueueResourceTooltip(ResourceType type, std::vector<std::string> lines, float preferredWidth = 0.0f)
-    {
-        pendingTooltip.visible = true;
-        pendingTooltip.title = ResourceDisplayName(type);
-        pendingTooltip.lines = std::move(lines);
-        pendingTooltip.preferredWidth = preferredWidth;
-        pendingTooltip.resourceType = type;
-    }
-
-    // Draws the queued tooltip above all panel content.
-    void DrawPendingTooltip()
-    {
-        if (!pendingTooltip.visible)
-            return;
-
-        if (pendingTooltip.resourceType != ResourceType::Null)
-        {
-            const ResourceType type = pendingTooltip.resourceType;
-            Tooltip::Draw(pendingTooltip.title, pendingTooltip.lines, pendingTooltip.preferredWidth,
-                          [type](Rectangle icon) { GuiPanel::DrawResourceIcon(type, icon); });
-        }
-        else
-            Tooltip::Draw(pendingTooltip.title, pendingTooltip.lines, pendingTooltip.preferredWidth);
     }
 
     // Draws one resource buffer as a wide card with amount and capacity.
@@ -634,7 +592,9 @@ namespace
             if (StockpileIndex::IsWarehouse(panelBuilding) && panelBuilding->owner != nullptr)
                 lines.push_back("Player-wide: " +
                     std::to_string(StockpileIndex::GetTotal(*panelBuilding->owner, view.type)) + "  [E]");
-            QueueResourceTooltip(view.type, std::move(lines));
+            const ResourceType type = view.type;
+            Tooltip::Queue(ResourceDisplayName(type), lines, 0.0f,
+                          [type](Rectangle icon) { GuiPanel::DrawResourceIcon(type, icon); });
         }
     }
 
@@ -646,7 +606,10 @@ namespace
             production->terrainType == TileType::GRASS || !production->ingredients.empty())
             return -1;
 
-            const TileMap& tilemap = *building->owner->tilemap;
+        const ProvinceEconomy* economy = building->provinceEconomy;
+        if (economy == nullptr || economy->tilemap == nullptr)
+            return -1;
+        const TileMap& tilemap = *economy->tilemap;
         Vec2i anchor = tilemap.GetCoordsFromId(building->positionId);
         Vec2i footprint = building->GetFootprint();
         int richness = 0;
@@ -683,6 +646,21 @@ namespace
             case BalanceStat::ManpowerRate: return "Manpower growth";
             case BalanceStat::PopulationCap: return "Population cap";
             case BalanceStat::VillageSupplyConsumption: return "Village supply consumption";
+            case BalanceStat::RouteTravelSpeed: return "Route travel speed";
+            case BalanceStat::RouteIncidentChance: return "Route incident chance";
+            case BalanceStat::TradeExchangeRate: return "Trade exchange rate";
+            case BalanceStat::TradeScoreGain: return "Trade score gain";
+            case BalanceStat::BattleAttack: return "Battle attack";
+            case BalanceStat::BattleCasualtyRate: return "Battle casualty rate";
+            case BalanceStat::BattleDuration: return "Battle duration";
+            case BalanceStat::GarrisonCapacity: return "Garrison capacity";
+            case BalanceStat::GarrisonFoodUpkeep: return "Garrison food upkeep";
+            case BalanceStat::RaidBuildingDestructionChance: return "Raid building destruction chance";
+            case BalanceStat::RaidStockLossFraction: return "Raid stock loss fraction";
+            case BalanceStat::ProvinceEventChance: return "Province event chance";
+            case BalanceStat::ProvinceEventWeight: return "Province event weight";
+            case BalanceStat::ProvinceEventDuration: return "Province event duration";
+            case BalanceStat::ColonizationDuration: return "Colonization duration";
             case BalanceStat::BuilderAmount: return "Builders";
             default: return "Effect";
         }
@@ -699,6 +677,16 @@ namespace
             case BalanceStat::TransportTime:
             case BalanceStat::TransportDispatchDelay:
             case BalanceStat::VillageSupplyConsumption:
+            case BalanceStat::RouteIncidentChance:
+            case BalanceStat::TradeExchangeRate:
+            case BalanceStat::BattleCasualtyRate:
+            case BalanceStat::BattleDuration:
+            case BalanceStat::GarrisonFoodUpkeep:
+            case BalanceStat::RaidBuildingDestructionChance:
+            case BalanceStat::RaidStockLossFraction:
+            case BalanceStat::ProvinceEventChance:
+            case BalanceStat::ProvinceEventDuration:
+            case BalanceStat::ColonizationDuration:
                 return true;
             default:
                 return false;
@@ -750,11 +738,9 @@ namespace
             case BuildingType::University: return "University";
             case BuildingType::Barracks: return "Barracks";
             case BuildingType::Road: return "Road";
-            case BuildingType::Bridge: return "Bridge";
             case BuildingType::Mint: return "Mint";
             case BuildingType::Glassworks: return "Glassworks";
             case BuildingType::Powderworks: return "Powderworks";
-            case BuildingType::DefenseTower: return "Defense tower";
             case BuildingType::AnimalFarm: return "Animal farm";
             case BuildingType::Butcher: return "Butcher";
             case BuildingType::Tannery: return "Tannery";
@@ -948,8 +934,8 @@ namespace
 
         std::vector<UnitTooltipStat> stats{
             {"HP", FormatUnitStat(modified(BalanceStat::UnitHp, definition.maxHp))},
-            {"Soft attack", FormatUnitStat(modified(BalanceStat::UnitRoadAttack, definition.roadAttack)), ResourceType::IRON_SWORD},
-            {"Hard attack", FormatUnitStat(modified(BalanceStat::UnitSiegeAttack, definition.siegeAttack)), ResourceType::BATTERING_RAM},
+            {"Field attack", FormatUnitStat(modified(BalanceStat::UnitFieldAttack, definition.fieldAttack)), ResourceType::IRON_SWORD},
+            {"Siege power", FormatUnitStat(modified(BalanceStat::UnitSiegePower, definition.siegePower)), ResourceType::BATTERING_RAM},
             {"Armor", FormatUnitStat(modified(BalanceStat::UnitArmor, definition.armor)), ResourceType::IRON_SHIELD},
             {"Move speed", FormatUnitStat(modified(BalanceStat::UnitMoveSpeed, definition.moveSpeed)), ResourceType::Null, UiControlIcons::MilitaryStatIcon::MoveSpeed},
             // Keep weapon-shaped stats on the same authored product icon as
@@ -1237,7 +1223,7 @@ namespace
         return stream.str();
     }
 
-    // Formats a decimal value with one fractional digit (e.g. tower attack
+    // Formats a decimal value with one fractional digit (e.g. attack
     // speed, "1.2") — plain std::to_string on a double affected by
     // BalanceModifiers would otherwise show a misleadingly truncated integer.
     std::string FormatDecimal(double value, int precision = 1)
@@ -1340,6 +1326,7 @@ namespace
         Rectangle tagBar{bounds.x, bounds.y + 52.0f, bounds.width, 30.0f};
         DrawTagFilterBar(tagBar, visibleTags, selectedTagFilter);
         Rectangle treeArea{bounds.x, bounds.y + 92.0f, bounds.width, bounds.height - 92.0f};
+        DrawRectangleRec(treeArea, UiTheme::TreeCanvasBackdrop);
 
         std::map<std::string, const ResearchNodeView*> nodesById;
         for (const auto& node : nodes)
@@ -2279,6 +2266,20 @@ bool GuiPanel::DrawChrome(double dt, Rectangle& outContentArea)
     int titleBar = std::max(34, size.y / 12);
     const float frameInset = UiControlIcons::PixelHudFrameInset(bounds);
     const int margin = std::max(10, size.x / 24);
+    const Vector2 mouse = GetMousePosition();
+    Rectangle closeBounds = UiControlIcons::PixelHudCloseButtonRect(bounds);
+    const bool closeHovered = CheckCollisionPointRec(mouse, closeBounds);
+
+    // Close before drawing any part of the panel. Handling this after the
+    // frame had already been drawn produced one frame containing chrome but no
+    // content, perceived as a flash of the entire GUI. Keyboard close already
+    // followed this pre-draw path through the input subscriber.
+    if (closeHovered && InputManager::IsMouseButtonPressed(MOUSE_BUTTON_LEFT))
+    {
+        dragging = false;
+        Close();
+        return false;
+    }
 
     const bool panelDrawn = UiControlIcons::DrawPixelHudFrame(bounds);
     if (!panelDrawn)
@@ -2292,18 +2293,15 @@ bool GuiPanel::DrawChrome(double dt, Rectangle& outContentArea)
         bounds.y,
         bounds.width,
         static_cast<float>(titleBar)};
-    Vector2 mouse = GetMousePosition();
     Rectangle titleVisual{titleBounds.x + frameInset + 2.0f, titleBounds.y + 4.0f,
                           std::max(0.0f, titleBounds.width - (frameInset + 2.0f) * 2.0f),
                           std::max(0.0f, titleBounds.height - 8.0f)};
     // The main 9-slice already supplies the header rail. A second plaque
     // behind the title would visually split the panel into two skins.
 
-    Rectangle closeBounds = UiControlIcons::PixelHudCloseButtonRect(bounds);
     const float closeWidth = closeBounds.width;
     const float closeEndGap = titleVisual.x + titleVisual.width -
                               (closeBounds.x + closeBounds.width);
-    bool closeHovered = CheckCollisionPointRec(GetMousePosition(), closeBounds);
     if (!UiControlIcons::DrawPanelCloseButton(closeBounds, closeHovered))
     {
         DrawRectangleRounded(closeBounds, 0.16f, 6, closeHovered ? Color{55, 94, 128, 245} : Color{31, 46, 66, 245});
@@ -2313,12 +2311,6 @@ bool GuiPanel::DrawChrome(double dt, Rectangle& outContentArea)
         UiText::Draw("X", closeBounds.x + (closeBounds.width - xWidth) * 0.5f,
                      closeBounds.y + (closeBounds.height - xFont) * 0.5f,
                      xFont, UiTheme::Parchment);
-    }
-
-    if (closeHovered && InputManager::IsMouseButtonPressed(MOUSE_BUTTON_LEFT))
-    {
-        Close();
-        return false;
     }
 
     // Drag: click+hold on title bar (outside close button) to reposition
@@ -2354,8 +2346,6 @@ bool GuiPanel::DrawChrome(double dt, Rectangle& outContentArea)
 
 void GuiPanel::Update(double dt)
 {
-    pendingTooltip.visible = false;
-
     if (building == nullptr)
         return;
 
@@ -2368,6 +2358,27 @@ void GuiPanel::Update(double dt)
     int contentX = static_cast<int>(contentArea.x);
     int contentW = static_cast<int>(contentArea.width);
     int bottom = static_cast<int>(contentArea.y + contentArea.height);
+    if (presentationConnectivityBuildingId != building->id)
+    {
+        presentationConnectivityBuildingId = building->id;
+        presentationConnectivityAge = 0.50;
+        presentationConnectivityKnown = false;
+        presentationRoadDisconnected = false;
+    }
+    presentationConnectivityAge += std::max(0.0, dt);
+    if (!presentationConnectivityKnown || presentationConnectivityAge >= 0.50)
+    {
+        const bool isOwnBuilding = scene != nullptr && scene->game != nullptr &&
+                                   building->owner != nullptr &&
+                                   building->owner->id == scene->game->GetLocalPlayerId();
+        const auto* logistics = building->GetComponent<LogisticsComponent>();
+        presentationRoadDisconnected = isOwnBuilding && logistics != nullptr &&
+                                       !logistics->IsConnectedToRoadNetwork(*building);
+        presentationConnectivityKnown = true;
+        presentationConnectivityAge = 0.0;
+    }
+    const BuildingPresentationStatus presentationStatus = BuildBuildingPresentationStatus(
+        *building, presentationRoadDisconnected);
     auto drawDestroyButton = [&]()
     {
         if (!building->CanBeManuallyDestroyed())
@@ -2383,15 +2394,17 @@ void GuiPanel::Update(double dt)
     {
         int queuePosition = 0;
         int builderCount = 0;
-        bool builderAssigned = false;
         if (building->owner != nullptr)
         {
-            queuePosition = building->owner->construction.QueuePosition(building->id);
-            builderCount = building->owner->construction.EffectiveBuilders(*building->owner);
-            builderAssigned = building->owner->construction.IsActive(building->id);
+            const ProvinceEconomy* economy = building->provinceEconomy;
+            if (economy != nullptr)
+            {
+                queuePosition = economy->construction.QueuePosition(building->id);
+                builderCount = economy->construction.EffectiveBuilders(*building->owner);
+            }
         }
 
-        UiText::Draw(builderAssigned ? "Under construction" : "Waiting in build queue",
+        UiText::Draw(presentationStatus.general,
                      contentX, y, 22, Color{224, 204, 168, 255});
         y += 34;
         progressBar.pos = Vec2i{contentX, y};
@@ -2408,7 +2421,8 @@ void GuiPanel::Update(double dt)
         if (queuePosition > 0)
         {
             std::string queueLine = "Queue position: " + std::to_string(queuePosition) +
-                                    " / " + std::to_string(building->owner->construction.QueueLength()) +
+                                    " / " + std::to_string(building->provinceEconomy != nullptr
+                                                               ? building->provinceEconomy->construction.QueueLength() : 0) +
                                     "   Builders: " + std::to_string(builderCount);
             DrawTextFit(queueLine, Rectangle{static_cast<float>(contentX), static_cast<float>(y), static_cast<float>(contentW), 20.0f}, 15, UiTheme::ParchmentDim);
         }
@@ -2425,94 +2439,13 @@ void GuiPanel::Update(double dt)
         return;
     }
 
-    // TD(etap-8.3): Headquarters — checked before IsStorageLike() (HqComponent
-    // buildings also have StorageComponent) so it gets its own HP/defense
-    // content instead of falling into the generic storage-grid branch below.
-    // Shown for any player's HQ (own or enemy) per the plan's "HP HQ własnego
-    // (i wroga przy kliknięciu)".
-    if (auto* hq = building->GetComponent<HqComponent>())
+    if (!presentationStatus.general.empty())
     {
-        double maxHp = hq->GetModifiedMaxHp(*building);
-        double hpRatio = maxHp > 0.0 ? std::clamp(hq->currentHp / maxHp, 0.0, 1.0) : 0.0;
-        progressBar.pos = Vec2i{contentX, y};
-        progressBar.size = Vec2i{contentW, 30};
-        progressBar.ChangeText("");
-        progressBar.SetValue(static_cast<float>(hpRatio));
-        progressBar.Update(dt);
-        y += 34;
-
-        const std::string hpText = "HP " + std::to_string(static_cast<int>(std::round(std::max(0.0, hq->currentHp)))) +
-                                   " / " + std::to_string(static_cast<int>(std::round(maxHp))) +
-                                   " (" + std::to_string(static_cast<int>(std::round(hpRatio * 100.0))) + "%)";
-        UiText::Draw(hpText, static_cast<float>(contentX), static_cast<float>(y), 18, UiTheme::Parchment);
+        DrawTextFit(presentationStatus.general,
+                    Rectangle{static_cast<float>(contentX), static_cast<float>(y),
+                              static_cast<float>(contentW), 24.0f},
+                    18, UiTheme::Parchment);
         y += 30;
-
-        std::vector<std::string> stats{
-            "Hard defense: " + std::to_string(static_cast<int>(std::round(hq->GetModifiedHardDefense(*building)))),
-            "Thorns damage: " + std::to_string(static_cast<int>(std::round(hq->GetModifiedThornsDamage(*building)))),
-            "Thorns interval: " + FormatDecimal(hq->thornsInterval) + "s"};
-        for (const auto& stat : stats)
-        {
-            UiText::Draw(stat, static_cast<float>(contentX), static_cast<float>(y), 21, UiTheme::Parchment);
-            y += 29;
-        }
-        y += margin / 2;
-
-        UiText::Draw("Storage", contentX, y, 20, Color{224, 204, 168, 255});
-        y += 26;
-        Rectangle grid{
-            static_cast<float>(contentX),
-            static_cast<float>(y),
-            static_cast<float>(contentW),
-            // Headquarters cannot be manually destroyed, so it has no bottom
-            // action button to reserve room for. Give that space to storage.
-            static_cast<float>(bottom - y)};
-        DrawResourceIconGrid(building->GetOutputBufferViews(), grid, 5, &contentScrollOffset, &maxContentScrollOffset, building, &contentScrollbarDragging, &contentScrollbarDragOffset);
-        contentScrollOffset = std::clamp(contentScrollOffset, 0.0f, maxContentScrollOffset);
-        drawDestroyButton(); // no-op: Headquarters::CanBeManuallyDestroyed() == false
-        DrawPendingTooltip();
-        return;
-    }
-
-    // TD(etap-8.2): Defense tower — same reordering reason as HQ above
-    // (TowerCombatComponent buildings also have StorageComponent, used here
-    // purely as the ammo buffer).
-    if (auto* tower = building->GetComponent<TowerCombatComponent>())
-    {
-        UiText::Draw("Defense Tower", contentX, y, 22, Color{224, 204, 168, 255});
-        y += 30;
-
-        std::vector<std::string> stats{
-            "Damage: " + std::to_string(static_cast<int>(std::round(tower->GetModifiedDamage(*building)))),
-            "Range: " + std::to_string(static_cast<int>(std::round(tower->GetModifiedRange(*building)))) + " tiles",
-            "Attack speed: " + FormatDecimal(tower->GetModifiedAttackSpeed(*building)) + "/s",
-            "Crew: " + std::to_string(building->GetAssignedWorkers()) + "/" + std::to_string(building->GetWorkerCapacity())};
-        for (const auto& stat : stats)
-        {
-            DrawTextFit(stat, Rectangle{static_cast<float>(contentX), static_cast<float>(y), static_cast<float>(contentW), 20.0f}, 15, UiTheme::Parchment);
-            y += 24;
-        }
-        y += margin / 2;
-
-        towerTargetButton.pos = Vec2i{contentX, y};
-        towerTargetButton.size = Vec2i{contentW, std::max(30, lockButton.size.y)};
-        towerTargetButton.ChangeText(tower->targetMode == TowerTargetMode::NearestToHq
-            ? "Target: nearest to HQ"
-            : "Target: strongest unit");
-        towerTargetButton.Update(dt);
-        y += towerTargetButton.size.y + margin;
-
-        UiText::Draw("Ammunition", contentX, y, 20, Color{224, 204, 168, 255});
-        y += 26;
-        Rectangle grid{
-            static_cast<float>(contentX),
-            static_cast<float>(y),
-            static_cast<float>(contentW),
-            static_cast<float>(bottom - y - destroyButton.size.y - margin)};
-        DrawResourceIconGrid(building->GetOutputBufferViews(), grid, 4, nullptr);
-        drawDestroyButton();
-        DrawPendingTooltip();
-        return;
     }
 
     // TD(etap-8.4): recruitment building (Barracks) — same reordering reason.
@@ -2580,32 +2513,20 @@ void GuiPanel::Update(double dt)
             const std::string blockReason = recruitment->DiagnoseRecruitmentBlock(*building, id);
             const bool available = blockReason.empty();
 
-            const Color frameTint = available ? WHITE : Color{126, 128, 132, 220};
-            if (!UiControlIcons::DrawPixelHudWidgetFrame(card, hovered, frameTint))
-            {
-                DrawRectangleRec(card, UiTheme::Inset);
-                DrawRectangleLinesEx(card, 1.0f, UiTheme::Iron);
-            }
-            // The portrait renderer performs its own aspect fit; reserve a
-            // wider inset so bows, spearheads and siege wheels never touch the
-            // 9-slice corners even in the narrow four-column layout.
-            Rectangle portrait{card.x + 9.0f, card.y + 9.0f,
-                               card.width - 18.0f, card.height - 18.0f};
-            if (!UiControlIcons::DrawUnitPortrait(
-                    id, portrait, available ? WHITE : Color{132, 132, 132, 210}))
-            {
-                DrawTextFit(definition.displayName, portrait, 14,
-                            available ? UiTheme::Parchment : UiTheme::ParchmentDim);
-            }
-            if (!available)
-                DrawRectangleRec({card.x + 4.0f, card.y + 4.0f,
-                                  card.width - 8.0f, card.height - 8.0f},
-                                 Fade(BLACK, 0.34f));
-            if (hovered)
-                DrawRectangleLinesEx({card.x + 2.0f, card.y + 2.0f,
-                                      card.width - 4.0f, card.height - 4.0f},
-                                     2.0f, available ? UiTheme::AmberBright
-                                                     : Color{190, 104, 82, 255});
+            int reserveCount = 0;
+            if (building->owner != nullptr && building->provinceEconomy != nullptr)
+                for (const auto& [instanceId, unit] : building->owner->roster.units)
+                    if (unit.unitDefId == id &&
+                        unit.assignment.kind == UnitAssignmentKind::BarracksReserve &&
+                        unit.assignment.provinceId == building->provinceEconomy->provinceId &&
+                        unit.assignment.buildingId == building->id)
+                        ++reserveCount;
+            const int queuedCount = static_cast<int>(std::count_if(
+                recruitment->queue.begin(), recruitment->queue.end(),
+                [&](const RecruitmentQueueEntry& entry) { return entry.unitDefId == id; }));
+            DrawUnitTypeCard(card, UnitTypeCardView{id, definition.displayName,
+                                                     reserveCount, queuedCount, available},
+                             hovered);
 
             if (hovered)
             {
@@ -2618,7 +2539,8 @@ void GuiPanel::Update(double dt)
                     self != nullptr && panelScene != nullptr && panelScene->game != nullptr)
                 {
                     panelScene->SubmitLocalCommand(GameCommand::RecruitUnit(
-                        panelScene->game->GetLocalPlayerId(), self->positionId, id));
+                        panelScene->game->GetLocalPlayerId(),
+                        panelScene->game->GetLocalActiveProvinceId(), self->positionId, id));
                 }
             }
         }
@@ -2629,30 +2551,86 @@ void GuiPanel::Update(double dt)
             y += margin / 2;
             UiText::Draw("Queue", contentX, y, 18, UiTheme::AmberBright);
             y += 24;
+            const float queueViewportHeight = std::clamp(
+                static_cast<float>(bottom - destroyButton.size.y - margin - y),
+                126.0f, 176.0f);
+            constexpr float queueRowHeight = 42.0f;
+            const float queueContentHeight = queueRowHeight *
+                static_cast<float>(recruitment->queue.size());
+            recruitmentQueueMaxScrollOffset = std::max(
+                0.0f, queueContentHeight - queueViewportHeight);
+            recruitmentQueueScrollOffset = std::clamp(
+                recruitmentQueueScrollOffset, 0.0f, recruitmentQueueMaxScrollOffset);
+            const Rectangle queueViewport{static_cast<float>(contentX),
+                                          static_cast<float>(y),
+                                          std::max(1.0f, static_cast<float>(contentW) - 18.0f),
+                                          queueViewportHeight};
+            if (CheckCollisionPointRec(GetMousePosition(), queueViewport))
+                recruitmentQueueScrollOffset = std::clamp(
+                    recruitmentQueueScrollOffset - InputManager::GetMouseWheelMove() *
+                        queueRowHeight,
+                    0.0f, recruitmentQueueMaxScrollOffset);
+            BeginScissorMode(static_cast<int>(queueViewport.x),
+                             static_cast<int>(queueViewport.y),
+                             static_cast<int>(queueViewport.width),
+                             static_cast<int>(queueViewport.height));
+            float queueY = queueViewport.y - recruitmentQueueScrollOffset;
             for (const auto& entry : recruitment->queue)
             {
-                if (y + 34 > bottom - destroyButton.size.y - margin)
-                    break;
-
                 const UnitDefinition* def = FindUnitDefinition(entry.unitDefId);
                 std::string name = def != nullptr ? def->displayName : entry.unitDefId;
                 std::string label = entry.resourcesReady
                     ? name + " - " + FormatSeconds(entry.remaining) + " / " + FormatSeconds(entry.total)
                     : name + " - Waiting for resources";
-                DrawTextFit(label, Rectangle{static_cast<float>(contentX), static_cast<float>(y), static_cast<float>(contentW), 18.0f},
+                DrawTextFit(label, Rectangle{queueViewport.x, queueY, queueViewport.width, 18.0f},
                     14, entry.resourcesReady ? UiTheme::Parchment : Color{230, 190, 110, 255});
-                y += 20;
 
                 float progress = entry.resourcesReady && entry.total > 0.0
                     ? std::clamp(static_cast<float>(1.0 - entry.remaining / entry.total), 0.0f, 1.0f)
                     : 0.0f;
-                Rectangle bar{static_cast<float>(contentX), static_cast<float>(y), static_cast<float>(contentW), 8.0f};
+                Rectangle bar{queueViewport.x, queueY + 20.0f, queueViewport.width, 8.0f};
                 DrawRectangleRounded(bar, 0.2f, 4, UiTheme::Ink);
                 Rectangle fill = bar;
                 fill.width *= progress;
                 DrawRectangleRounded(fill, 0.2f, 4, entry.resourcesReady ? Color{140, 176, 96, 255} : Color{150, 120, 60, 255});
-                y += 14;
+                queueY += queueRowHeight;
             }
+            EndScissorMode();
+            if (recruitmentQueueMaxScrollOffset > 0.0f)
+            {
+                const Rectangle track{queueViewport.x + queueViewport.width + 6.0f,
+                                      queueViewport.y, 8.0f, queueViewport.height};
+                const float thumbHeight = std::max(
+                    28.0f, track.height * queueViewport.height / queueContentHeight);
+                const float travel = std::max(1.0f, track.height - thumbHeight);
+                const Rectangle thumb{
+                    track.x,
+                    track.y + travel * recruitmentQueueScrollOffset /
+                        recruitmentQueueMaxScrollOffset,
+                    track.width, thumbHeight};
+                DrawRectangleRounded(track, 0.45f, 4, UiTheme::Ink);
+                DrawRectangleRounded(thumb, 0.45f, 4, UiTheme::Iron);
+                if (CheckCollisionPointRec(GetMousePosition(), thumb) &&
+                    InputManager::IsMouseButtonPressed(MOUSE_BUTTON_LEFT))
+                {
+                    recruitmentQueueScrollbarDragging = true;
+                    recruitmentQueueScrollbarDragOffset =
+                        GetMousePosition().y - thumb.y;
+                }
+                if (recruitmentQueueScrollbarDragging &&
+                    InputManager::IsMouseButtonDown(MOUSE_BUTTON_LEFT))
+                {
+                    const float targetThumbY = std::clamp(
+                        GetMousePosition().y - recruitmentQueueScrollbarDragOffset,
+                        track.y, track.y + travel);
+                    recruitmentQueueScrollOffset =
+                        (targetThumbY - track.y) / travel * recruitmentQueueMaxScrollOffset;
+                }
+                if (recruitmentQueueScrollbarDragging &&
+                    InputManager::IsMouseButtonReleased(MOUSE_BUTTON_LEFT))
+                    recruitmentQueueScrollbarDragging = false;
+            }
+            y += static_cast<int>(queueViewportHeight);
         }
 
         drawDestroyButton();
@@ -2660,6 +2638,186 @@ void GuiPanel::Update(double dt)
             DrawUnitRecruitmentTooltip(*building, hoveredUnitId, *hoveredDefinition,
                                        hoveredManpowerCost, hoveredRecruitTime,
                                        hoveredBlockReason);
+        return;
+    }
+
+    if (auto* garrison = building->GetComponent<GarrisonComponent>())
+    {
+        UiText::Draw("Province defense", contentX, y, 22, Color{224, 204, 168, 255});
+        y += 30;
+
+        const ProvinceEconomy* province = building->provinceEconomy;
+        const Player* owner = building->owner;
+        const bool operational = owner != nullptr && province != nullptr &&
+                                 !building->IsUnderConstruction();
+        const GarrisonSummary summary = operational
+            ? GarrisonService::BuildSummary(*owner, *province, *building)
+            : GarrisonSummary{};
+        const double protection = building->owner != nullptr
+            ? building->GetComponent<DefenseCoverageComponent>() != nullptr
+                ? building->GetComponent<DefenseCoverageComponent>()->GetEffectiveProtection(*building)
+                : 0.0
+            : 0.0;
+        const auto* upkeep = building->GetComponent<GarrisonUpkeepComponent>();
+        const std::string supplyStatus = upkeep == nullptr
+            ? "Unavailable" : ToString(upkeep->supplyStatus);
+        const std::vector<std::string> stats{
+            "Garrison: " + std::to_string(summary.used) + "/" +
+                std::to_string(garrison->GetEffectiveCapacity(*building)),
+            std::string("Protection: ") +
+                (summary.used > 0 && operational ? "Active" : "Inactive") +
+                " (" + FormatDecimal(protection, 1) + ")",
+            "Food upkeep: " + FormatDecimal(summary.upkeepPerMinute, 2) + " / min",
+            "Food buffer: " + std::to_string(summary.bufferedFood) +
+                "  incoming: " + std::to_string(summary.incomingFood),
+            "Next packages: " + std::to_string(summary.duePackages) +
+                "  status: " + supplyStatus};
+        for (const auto& stat : stats)
+        {
+            DrawTextFit(stat, Rectangle{static_cast<float>(contentX), static_cast<float>(y),
+                                        static_cast<float>(contentW), 20.0f},
+                        15, stat.find("Inactive") != std::string::npos ||
+                            stat.find("Unsupplied") != std::string::npos
+                            ? Color{238, 184, 84, 255} : UiTheme::Parchment);
+            y += 22;
+        }
+
+        if (!summary.unitCounts.empty())
+        {
+            UiText::Draw("Stationed units", contentX, y, 18, UiTheme::AmberBright);
+            y += 23;
+            for (const auto& [unitId, count] : summary.unitCounts)
+            {
+                const UnitDefinition* definition = FindUnitDefinition(unitId);
+                const std::string name = definition != nullptr ? definition->displayName : unitId;
+                const double rate = definition != nullptr && owner != nullptr
+                    ? owner->ModifyBalanceForUnit(BalanceStat::GarrisonFoodUpkeep,
+                                                   definition->garrisonFoodUpkeepPerMinute,
+                                                   building, definition->id,
+                                                   ResourceType::FOOD_PROVISIONS)
+                    : 0.0;
+                DrawTextFit(name + " x" + std::to_string(count) +
+                                "  (" + FormatDecimal(rate, 2) + " / min)",
+                            Rectangle{static_cast<float>(contentX), static_cast<float>(y),
+                                      static_cast<float>(contentW), 20.0f},
+                            14, UiTheme::ParchmentDim);
+                y += 20;
+            }
+        }
+
+        const std::vector<int> stationed = owner != nullptr && province != nullptr
+            ? GarrisonService::GetGarrisonedUnitIds(*owner, province->provinceId, building->id)
+            : std::vector<int>{};
+        const int freeSlots = std::max(0, summary.capacity - summary.used);
+        std::vector<const TaskGroupView*> assignableGroups;
+        std::vector<const TaskGroupView*> stationedGroups;
+        if (scene != nullptr && owner != nullptr && province != nullptr)
+            for (const auto& group : scene->latestSnapshot.taskGroups)
+            {
+                if (group.stationProvinceId != province->provinceId)
+                    continue;
+                if (group.editable && (group.status == TaskGroupStatus::Reserve ||
+                                       group.status == TaskGroupStatus::Empty) &&
+                    group.total > 0 && group.total <= freeSlots)
+                    assignableGroups.push_back(&group);
+                if (group.status == TaskGroupStatus::Garrison &&
+                    group.garrisonBuildingId == building->id)
+                    stationedGroups.push_back(&group);
+            }
+        std::sort(assignableGroups.begin(), assignableGroups.end(),
+                  [](const TaskGroupView* lhs, const TaskGroupView* rhs)
+                  { return lhs->id < rhs->id; });
+        std::sort(stationedGroups.begin(), stationedGroups.end(),
+                  [](const TaskGroupView* lhs, const TaskGroupView* rhs)
+                  { return lhs->id < rhs->id; });
+        const TaskGroupView* selectedGroup = nullptr;
+        for (const TaskGroupView* group : assignableGroups)
+            if (group->id == selectedGarrisonTaskGroupId)
+            {
+                selectedGroup = group;
+                break;
+            }
+        if (selectedGroup == nullptr && !assignableGroups.empty())
+        {
+            selectedGroup = assignableGroups.front();
+            selectedGarrisonTaskGroupId = selectedGroup->id;
+        }
+        if (!assignableGroups.empty())
+        {
+            UiText::Draw("Ready task groups", contentX, y, 17, UiTheme::AmberBright);
+            y += 23;
+            const int groupButtonWidth = std::max(90, (contentW - 8) / 2);
+            for (std::size_t index = 0; index < assignableGroups.size() && index < 8; ++index)
+            {
+                const TaskGroupView* group = assignableGroups[index];
+                UiButton groupButton;
+                groupButton.pos = Vec2i{contentX + static_cast<int>(index % 2) * (groupButtonWidth + 8),
+                                        y + static_cast<int>(index / 2) * 30};
+                groupButton.size = Vec2i{groupButtonWidth, 26};
+                groupButton.ChangeText("Group " + std::to_string(group->id) + " (" +
+                                       std::to_string(group->total) + ")");
+                groupButton.func = [this, group]()
+                {
+                    if (group != nullptr)
+                        selectedGarrisonTaskGroupId = group->id;
+                };
+                groupButton.Update(dt);
+                if (group->id == selectedGarrisonTaskGroupId)
+                    DrawRectangleLines(contentX + static_cast<int>(index % 2) * (groupButtonWidth + 8),
+                                       groupButton.pos.y, groupButtonWidth, 26, UiTheme::Gold);
+            }
+            y += (std::min<std::size_t>(assignableGroups.size(), 8) + 1) / 2 * 30 + 4;
+        }
+        const bool canAssign = operational && selectedGroup != nullptr;
+        const TaskGroupView* returnGroup = stationedGroups.empty() ? nullptr : stationedGroups.front();
+        const bool canReturn = operational && !stationed.empty() && returnGroup != nullptr;
+        Building* defenseBuilding = building;
+        UiButton assignButton;
+        assignButton.pos = Vec2i{contentX, std::min(y, bottom - 70)};
+        assignButton.size = Vec2i{std::max(1, (contentW - 8) / 2), 32};
+        assignButton.ChangeText("Assign task group");
+        assignButton.func = [this, defenseBuilding, selectedGroup]()
+        {
+            if (scene == nullptr || scene->game == nullptr || defenseBuilding == nullptr ||
+                selectedGroup == nullptr)
+                return;
+            scene->SubmitLocalCommand(GameCommand::AssignTaskGroupToGarrison(
+                scene->game->GetLocalPlayerId(), scene->game->GetLocalActiveProvinceId(),
+                selectedGroup->id, defenseBuilding->id));
+        };
+        if (canAssign)
+            assignButton.Update(dt);
+
+        UiButton returnButton;
+        returnButton.pos = Vec2i{contentX + std::max(1, (contentW - 8) / 2) + 8,
+                                 std::min(y, bottom - 70)};
+        returnButton.size = Vec2i{std::max(1, (contentW - 8) / 2), 32};
+        returnButton.ChangeText("Return group");
+        returnButton.func = [this, returnGroup, defenseBuilding]()
+        {
+            if (scene == nullptr || scene->game == nullptr || defenseBuilding == nullptr ||
+                returnGroup == nullptr)
+                return;
+            scene->SubmitLocalCommand(GameCommand::ReturnTaskGroupToBarracks(
+                scene->game->GetLocalPlayerId(), scene->game->GetLocalActiveProvinceId(),
+                returnGroup->id, defenseBuilding->id,
+                returnGroup->homeBarracksBuildingId));
+        };
+        if (canReturn)
+            returnButton.Update(dt);
+
+        const auto supplierViews = building->GetSupplierViews();
+        for (const auto& supplier : supplierViews)
+            if (supplier.type == ResourceType::FOOD_PROVISIONS && supplier.building != nullptr)
+            {
+                DrawTextFit("Food supplier: " + supplier.building->name +
+                                " (tile " + std::to_string(supplier.building->positionId) + ")",
+                            Rectangle{static_cast<float>(contentX), static_cast<float>(bottom - 34),
+                                      static_cast<float>(contentW), 18.0f},
+                            13, UiTheme::ParchmentDim);
+                break;
+            }
+        drawDestroyButton();
         return;
     }
 
@@ -2676,7 +2834,6 @@ void GuiPanel::Update(double dt)
         DrawResourceIconGrid(building->GetOutputBufferViews(), grid, 5, &contentScrollOffset, &maxContentScrollOffset, building, &contentScrollbarDragging, &contentScrollbarDragOffset);
         contentScrollOffset = std::clamp(contentScrollOffset, 0.0f, maxContentScrollOffset);
         drawDestroyButton();
-        DrawPendingTooltip();
         return;
     }
 
@@ -2764,7 +2921,8 @@ void GuiPanel::Update(double dt)
                     {
                         if (scene != nullptr && scene->game != nullptr)
                             scene->SubmitLocalCommand(GameCommand::SetRoadPriority(
-                                scene->game->GetLocalPlayerId(), building->positionId, resourceTypes[index]));
+                                scene->game->GetLocalPlayerId(), scene->game->GetLocalActiveProvinceId(),
+                                building->positionId, resourceTypes[index]));
                         roadPriorityPickerOpen = false;
                     }
                 }
@@ -2778,7 +2936,8 @@ void GuiPanel::Update(double dt)
                 {
                     if (scene != nullptr && scene->game != nullptr)
                         scene->SubmitLocalCommand(GameCommand::SetRoadPriority(
-                            scene->game->GetLocalPlayerId(), building->positionId, ResourceType::Null));
+                            scene->game->GetLocalPlayerId(), scene->game->GetLocalActiveProvinceId(),
+                            building->positionId, ResourceType::Null));
                     roadPriorityPickerOpen = false;
                 }
                 y += static_cast<int>(picker.height) + 6;
@@ -2805,7 +2964,8 @@ void GuiPanel::Update(double dt)
                     if (self == nullptr || panelScene == nullptr || panelScene->game == nullptr)
                         return;
                     panelScene->SubmitLocalCommand(GameCommand::UpgradeBuilding(
-                        panelScene->game->GetLocalPlayerId(), self->positionId));
+                        panelScene->game->GetLocalPlayerId(), panelScene->game->GetLocalActiveProvinceId(),
+                        self->positionId));
                 };
                 upgradeButton.Update(dt);
 
@@ -2977,7 +3137,8 @@ void GuiPanel::Update(double dt)
                 if (self == nullptr || panelScene == nullptr || panelScene->game == nullptr)
                     return;
                 panelScene->SubmitLocalCommand(GameCommand::UpgradeBuilding(
-                    panelScene->game->GetLocalPlayerId(), self->positionId));
+                    panelScene->game->GetLocalPlayerId(), panelScene->game->GetLocalActiveProvinceId(),
+                    self->positionId));
             };
             settlementUpgradeButton.Update(dt);
 
@@ -3067,9 +3228,7 @@ void GuiPanel::Update(double dt)
 
     const float productionProgress = std::clamp(building->GetProductionProgress(), 0.0f, 1.0f);
     const bool productionBlocked = building->IsProductionBlocked();
-    const auto* panelLogistics = building->GetComponent<LogisticsComponent>();
-    const bool roadNotConnected = panelLogistics != nullptr &&
-                                   !panelLogistics->IsConnectedToRoadNetwork(*building);
+    const bool roadNotConnected = presentationStatus.general == "Disconnected from road network";
     const int progressH = std::clamp(size.y / 20, 34, 42);
     Rectangle progressBounds{static_cast<float>(contentX), static_cast<float>(y),
                              static_cast<float>(contentW), static_cast<float>(progressH)};
@@ -3146,7 +3305,7 @@ void GuiPanel::Update(double dt)
             const std::string prefix = endpointName + arrow;
             const float prefixWidth = std::min(
                 static_cast<float>(std::max(1, connectionColumnW - 28)),
-                static_cast<float>(MeasureText(prefix.c_str(), 15) + 2));
+                static_cast<float>(UiText::Measure(prefix, 15) + 2));
             DrawTextFit(prefix,
                         Rectangle{static_cast<float>(x), static_cast<float>(rowY),
                                   prefixWidth, 20.0f},
@@ -3329,7 +3488,6 @@ void GuiPanel::Update(double dt)
             destroyButton.Update(dt);
         }
     }
-    DrawPendingTooltip();
 }
 
 // Initializes GuiPanel::GuiPanel.
@@ -3341,7 +3499,7 @@ GuiPanel::GuiPanel()
             building->CanBlockProduction())
         {
             scene->SubmitLocalCommand(GameCommand::SetProductionBlocked(
-                scene->game->GetLocalPlayerId(), building->positionId,
+                scene->game->GetLocalPlayerId(), scene->game->GetLocalActiveProvinceId(), building->positionId,
                 !building->IsProductionBlocked()));
         }
     };
@@ -3353,17 +3511,6 @@ GuiPanel::GuiPanel()
         auto* recipes = building != nullptr ? building->GetComponent<RecipeComponent>() : nullptr;
         if (building != nullptr && production != nullptr && logistics != nullptr && workers != nullptr && recipes != nullptr)
             recipes->CycleRecipe(*building, *production, *logistics, *workers);
-    };
-    towerTargetButton.func = [this]()
-    {
-        auto* tower = building != nullptr ? building->GetComponent<TowerCombatComponent>() : nullptr;
-        if (building == nullptr || tower == nullptr || scene == nullptr || scene->game == nullptr)
-            return;
-        TowerTargetMode next = tower->targetMode == TowerTargetMode::NearestToHq
-            ? TowerTargetMode::StrongestUnit
-            : TowerTargetMode::NearestToHq;
-        scene->SubmitLocalCommand(GameCommand::SetTowerTargetMode(
-            scene->game->GetLocalPlayerId(), building->positionId, static_cast<int>(next)));
     };
     destroyButton.func = [this]()
     {
@@ -3379,9 +3526,40 @@ void BuildingInfoPanel::UpdateSize(Vec2i windowSize)
         building->GetComponent<ProductionComponent>() != nullptr &&
         building->GetComponent<RecruitmentComponent>() == nullptr;
     if (compactProduction)
-        sizeAnchor.y = 0.64f;
+    {
+        const int inputRows = std::max(1,
+            static_cast<int>((building->GetInputBufferViews().size() + 2) / 3));
+        const int outputRows = std::max(1,
+            static_cast<int>((building->GetOutputBufferViews().size() + 1) / 2));
+        const int resourceRows = std::max(inputRows, outputRows);
+
+        const auto suppliers = building->GetSupplierViews();
+        const auto receivers = building->GetReceiverViews();
+        const int connectionRows = std::max({
+            1,
+            static_cast<int>(suppliers.size()),
+            static_cast<int>(receivers.size())});
+
+        // The compact baseline fits one resource row and one logistics row.
+        // Grow by the exact vertical cost of additional rows, capped just
+        // inside the screen. This prevents long supplier lists from pushing
+        // the status/actions into each other while retaining the smaller
+        // panel for simple producers.
+        const int extraPixels =
+            std::max(0, resourceRows - 1) * 118 +
+            std::max(0, connectionRows - 1) * 23;
+        const float extraAnchor = windowSize.y > 0
+            ? static_cast<float>(extraPixels) / static_cast<float>(windowSize.y)
+            : 0.0f;
+        const float maximumHeightAnchor = std::max(
+            0.64f, 1.0f - posAnchor.y - 0.02f);
+        sizeAnchor.y = std::clamp(0.64f + extraAnchor, 0.64f,
+                                  maximumHeightAnchor);
+    }
 
     GuiPanel::UpdateSize(windowSize);
+    if (compactProduction)
+        pos.y = std::clamp(pos.y, 0, std::max(0, windowSize.y - size.y - 8));
     sizeAnchor = savedAnchor;
 }
 
@@ -3402,8 +3580,6 @@ void GuiPanel::UpdateSize(Vec2i windowSize)
     lockButton.size = Vec2i{size.x - margin * 2, buttonH};
     recipeButton.pos = Vec2i{pos.x + margin, pos.y + size.y - buttonH * 2 - margin * 2};
     recipeButton.size = Vec2i{size.x - margin * 2, buttonH};
-    towerTargetButton.pos = Vec2i{pos.x + margin, pos.y + size.y - buttonH * 2 - margin * 2};
-    towerTargetButton.size = Vec2i{size.x - margin * 2, buttonH};
     destroyButton.pos = Vec2i{pos.x + margin, pos.y + size.y - buttonH - margin};
     destroyButton.size = Vec2i{size.x - margin * 2, buttonH};
 }
@@ -3419,6 +3595,10 @@ void GuiPanel::SetBuilding(Building* ptr)
     contentScrollbarDragging = false;
     contentScrollbarDragOffset = 0.0f;
     roadPriorityPickerOpen = false;
+    presentationConnectivityBuildingId = -1;
+    presentationConnectivityAge = 0.0;
+    presentationConnectivityKnown = false;
+    presentationRoadDisconnected = false;
     ChangeText(building != nullptr ? building->name : "Gui Panel");
     UpdateSize({GetScreenWidth(), GetScreenHeight()});
 }
@@ -3501,6 +3681,17 @@ void ResearchPanel::Update(double dt)
     int margin = std::max(14, size.x / 54);
     int titleBar = std::max(42, size.y / 14);
     Vector2 mouse = GetMousePosition();
+    Rectangle closeBounds = UiControlIcons::PixelHudCloseButtonRect(bounds);
+
+    // Match GuiPanel: a mouse close must happen before panel chrome is drawn,
+    // otherwise this frame contains an empty shell and visibly flashes.
+    if (CheckCollisionPointRec(mouse, closeBounds) &&
+        InputManager::IsMouseButtonPressed(MOUSE_BUTTON_LEFT))
+    {
+        dragging = false;
+        SetBuilding(nullptr);
+        return;
+    }
 
     if (!UiControlIcons::DrawPixelHudFrame(bounds))
     {
@@ -3514,7 +3705,6 @@ void ResearchPanel::Update(double dt)
                           std::max(0.0f, titleBounds.width - (frameInset + 2.0f) * 2.0f),
                           std::max(0.0f, titleBounds.height - 8.0f)};
 
-    Rectangle closeBounds = UiControlIcons::PixelHudCloseButtonRect(bounds);
     const float closeWidth = closeBounds.width;
     const float closeEndGap = titleVisual.x + titleVisual.width -
                               (closeBounds.x + closeBounds.width);
@@ -3528,13 +3718,6 @@ void ResearchPanel::Update(double dt)
         UiText::Draw("X", closeBounds.x + (closeBounds.width - xWidth) * 0.5f,
                      closeBounds.y + (closeBounds.height - xFont) * 0.5f,
                      xFont, UiTheme::Parchment);
-    }
-
-    if (closeHovered && InputManager::IsMouseButtonPressed(MOUSE_BUTTON_LEFT))
-    {
-        dragging = false;
-        SetBuilding(nullptr);
-        return;
     }
 
     bool titleHovered = CheckCollisionPointRec(mouse, titleBounds) && !closeHovered;

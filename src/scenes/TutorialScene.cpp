@@ -4,8 +4,6 @@
 #include <cmath>
 #include <mutex>
 
-#include "warfare/UnitDefinition.h"
-
 namespace
 {
     struct TutorialPopupDefinition
@@ -18,115 +16,53 @@ namespace
         bool dimBackground;
     };
 
-    // Popup text is data, not a separate function per step. New milestones can
-    // be added here and triggered by TutorialTriggerEvent from any system.
+    // The tutorial deliberately stays inside the peaceful local economy. The
+    // final step explains that the roster will become useful on the global
+    // map, without injecting an opponent or mutating simulation state.
     constexpr std::array<TutorialPopupDefinition, 9> PopupDefinitions{{
-        {
-            TutorialTriggerType::None,
-            "Welcome to the tutorial",
-            "Your goal is to build a functioning state, secure its logistics and conquer every opponent. "
-            "We will cover camera controls, production, roads, defence and attack step by step. "
-            "Whenever an instruction window is open, the simulation is paused so you can read at your own pace.",
-            "Continue",
-            TutorialTriggerType::PracticeIntro,
-            true
-        },
-        {
-            TutorialTriggerType::PracticeIntro,
-            "Practice: production and logistics",
-            "Production buildings turn terrain resources into the materials your settlement needs. "
-            "A Woodcutter harvests {resource}Wood{/resource} from a forest, but the resource must still reach storage or its next consumer. "
-            "Roads are the physical logistics network: they carry shipments, have capacity and can become bottlenecks. "
-            "Your next objective is to pan the camera with {icon:mouse_mmb}, press {icon:key_q} to open the build panel, "
-            "choose Woodcutter and place it on a forest tile.",
-            "Start practice",
-            TutorialTriggerType::None,
-            true
-        },
-        {
-            TutorialTriggerType::BuildComplete,
-            "Roads keep production alive",
-            "The Woodcutter is complete. A valid route is a continuous four-directional chain of your Road tiles: "
-            "the first tile must touch the Woodcutter footprint and the last tile must touch the Headquarters footprint. "
-            "Diagonal-only gaps do not connect, and every tile in the chain must belong to you. "
-            "Press {icon:key_r} to enter Road Build Mode, then place or drag roads with {icon:mouse_lmb} from the Woodcutter to the Headquarters. "
-            "Objective: create a Woodcutter-Headquarters connection.",
-            "Connect Woodcutter",
-            TutorialTriggerType::None,
-            true
-        },
-        {
-            TutorialTriggerType::LogisticsConnected,
-            "Manpower, food and productivity",
-            "Villages generate manpower over time. Free manpower is the pool used by buildings and armies; "
-            "production buildings assign workers from it, and their worker output depends on how many workers are available. "
-            "People must be fed: food provisions are produced by the food chain and delivered through logistics. "
-            "The food supply percentage affects Food productivity, so an empty food network slows every worker down. "
-            "The Woodcutter panel is open behind this window; highlighted rows show workers, worker output and food productivity. "
-            "The top HUD highlights manpower and food supply.",
-            "Continue",
-            TutorialTriggerType::BasicResourcesIntro,
-            false
-        },
-        {
-            TutorialTriggerType::BasicResourcesIntro,
-            "Next objective: basic materials",
-            "Wood is consumed by Lumber Mills and by construction, so one Woodcutter will soon be stretched thin. Build a second Woodcutter. "
-            "Now establish the four basic material chains. Woodcutters harvest {resource}Wood{/resource} and Lumber Mills turn it into {resource}Planks{/resource}. "
-            "A Mine on a {resource}Stone{/resource} deposit produces {resource}Stone{/resource}. The same Mine extracts {resource}Iron Ore{/resource} and {resource}Coal{/resource} from their deposits; "
-            "{resource}Iron Ore{/resource} is smelted into {resource}Iron{/resource}, while {resource}Coal{/resource} also fuels the Foundry. "
-            "Place producers on matching deposits, connect them to storage and consumers with roads, and keep the routes supplied. "
-            "Objective: build a second Woodcutter and start production of {resource}Planks{/resource}, {resource}Stone{/resource}, {resource}Iron{/resource} and {resource}Coal{/resource}.",
-            "Start production",
-            TutorialTriggerType::None,
-            true
-        },
-        {
-            TutorialTriggerType::BasicProductionComplete,
-            "Food keeps the state running",
-            "Manpower and defensive towers both require food. People are generated by villages, but they stay productive only when food reaches them through the logistics network. "
-            "Build the complete chain: a Well produces {resource}Water{/resource}; a Wheat Farm uses Water to produce {resource}Wheat{/resource}; "
-            "a Windmill turns Wheat into {resource}Flour{/resource}; and a Bakery combines Flour and Water into {resource}Bread{/resource}. "
-            "A Hunter's Hut supplies {resource}Meat{/resource}. The Inn consumes Bread, Meat and Water to produce {resource}Food Provisions{/resource}. "
-            "Connect every step with roads, keep a reserve in storage, and make sure villages and defensive towers can receive Food Provisions. "
-            "Objective: build the food chain, including a Hunter's Hut and an Inn, then feed your population and towers.",
-            "Start food production",
-            TutorialTriggerType::None,
-            true
-        },
-        {
-            TutorialTriggerType::FoodChainComplete,
-            "Decisions shape your state",
-            "Decisions are political choices made by the rulers of your settlement. They are free to start: the only cost is time. "
-            "Each decision grants a lasting bonus, but only one can be active at a time, so choose the policy that best fits your plan. "
-            "Open Decisions and select any available first decision. It will begin immediately and continue in the background while you play.",
-            "Continue to Decisions",
-            TutorialTriggerType::None,
-            true
-        },
-        {
-            TutorialTriggerType::DecisionSelected,
-            "Defend the settlement",
-            "Your first political decision is underway. Now prepare for an attack. An enemy force is marching along the military road toward your Headquarters. "
-            "Build a Defense Tower near the route, connect it to your Headquarters with your normal road network, and keep the route supplied with {resource}Arrows{/resource}. "
-            "The Headquarters already has a small reserve of arrows for this first defence. The local area and the attackers' route will be revealed while the attack is in progress. "
-            "Objective: complete the tower, connect it to the road network and destroy every attacking unit.",
-            "Start the attack",
-            TutorialTriggerType::None,
-            false
-        },
-        {
-            TutorialTriggerType::DefenseRepelled,
-            "From defence to counterattack",
-            "The attack has been repelled. It is time to build the tools for an offensive. A Smith can turn {resource}Iron{/resource} and {resource}Wood{/resource} into {resource}Iron Swords{/resource}; "
-            "other equipment chains can be added later as your army grows. Build a Smith and a Barracks, then recruit ten Light Infantry. "
-            "Light Infantry mainly needs manpower and {resource}Food Provisions{/resource}, so keep your food and logistics running. "
-            "Open the Roster, select the ten soldiers, choose the enemy Headquarters and deploy them along the military road. "
-            "Objective: establish sword production, finish a Barracks, recruit 10 Light Infantry and deploy the group to attack.",
-            "Start the counterattack",
-            TutorialTriggerType::None,
-            true
-        }
+        {TutorialTriggerType::None,
+         "Welcome to the tutorial",
+         "Build a self-sufficient settlement, connect its logistics and learn how production supports your people. "
+         "The tutorial pauses the simulation whenever an instruction window is open.",
+         "Continue", TutorialTriggerType::PracticeIntro, true},
+        {TutorialTriggerType::PracticeIntro,
+         "Practice: production and logistics",
+         "A Woodcutter harvests {resource}Wood{/resource} from a forest. Resources must still reach storage or the next consumer. "
+         "Use {icon:mouse_mmb} to pan, {icon:key_q} to open Build, and place a Woodcutter on a forest tile.",
+         "Start practice", TutorialTriggerType::None, true},
+        {TutorialTriggerType::BuildComplete,
+         "Roads keep production alive",
+         "Connect the finished Woodcutter to the Headquarters with a continuous four-directional chain of your Road tiles. "
+         "Press {icon:key_r} for Road Build Mode, then place or drag roads with {icon:mouse_lmb}.",
+         "Connect Woodcutter", TutorialTriggerType::None, true},
+        {TutorialTriggerType::LogisticsConnected,
+         "Manpower and productivity",
+         "Villages generate manpower and buildings use it for work. Food provisions delivered through logistics keep people productive. "
+         "The HUD and building panel show the current supply and worker status.",
+         "Continue", TutorialTriggerType::BasicResourcesIntro, false},
+        {TutorialTriggerType::BasicResourcesIntro,
+         "Basic production",
+         "Build a second Woodcutter, then start the {resource}Planks{/resource}, {resource}Stone{/resource}, {resource}Iron{/resource} "
+         "and {resource}Coal{/resource} chains. Place producers on matching deposits and connect producers, storage and consumers with roads.",
+         "Start production", TutorialTriggerType::None, true},
+        {TutorialTriggerType::BasicProductionComplete,
+         "Food keeps the state running",
+         "Build the food chain: Well, Wheat Farm, Windmill, Bakery, Hunter's Hut and Inn. "
+         "The Inn supplies {resource}Food Provisions{/resource}; connect the chain and keep a reserve in storage.",
+         "Start food production", TutorialTriggerType::None, true},
+        {TutorialTriggerType::FoodChainComplete,
+         "Decisions shape your state",
+         "Choose an available focus or technology. It grants a lasting bonus and introduces the strategic layer of your settlement.",
+         "Continue to decisions", TutorialTriggerType::None, true},
+        {TutorialTriggerType::DecisionSelected,
+         "Prepare the first roster",
+         "A Smith produces equipment and a Barracks recruits the first roster units. Build both buildings and recruit ten Militia. "
+         "Keep manpower, food provisions and logistics available while the recruitment queue works.",
+         "Start recruitment", TutorialTriggerType::None, false},
+        {TutorialTriggerType::RecruitmentComplete,
+         "Peaceful tutorial complete",
+         "Your settlement and first roster are ready. In the next stage, the roster will be used for expeditions and provincial actions on the global map.",
+         "Finish tutorial", TutorialTriggerType::None, true}
     }};
 
     const TutorialPopupDefinition* FindPopupDefinition(TutorialTriggerType trigger)
@@ -140,9 +76,6 @@ namespace
 
 TutorialScene::TutorialScene()
 {
-    // Keep the tutorial's debug shortcuts available for rapid testing. The
-    // modal popup still pauses the world and blocks gameplay input until it is
-    // dismissed, just like the regular tutorial flow.
     inputs.SetDebugActionsEnabled(true);
     tutorialPopup.UpdateSize({GetScreenWidth(), GetScreenHeight()});
     tutorialPopup.SetHorizontalOffset(-70);
@@ -157,102 +90,68 @@ TutorialScene::TutorialScene()
 void TutorialScene::OnActivated()
 {
     GameScene::OnActivated();
+    if (pendingTutorialStart.has_value() && game != nullptr && runtimeLoop != nullptr)
+        FinishPendingTutorialStart();
     InputManager::SetInputEnabled(!tutorialPopup.IsVisible());
 }
 
 void TutorialScene::HandleRenderDebugInput()
 {
     GameScene::HandleRenderDebugInput();
-    if (!InputManager::IsKeyPressed(KEY_F11) || tutorialPopup.IsVisible())
+    const int advanceTutorialKey =
+        GetDefaultKeyBindings().GetKeyForAction(GameAction::AdvanceTutorialStep);
+    if (advanceTutorialKey == 0 || !InputManager::IsKeyPressed(advanceTutorialKey) ||
+        tutorialPopup.IsVisible())
         return;
 
-    // F11 is deliberately a tutorial-only accelerator. It advances the
-    // current scripted milestone while leaving ordinary GameScene debug
-    // shortcuts unchanged.
+    // F11 only advances peaceful tutorial milestones; it never creates units.
     if (activePopupTrigger == TutorialTriggerType::PracticeIntro || awaitingWoodcutter)
     {
-            woodcutterCompletionReported = true;
-            awaitingWoodcutter = false;
-            EmitTrigger(TutorialTriggerType::BuildComplete, BuildingType::Woodcutter);
+        woodcutterCompletionReported = true;
+        awaitingWoodcutter = false;
+        EmitTrigger(TutorialTriggerType::BuildComplete, BuildingType::Woodcutter);
     }
     else if (activePopupTrigger == TutorialTriggerType::BuildComplete || awaitingRoadConnection)
     {
-            roadConnectionReported = true;
-            awaitingRoadConnection = false;
-            EmitTrigger(TutorialTriggerType::LogisticsConnected);
+        roadConnectionReported = true;
+        awaitingRoadConnection = false;
+        EmitTrigger(TutorialTriggerType::LogisticsConnected);
     }
     else if (activePopupTrigger == TutorialTriggerType::BasicResourcesIntro || awaitingBasicProduction)
     {
-            basicProductionReported = true;
-            awaitingBasicProduction = false;
-            EmitTrigger(TutorialTriggerType::BasicProductionComplete);
+        basicProductionReported = true;
+        awaitingBasicProduction = false;
+        EmitTrigger(TutorialTriggerType::BasicProductionComplete);
     }
     else if (activePopupTrigger == TutorialTriggerType::BasicProductionComplete ||
              (basicProductionReported && !foodChainReported))
     {
-            foodChainReported = true;
-            UnlockTutorialDecisions();
-            EmitTrigger(TutorialTriggerType::FoodChainComplete);
+        foodChainReported = true;
+        UnlockTutorialDecisions();
+        EmitTrigger(TutorialTriggerType::FoodChainComplete);
     }
     else if (activePopupTrigger == TutorialTriggerType::FoodChainComplete ||
              (foodChainReported && !decisionSelectedReported))
     {
-            decisionSelectedReported = true;
-            EmitTrigger(TutorialTriggerType::DecisionSelected);
+        decisionSelectedReported = true;
+        EmitTrigger(TutorialTriggerType::DecisionSelected);
     }
-    else if (activePopupTrigger == TutorialTriggerType::DecisionSelected || awaitingDefense)
+    else if (activePopupTrigger == TutorialTriggerType::DecisionSelected || awaitingRecruitment)
     {
-            awaitingDefense = true;
-            StartScriptedDefenseAttack();
-    }
-    else if (activePopupTrigger == TutorialTriggerType::DefenseRepelled || counterattackStageActive)
-    {
-            counterattackStageActive = true;
-    }
-
-    if (awaitingDefense && defenseAttackStarted && !defenseReported)
-    {
-        if (auto* mutex = runtimeLoop != nullptr ? runtimeLoop->GetWorldMutex() : nullptr)
-        {
-            std::lock_guard<std::recursive_mutex> lock(*mutex);
-            for (int id : scriptedEnemyUnitIds)
-            {
-                game->GetDeployedUnits().erase(id);
-                for (const auto& [playerId, player] : game->GetPlayerHandler().players)
-                    if (player != nullptr)
-                        player->roster.units.erase(id);
-            }
-        }
-        defenseReported = true;
-        awaitingDefense = false;
-        defenseRouteRevealActive = false;
-        EmitTrigger(TutorialTriggerType::DefenseRepelled);
+        recruitmentReported = true;
+        awaitingRecruitment = false;
+        EmitTrigger(TutorialTriggerType::RecruitmentComplete);
     }
 }
 
 void TutorialScene::PrepareGameplayRender()
 {
-    if (!defenseRouteRevealActive || game == nullptr || scriptedEnemyPlayerId < 0)
-        return;
-
-    const int localPlayerId = game->GetLocalPlayerId();
-    const std::vector<int> route = game->GetMilitaryRoads().GetDirectedTiles(
-        scriptedEnemyPlayerId, localPlayerId);
-    for (int tileId : route)
-    {
-        const Vec2i tile = game->GetTileMap().GetCoordsFromId(tileId);
-        const Vector2 center{
-            static_cast<float>(tile.x * TILE_SIZE + TILE_SIZE / 2),
-            static_cast<float>(tile.y * TILE_SIZE + TILE_SIZE / 2)};
-        render.QueueFogReveal({center, FogOfWar::UnitRevealRadiusWorld * 1.35f});
-    }
+    // No scripted enemy route or combat-specific fog reveal exists in the
+    // peaceful tutorial.
 }
 
 void TutorialScene::Update(double dt)
 {
-    if (pendingTutorialStart.has_value() && IsSceneTransitionOpaque())
-        FinishPendingTutorialStart();
-
     GameScene::Update(dt);
     UpdateTutorialTasks();
 
@@ -264,6 +163,7 @@ void TutorialScene::Update(double dt)
     bool basicProductionReady = false;
     bool foodChainReady = false;
     bool decisionSelected = false;
+    bool recruitmentReady = false;
     if (auto* mutex = runtimeLoop->GetWorldMutex())
     {
         std::lock_guard<std::recursive_mutex> lock(*mutex);
@@ -297,7 +197,6 @@ void TutorialScene::Update(double dt)
                     player->HasTrackedBuilding(BuildingType::Mine, true) &&
                     player->HasTrackedBuilding(BuildingType::Foundry, true);
             }
-
             if (basicProductionReported && !foodChainReported)
             {
                 for (Building* building : player->GetTrackedBuildings())
@@ -310,9 +209,16 @@ void TutorialScene::Update(double dt)
                     }
                 }
             }
-
             decisionSelected = !player->focuses.GetActiveFocusId().empty() ||
                                !player->focuses.GetUnlocked().empty();
+            int militiaCount = 0;
+            for (const auto& [instanceId, unit] : player->roster.units)
+                if (unit.unitDefId == "militia")
+                    ++militiaCount;
+            recruitmentReady = awaitingRecruitment && !recruitmentReported &&
+                               player->HasTrackedBuilding(BuildingType::Smith, true) &&
+                               player->HasTrackedBuilding(BuildingType::Barracks, true) &&
+                               militiaCount >= 10;
         }
     }
 
@@ -323,7 +229,6 @@ void TutorialScene::Update(double dt)
         EmitTrigger(TutorialTriggerType::BuildComplete, BuildingType::Woodcutter);
         return;
     }
-
     if (connected)
     {
         roadConnectionReported = true;
@@ -331,7 +236,6 @@ void TutorialScene::Update(double dt)
         EmitTrigger(TutorialTriggerType::LogisticsConnected);
         return;
     }
-
     if (basicProductionReady)
     {
         basicProductionReported = true;
@@ -339,7 +243,6 @@ void TutorialScene::Update(double dt)
         EmitTrigger(TutorialTriggerType::BasicProductionComplete);
         return;
     }
-
     if (foodChainReady)
     {
         foodChainReported = true;
@@ -347,24 +250,17 @@ void TutorialScene::Update(double dt)
         EmitTrigger(TutorialTriggerType::FoodChainComplete);
         return;
     }
-
-    if (counterattackStageActive && !counterattackDeployed)
-        counterattackDeployed = IsCounterattackDeployed();
-
     if (foodChainReported && !decisionSelectedReported && decisionSelected)
     {
         decisionSelectedReported = true;
         EmitTrigger(TutorialTriggerType::DecisionSelected);
         return;
     }
-
-    if (awaitingDefense && defenseAttackStarted && !defenseReported &&
-        IsScriptedDefenseAttackCleared())
+    if (recruitmentReady)
     {
-        defenseReported = true;
-        awaitingDefense = false;
-        defenseRouteRevealActive = false;
-        EmitTrigger(TutorialTriggerType::DefenseRepelled);
+        recruitmentReported = true;
+        awaitingRecruitment = false;
+        EmitTrigger(TutorialTriggerType::RecruitmentComplete);
     }
 }
 
@@ -372,7 +268,7 @@ void TutorialScene::FinishPendingTutorialStart()
 {
     PendingTutorialStart pending = std::move(*pendingTutorialStart);
     pendingTutorialStart.reset();
-    StartNewGame(std::move(pending.name), pending.params);
+    (void)pending;
 
     activePopupTrigger = TutorialTriggerType::None;
     awaitingWoodcutter = false;
@@ -383,15 +279,9 @@ void TutorialScene::FinishPendingTutorialStart()
     basicProductionReported = false;
     foodChainReported = false;
     decisionSelectedReported = false;
-    awaitingDefense = false;
-    defenseAttackStarted = false;
-    defenseReported = false;
-    counterattackStageActive = false;
-    counterattackDeployed = false;
+    awaitingRecruitment = false;
+    recruitmentReported = false;
     tutorialDecisionsUnlocked = false;
-    scriptedEnemyPlayerId = -1;
-    scriptedEnemyUnitIds.clear();
-    defenseRouteRevealActive = false;
     taskCameraBaselineSet = false;
     taskBuildModeSeen = false;
     tutorialTasks.tasks.clear();
@@ -410,7 +300,6 @@ void TutorialScene::UpdateTutorialTasks()
         taskCameraStart = {render.camera.target.x, render.camera.target.y};
         taskCameraBaselineSet = true;
     }
-
     const float cameraDistance = std::abs(render.camera.target.x - taskCameraStart.x) +
                                  std::abs(render.camera.target.y - taskCameraStart.y);
     const bool cameraMoved = cameraDistance > 2.0f;
@@ -432,11 +321,9 @@ void TutorialScene::UpdateTutorialTasks()
     bool huntersHut = false;
     bool inn = false;
     bool foodProvisionsProduced = false;
-    bool guardTower = false;
-    bool guardTowerConnected = false;
-    int lightInfantryInRoster = 0;
     bool smith = false;
     bool barracks = false;
+    int militiaInRoster = 0;
     if (runtimeLoop != nullptr)
     {
         if (auto* mutex = runtimeLoop->GetWorldMutex())
@@ -456,6 +343,8 @@ void TutorialScene::UpdateTutorialTasks()
                 bakery = player->HasTrackedBuilding(BuildingType::Bakery, true);
                 huntersHut = player->HasTrackedBuilding(BuildingType::HuntersHut, true);
                 inn = player->HasTrackedBuilding(BuildingType::Inn, true);
+                smith = player->HasTrackedBuilding(BuildingType::Smith, true);
+                barracks = player->HasTrackedBuilding(BuildingType::Barracks, true);
                 for (Building* building : player->GetTrackedBuildings())
                 {
                     if (building != nullptr && building->buildingType == BuildingType::Inn &&
@@ -465,27 +354,9 @@ void TutorialScene::UpdateTutorialTasks()
                         break;
                     }
                 }
-
-                guardTower = player->HasTrackedBuilding(BuildingType::DefenseTower, true);
-                smith = player->HasTrackedBuilding(BuildingType::Smith, true);
-                barracks = player->HasTrackedBuilding(BuildingType::Barracks, true);
-                Building* tower = nullptr;
-                Building* headquarters = nullptr;
-                for (Building* building : player->GetTrackedBuildings())
-                {
-                    if (building == nullptr || building->IsUnderConstruction())
-                        continue;
-                    if (building->buildingType == BuildingType::DefenseTower && tower == nullptr)
-                        tower = building;
-                    if (building->buildingType == BuildingType::Headquarters && headquarters == nullptr)
-                        headquarters = building;
-                }
-                if (tower != nullptr && headquarters != nullptr && player->GetRoadNetwork() != nullptr)
-                    guardTowerConnected = !player->GetRoadNetwork()->CalculatePath(tower, headquarters).empty();
-
                 for (const auto& [instanceId, unit] : player->roster.units)
                     if (unit.unitDefId == "militia")
-                        lightInfantryInRoster++;
+                        ++militiaInRoster;
             }
         }
     }
@@ -495,22 +366,19 @@ void TutorialScene::UpdateTutorialTasks()
         tutorialTasks.SetTasks("First production", {
             {"Pan the camera", cameraMoved},
             {"Open the Build panel (Q)", taskBuildModeSeen},
-            {"Build a Woodcutter in a forest", woodcutterCompletionReported}
-        });
+            {"Build a Woodcutter in a forest", woodcutterCompletionReported}});
     }
     else if (activePopupTrigger == TutorialTriggerType::BuildComplete || awaitingRoadConnection)
     {
         tutorialTasks.SetTasks("First logistics link", {
             {"Finish the Woodcutter", woodcutterCompletionReported},
-            {"Connect Woodcutter to Headquarters", roadConnectionReported}
-        });
+            {"Connect Woodcutter to Headquarters", roadConnectionReported}});
     }
     else if (activePopupTrigger == TutorialTriggerType::LogisticsConnected)
     {
         tutorialTasks.SetTasks("People and productivity", {
             {"Review manpower and food indicators", false},
-            {"Continue to the materials objective", false}
-        });
+            {"Continue to the materials objective", false}});
     }
     else if (activePopupTrigger == TutorialTriggerType::BasicResourcesIntro || awaitingBasicProduction)
     {
@@ -518,33 +386,7 @@ void TutorialScene::UpdateTutorialTasks()
             {"Build a second Woodcutter", woodcutters >= 2},
             {"Build a Lumber Mill", lumberMill},
             {"Build a Mine", mine},
-            {"Build a Foundry", foundry}
-        });
-    }
-    else if (activePopupTrigger == TutorialTriggerType::FoodChainComplete ||
-             (foodChainReported && !decisionSelectedReported))
-    {
-        tutorialTasks.SetTasks("Decisions", {
-            {"Complete the Food Provisions chain", foodChainReported},
-            {"Choose any first decision", decisionSelectedReported}
-        });
-    }
-    else if (activePopupTrigger == TutorialTriggerType::DecisionSelected || awaitingDefense)
-    {
-        tutorialTasks.SetTasks("First defence", {
-            {"Build a Defense Tower", guardTower},
-            {"Connect the tower to Headquarters", guardTowerConnected},
-            {"Repel the scripted attack", defenseReported}
-        });
-    }
-    else if (activePopupTrigger == TutorialTriggerType::DefenseRepelled || counterattackStageActive)
-    {
-        tutorialTasks.SetTasks("Counterattack", {
-            {"Build a Smith for Iron Swords", smith},
-            {"Build a Barracks", barracks},
-            {"Recruit 10 Light Infantry", lightInfantryInRoster >= 10},
-            {"Deploy the group against the enemy Headquarters", counterattackDeployed}
-        });
+            {"Build a Foundry", foundry}});
     }
     else if (activePopupTrigger == TutorialTriggerType::BasicProductionComplete || basicProductionReported)
     {
@@ -555,8 +397,28 @@ void TutorialScene::UpdateTutorialTasks()
             {"Build a Bakery", bakery},
             {"Build a Hunter's Hut for Meat", huntersHut},
             {"Build an Inn for Food Provisions", inn},
-            {"Connect the chain and feed villages and towers", foodProvisionsProduced}
-        });
+            {"Produce Food Provisions", foodProvisionsProduced}});
+    }
+    else if (activePopupTrigger == TutorialTriggerType::FoodChainComplete ||
+             (foodChainReported && !decisionSelectedReported))
+    {
+        tutorialTasks.SetTasks("Decisions", {
+            {"Complete the Food Provisions chain", foodChainReported},
+            {"Choose any first focus or technology", decisionSelectedReported}});
+    }
+    else if (activePopupTrigger == TutorialTriggerType::DecisionSelected || awaitingRecruitment)
+    {
+        tutorialTasks.SetTasks("First roster", {
+            {"Build a Smith", smith},
+            {"Build a Barracks", barracks},
+            {"Recruit 10 Militia", militiaInRoster >= 10}});
+    }
+    else if (activePopupTrigger == TutorialTriggerType::RecruitmentComplete || recruitmentReported)
+    {
+        tutorialTasks.SetTasks("Global map preview", {
+            {"Prepare the peaceful settlement", true},
+            {"Prepare the first roster", true},
+            {"Continue to the global map in the next stage", true}});
     }
     else
     {
@@ -577,9 +439,6 @@ void TutorialScene::HandleEvent(std::shared_ptr<Event> e)
     {
         if (sceneChange->sceneName == "MainScene")
         {
-            // Close the modal before tearing down the session so its generic
-            // callback cannot leave a future tutorial world paused/unpaused
-            // based on stale popup state.
             tutorialPopup.Hide();
             activePopupTrigger = TutorialTriggerType::None;
             awaitingWoodcutter = false;
@@ -590,15 +449,9 @@ void TutorialScene::HandleEvent(std::shared_ptr<Event> e)
             basicProductionReported = false;
             foodChainReported = false;
             decisionSelectedReported = false;
-            awaitingDefense = false;
-            defenseAttackStarted = false;
-            defenseReported = false;
-            counterattackStageActive = false;
-            counterattackDeployed = false;
+            awaitingRecruitment = false;
+            recruitmentReported = false;
             tutorialDecisionsUnlocked = false;
-            scriptedEnemyPlayerId = -1;
-            scriptedEnemyUnitIds.clear();
-            defenseRouteRevealActive = false;
             taskCameraBaselineSet = false;
             taskBuildModeSeen = false;
             tutorialTasks.tasks.clear();
@@ -611,8 +464,6 @@ void TutorialScene::HandleEvent(std::shared_ptr<Event> e)
 
     if (auto tutorial = std::dynamic_pointer_cast<TutorialGameEvent>(e))
     {
-        // GameWindow has already begun the fade. Keep world generation behind
-        // the opaque frame, just like the regular new-game path.
         pendingTutorialStart = PendingTutorialStart{tutorial->name, tutorial->params};
         return;
     }
@@ -620,11 +471,9 @@ void TutorialScene::HandleEvent(std::shared_ptr<Event> e)
     auto trigger = std::dynamic_pointer_cast<TutorialTriggerEvent>(e);
     if (trigger == nullptr)
         return;
-
     if (trigger->type == TutorialTriggerType::BuildComplete &&
         trigger->buildingType != BuildingType::Woodcutter)
         return;
-
     ShowPopupForTrigger(trigger->type, trigger->buildingType);
 }
 
@@ -633,7 +482,6 @@ void TutorialScene::ShowPopupForTrigger(TutorialTriggerType trigger, BuildingTyp
     const TutorialPopupDefinition* definition = FindPopupDefinition(trigger);
     if (definition == nullptr || tutorialPopup.IsVisible())
         return;
-
     if (trigger == TutorialTriggerType::BuildComplete && buildingType != BuildingType::Woodcutter)
         return;
 
@@ -648,29 +496,22 @@ void TutorialScene::ShowPopupForTrigger(TutorialTriggerType trigger, BuildingTyp
 void TutorialScene::OnPopupDismissed()
 {
     const TutorialPopupDefinition* definition = FindPopupDefinition(activePopupTrigger);
-    const TutorialTriggerType nextTrigger = definition != nullptr
-        ? definition->nextTrigger
-        : TutorialTriggerType::None;
+    const TutorialTriggerType nextTrigger = definition != nullptr ? definition->nextTrigger : TutorialTriggerType::None;
 
     if (activePopupTrigger == TutorialTriggerType::PracticeIntro)
         awaitingWoodcutter = true;
     if (activePopupTrigger == TutorialTriggerType::BuildComplete)
         awaitingRoadConnection = true;
     if (activePopupTrigger == TutorialTriggerType::BasicResourcesIntro)
-        awaitingBasicProduction = true;
-    if (activePopupTrigger == TutorialTriggerType::BasicResourcesIntro)
-        ClearTutorialHighlights();
-    if (activePopupTrigger == TutorialTriggerType::DecisionSelected)
     {
-        awaitingDefense = true;
-        StartScriptedDefenseAttack();
+        awaitingBasicProduction = true;
+        ClearTutorialHighlights();
     }
-    if (activePopupTrigger == TutorialTriggerType::DefenseRepelled)
-        counterattackStageActive = true;
+    if (activePopupTrigger == TutorialTriggerType::DecisionSelected)
+        awaitingRecruitment = true;
 
     activePopupTrigger = TutorialTriggerType::None;
     tutorialPopup.Hide();
-
     if (nextTrigger != TutorialTriggerType::None)
         EmitTrigger(nextTrigger);
 }
@@ -679,14 +520,12 @@ void TutorialScene::OpenWoodcutterPanelAndHighlights()
 {
     if (controller == nullptr || game == nullptr || runtimeLoop == nullptr)
         return;
-
     auto systemIt = controller->systems.find("default");
     if (systemIt == controller->systems.end())
         return;
     auto* basic = dynamic_cast<BasicMapViewSystem*>(systemIt->second.get());
     if (basic == nullptr)
         return;
-
     auto* worldMutex = runtimeLoop->GetWorldMutex();
     if (worldMutex == nullptr)
         return;
@@ -706,7 +545,6 @@ void TutorialScene::OpenWoodcutterPanelAndHighlights()
     }
     if (woodcutter == nullptr)
         return;
-
     controller->ChangeSystem("default");
     basic->SelectBuilding(woodcutter);
     basic->buildingInfoPanel.SetTutorialHighlight(true);
@@ -746,171 +584,14 @@ void TutorialScene::UnlockTutorialDecisions()
     tutorialHudLocked = false;
     if (controller == nullptr)
         return;
-
     auto systemIt = controller->systems.find("default");
     if (systemIt == controller->systems.end())
         return;
     auto* basic = dynamic_cast<BasicMapViewSystem*>(systemIt->second.get());
     if (basic == nullptr)
         return;
-
-    // Keep Destroy and Resources disabled until the tutorial reaches a later
-    // stage, but make Decisions the first tutorial-gated button to unlock.
     basic->strategicHudWidget.SetTutorialLockedButtons(true);
     basic->strategicHudWidget.SetTutorialDecisionsLocked(false);
-}
-
-void TutorialScene::StartScriptedDefenseAttack()
-{
-    if (defenseAttackStarted || game == nullptr || runtimeLoop == nullptr)
-        return;
-
-    auto* mutex = runtimeLoop->GetWorldMutex();
-    if (mutex == nullptr)
-        return;
-    std::lock_guard<std::recursive_mutex> lock(*mutex);
-
-    const int localPlayerId = game->GetLocalPlayerId();
-    Player* enemy = nullptr;
-    // Prefer a direct military-road neighbour so DeployUnits uses the same
-    // route the player is seeing; fall back to the first live opponent.
-    for (int neighbour : game->GetMilitaryRoads().GetNeighbors(localPlayerId))
-    {
-        auto it = game->GetPlayerHandler().players.find(neighbour);
-        if (it != game->GetPlayerHandler().players.end() && it->second != nullptr &&
-            !it->second->defeated)
-        {
-            enemy = it->second.get();
-            break;
-        }
-    }
-    if (enemy == nullptr)
-    {
-        for (const auto& [playerId, player] : game->GetPlayerHandler().players)
-        {
-            if (playerId != localPlayerId && player != nullptr && !player->defeated)
-            {
-                enemy = player.get();
-                break;
-            }
-        }
-    }
-    if (enemy == nullptr)
-        return;
-
-    scriptedEnemyPlayerId = enemy->id;
-    scriptedEnemyUnitIds.clear();
-    constexpr int ScriptedAttackSize = 4;
-    for (int i = 0; i < ScriptedAttackSize; ++i)
-    {
-        const int instanceId = enemy->id * 100000 + enemy->nextUnitInstanceId++;
-        BattleUnit unit(instanceId, enemy->id, "militia");
-        unit.currentHp = unit.GetEffectiveMaxHp(*enemy);
-        enemy->roster.AddUnit(std::move(unit));
-        scriptedEnemyUnitIds.push_back(instanceId);
-    }
-
-    // The first defence has an intentional tutorial reserve in the HQ, so the
-    // player can focus on tower placement and logistics rather than waiting
-    // for a complete ammunition economy before the exercise starts.
-    Player* local = nullptr;
-    auto localIt = game->GetPlayerHandler().players.find(localPlayerId);
-    if (localIt != game->GetPlayerHandler().players.end())
-        local = localIt->second.get();
-    if (local != nullptr)
-    {
-        for (Building* building : local->GetTrackedBuildings())
-        {
-            if (building == nullptr || building->buildingType != BuildingType::Headquarters)
-                continue;
-            auto* storage = building->GetComponent<StorageComponent>();
-            if (storage != nullptr)
-            {
-                auto& arrows = storage->buffers[ResourceType::ARROWS];
-                if (arrows.type == ResourceType::Null)
-                    arrows = ResourceBuffer{ResourceType::ARROWS, 120};
-                arrows.bufferSize = std::max(arrows.bufferSize, 12);
-                arrows.SetStoredAmount(std::max(12, static_cast<int>(arrows.buffer.size())));
-            }
-            break;
-        }
-    }
-
-    // This is a local tutorial-only injection, not a player command. Move the
-    // generated roster entries into the same deployed/spawn-queue structures
-    // used by ExecuteCommand(DeployUnits), so the normal military march and
-    // combat systems take over on the next simulation tick.
-    const auto routeKey = std::make_pair(enemy->id, localPlayerId);
-    for (int instanceId : scriptedEnemyUnitIds)
-    {
-        auto unit = enemy->roster.RemoveUnit(instanceId);
-        if (!unit.has_value())
-            continue;
-        unit->state = BattleUnitState::Marching;
-        unit->routeFromPlayerId = enemy->id;
-        unit->routeToPlayerId = localPlayerId;
-        unit->tileIndex = -1;
-        unit->tileProgress = 0.0;
-        unit->attackTimer = 0.0;
-        game->GetDeployedUnits()[instanceId] = std::move(unit.value());
-        game->GetSpawnQueues()[routeKey].push_back(instanceId);
-    }
-    defenseAttackStarted = true;
-    defenseRouteRevealActive = true;
-
-    for (Building* building : enemy->GetTrackedBuildings())
-    {
-        if (building == nullptr || building->buildingType != BuildingType::Headquarters)
-            continue;
-        const Vec2i anchor = game->GetTileMap().GetCoordsFromId(building->positionId);
-        const Vec2f center{
-            static_cast<float>(anchor.x * TILE_SIZE) + building->GetFootprint().x * TILE_SIZE * 0.5f,
-            static_cast<float>(anchor.y * TILE_SIZE) + building->GetFootprint().y * TILE_SIZE * 0.5f};
-        render.CenterCameraOnWorld(center, {game->GetTileMap().params.sizeX,
-                                             game->GetTileMap().params.sizeY});
-        break;
-    }
-}
-
-bool TutorialScene::IsScriptedDefenseAttackCleared() const
-{
-    if (game == nullptr || runtimeLoop == nullptr || scriptedEnemyUnitIds.empty())
-        return false;
-
-    auto* mutex = runtimeLoop->GetWorldMutex();
-    if (mutex == nullptr)
-        return false;
-    std::lock_guard<std::recursive_mutex> lock(*mutex);
-    for (int id : scriptedEnemyUnitIds)
-    {
-        if (game->GetDeployedUnits().contains(id))
-            return false;
-        for (const auto& [playerId, player] : game->GetPlayerHandler().players)
-        {
-            if (player != nullptr && player->roster.FindUnit(id) != nullptr)
-                return false;
-        }
-    }
-    return true;
-}
-
-bool TutorialScene::IsCounterattackDeployed() const
-{
-    if (game == nullptr || runtimeLoop == nullptr || scriptedEnemyPlayerId < 0)
-        return false;
-
-    auto* mutex = runtimeLoop->GetWorldMutex();
-    if (mutex == nullptr)
-        return false;
-    std::lock_guard<std::recursive_mutex> lock(*mutex);
-    const int localPlayerId = game->GetLocalPlayerId();
-    for (const auto& [instanceId, unit] : game->GetDeployedUnits())
-    {
-        if (unit.ownerPlayerId == localPlayerId && unit.routeToPlayerId == scriptedEnemyPlayerId &&
-            unit.unitDefId == "militia" && unit.state != BattleUnitState::Dying)
-            return true;
-    }
-    return false;
 }
 
 void TutorialScene::EmitTrigger(TutorialTriggerType trigger, BuildingType buildingType)

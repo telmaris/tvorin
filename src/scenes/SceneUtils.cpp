@@ -80,26 +80,25 @@ std::string MapSizeName(MapSizePreset preset)
 {
     switch (preset)
     {
-        case MapSizePreset::S: return "S 301x301";
-        case MapSizePreset::M: return "M 501x501";
-        case MapSizePreset::L: return "L 701x701";
-        case MapSizePreset::XL: return "XL 1001x1001";
-        default: return "S 301x301";
-    }
-}
-
-std::string DifficultyName(int difficulty)
-{
-    switch (difficulty)
-    {
-        case 1: return "Easy";
-        case 2: return "Normal";
-        case 3: return "Hard";
-        default: return "Primitive";
+        case MapSizePreset::S: return "S 201x201";
+        case MapSizePreset::M: return "M 301x301";
+        case MapSizePreset::L: return "L 401x401";
+        case MapSizePreset::XL: return "XL 501x501";
+        default: return "S 201x201";
     }
 }
 
 int SliderToInt(float value, int minValue, int maxValue)
 {
     return minValue + static_cast<int>(std::round(std::clamp(value, 0.0f, 1.0f) * (maxValue - minValue)));
+}
+
+void ApplyDebugLocalMapPreset(MapParameters& params)
+{
+    params.sizePreset = MapSizePreset::S;
+    params.sizeX = MapGenerator::SizeFromPreset(MapSizePreset::S);
+    params.sizeY = params.sizeX;
+    params.resourceDensity = 0.65f;
+    params.resourceFieldSize = 0.45f;
+    params.resourceRichness = 120;
 }

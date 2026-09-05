@@ -31,8 +31,6 @@ namespace
         int buildingCount{0};
         int roadCount{0};
         int totalProduced{0};
-        int ammunitionSupplyPercent{100};
-        int towerCount{0};
     };
 
     PlayerStatsSnapshot BuildPlayerStatsSnapshot(Player* player)
@@ -51,8 +49,11 @@ namespace
         // real supply ratio, and the two disagreed (e.g. "30%" vs "0%").
         stats.foodSupplyPercent = static_cast<int>(std::round(player->GetFoodSupplyRatio() * 100.0));
         stats.workerProductivityPercent = static_cast<int>(std::round(player->GetFoodProductivity() * 100.0));
-        stats.productionRatesPerMinute = player->economyTelemetry.current.productionRatesPerMinute;
-        stats.consumptionRatesPerMinute = player->economyTelemetry.current.consumptionRatesPerMinute;
+        const ProvinceEconomy* economy = player->GetProvinceEconomy();
+        if (economy == nullptr)
+            return stats;
+        stats.productionRatesPerMinute = economy->economyTelemetry.current.productionRatesPerMinute;
+        stats.consumptionRatesPerMinute = economy->economyTelemetry.current.consumptionRatesPerMinute;
 
         for (const auto* building : player->GetTrackedBuildings())
         {
@@ -81,16 +82,12 @@ namespace
                     (60.0 / foodInterval);
             }
         }
-        // Warehouse network only (see StockpileIndex): a tower's ammo and a
-        // Barracks' queued unit costs are that building's own consumption
+        // Warehouse network only (see StockpileIndex): Barracks' queued unit
+        // costs are that building's own consumption
         // buffer, not stock the player can spend or route anywhere else.
-        // Tower ammo gets its own chip below instead of silently inflating
-        // these numbers.
         for (const auto& [type, totals] : StockpileIndex::Snapshot(*player))
             stats.storedResources[type] = totals.amount;
 
-        stats.ammunitionSupplyPercent = static_cast<int>(std::round(player->GetAmmunitionSupplyRatio() * 100.0));
-        stats.towerCount = static_cast<int>(player->GetTrackedBuildingsWithComponent<TowerCombatComponent>().size());
         for (const auto* building : player->GetTrackedBuildingsWithComponent<ProductionComponent>())
         {
             if (building == nullptr || building->owner != player || building->IsUnderConstruction())
@@ -271,6 +268,9 @@ void StrategicResourceHudWidget::Update(double dt)
     Player* player = GuiLocalPlayer(scene);
     if (player == nullptr)
         return;
+    const ProvinceEconomy* economy = player->GetProvinceEconomy();
+    if (economy == nullptr)
+        return;
 
     PlayerStatsSnapshot stats = BuildPlayerStatsSnapshot(player);
     const bool disableDestroy = tutorialDisableDestroy || scene->AreTutorialDestroyLocked();
@@ -299,7 +299,7 @@ void StrategicResourceHudWidget::Update(double dt)
         1.0f,
         bounds.height / 148.0f,
         bounds.width / 256.0f});
-    const float chipStartX = bounds.x + 128.0f * topHudCornerScale + 8.0f;
+    const float chipStartX = bounds.x + 128.0f * topHudCornerScale + 16.0f;
 
     // Keep every HUD panel and action button at least 20 px shorter than the
     // previous compact layout. Widths follow the same reduction so the whole
@@ -329,11 +329,9 @@ void StrategicResourceHudWidget::Update(double dt)
     Rectangle manpowerChip = chipAt(0);
     Rectangle foodChip = chipAt(1);
     Rectangle buildersChip = chipAt(2);
-    Rectangle ammoChip = chipAt(3);
     Rectangle manpowerIcon = chipIconRect(manpowerChip);
     Rectangle foodIcon = chipIconRect(foodChip);
     Rectangle buildersIcon = chipIconRect(buildersChip);
-    Rectangle ammoIcon = chipIconRect(ammoChip);
 
     auto drawManpowerIcon = [&](Rectangle icon)
     {
@@ -420,8 +418,8 @@ void StrategicResourceHudWidget::Update(double dt)
     }, highlightFood);
 
     // Builders chip: free / total construction builders available to the player.
-    int totalBuilders = player->construction.EffectiveBuilders(*player);
-    int freeBuilders = std::max(0, totalBuilders - player->construction.ActiveCount());
+    int totalBuilders = economy->construction.EffectiveBuilders(*player);
+    int freeBuilders = std::max(0, totalBuilders - economy->construction.ActiveCount());
     drawStatChip(buildersChip, buildersIcon,
                  std::to_string(freeBuilders) + "/" + std::to_string(totalBuilders),
                  Color{201, 174, 122, 255}, [&](Rectangle icon)
@@ -442,32 +440,11 @@ void StrategicResourceHudWidget::Update(double dt)
     Rectangle roadButton = RoadHudButtonRect(*this);
     Rectangle buildButton = BuildHudButtonRect(*this);
     Rectangle rosterButton = RosterHudButtonRect(*this);
-    Rectangle logisticsButton = LogisticsHudButtonRect(*this);
+    Rectangle globalMapButton = GlobalMapHudButtonRect(*this);
 
-    // Ammunition chip: how well the defence towers are stocked, averaged per
-    // tower. Tower ammo lives in each tower's own buffer, outside the
-    // warehouse totals the resource chips report (see StockpileIndex), so
-    // without this the player has no HUD-level read on it at all. Hidden
-    // entirely with no towers built — an "ammo 100%" chip for a player who
-    // has no towers is noise.
-    const float actionStripLeft = buildButton.x;
     const float desiredResourcePanelWidth = std::clamp(bounds.height * 3.45f - 20.0f,
                                                        210.0f, 310.0f);
-    bool showAmmo = stats.towerCount > 0 &&
-                    ammoChip.x + ammoChip.width + desiredResourcePanelWidth + 20.0f <=
-                        actionStripLeft - 12.0f;
-    if (showAmmo)
-    {
-        bool ammoLow = stats.ammunitionSupplyPercent < 35;
-        drawStatChip(ammoChip, ammoIcon, std::to_string(stats.ammunitionSupplyPercent) + "%",
-                     ammoLow ? UiTheme::RustBright : Color{188, 150, 96, 255}, [&](Rectangle icon)
-        {
-            GuiPanel::DrawResourceIcon(ResourceType::ARROWS, Rectangle{icon.x + 4.0f, icon.y + 4.0f, icon.width - 8.0f, icon.height - 8.0f});
-        });
-    }
-
-    float resourceX = (showAmmo ? ammoChip.x + ammoChip.width
-                                : buildersChip.x + buildersChip.width) + 8.0f;
+    float resourceX = buildersChip.x + buildersChip.width + 8.0f;
     const float resourceAvailableWidth = buildButton.x - 12.0f - resourceX;
     const bool showResourcePanel = resourceAvailableWidth >= 180.0f;
     std::array<Rectangle, 3> resourceCells{};
@@ -514,31 +491,21 @@ void StrategicResourceHudWidget::Update(double dt)
     bool destroyHovered = IsDestroyHudButtonHovered(*this);
     bool roadHovered = CheckCollisionPointRec(GetMousePosition(), roadButton);
     bool buildHovered = CheckCollisionPointRec(GetMousePosition(), buildButton);
-    bool logisticsHovered = CheckCollisionPointRec(GetMousePosition(), logisticsButton);
-    bool logisticsEnabled = IsLogisticsOverlayPreferenceEnabled();
+    const bool barracksUnlocked = HasCompletedBarracks(scene);
+    const bool globalMapButtonHovered =
+        CheckCollisionPointRec(GetMousePosition(), globalMapButton);
+    bool globalMapHovered = barracksUnlocked && globalMapButtonHovered;
     const bool focusActive = !player->focuses.GetActiveFocusId().empty();
     const bool focusAvailable = !focusActive && HasAvailableFocus(player);
     float focusProgress = static_cast<float>(player->focuses.GetActiveFocusProgress());
     const HudTechnologyState technologyState = BuildHudTechnologyState(player);
 
-    // TD(etap-8.5): roster summary + "HQ under attack" warning. Derived
-    // live from simulation state rather than a stored flag — no besieging
-    // AttackingHq unit targeting this player means no warning, so it clears
-    // itself the instant the siege actually ends.
-    bool rosterHovered = CheckCollisionPointRec(GetMousePosition(), rosterButton);
+    // Roster is a peaceful recruitment summary. Provincial expeditions are
+    // presented by the global map layer introduced in the next stage.
+    const bool rosterButtonHovered =
+        CheckCollisionPointRec(GetMousePosition(), rosterButton);
+    bool rosterHovered = barracksUnlocked && rosterButtonHovered;
     int rosterCount = static_cast<int>(player->roster.units.size());
-    bool incomingAttack = false;
-    bool hqUnderAttack = false;
-    for (const auto& [unitId, unit] : scene->game->GetDeployedUnits())
-    {
-        if (unit.ownerPlayerId == player->id || unit.routeToPlayerId != player->id ||
-            unit.state == BattleUnitState::Dying)
-            continue;
-        incomingAttack = true;
-        if (unit.state == BattleUnitState::AttackingHq)
-            hqUnderAttack = true;
-    }
-    float warningPulse = incomingAttack ? (0.5f + 0.5f * std::sin(static_cast<float>(GetTime()) * 6.0f)) : 0.0f;
 
     // The text labels are now deliberately in tooltips; the bar itself stays
     // compact and uses the generated icon atlas.
@@ -616,6 +583,9 @@ void StrategicResourceHudWidget::Update(double dt)
         }
     };
 
+    drawHudButton(globalMapButton, UiControlIcons::HudIcon::GlobalMap, globalMapHovered,
+                  Color{24, 55, 67, 242}, UiTheme::Bronze, barracksUnlocked);
+
     drawHudButton(buildButton, UiControlIcons::HudIcon::Build, buildHovered,
                   Color{24, 55, 67, 242}, UiTheme::Bronze);
     drawHudButton(roadButton, UiControlIcons::HudIcon::Road, roadHovered,
@@ -628,21 +598,15 @@ void StrategicResourceHudWidget::Update(double dt)
     else
         drawHudButton(destroyButton, UiControlIcons::HudIcon::Destroy, destroyHovered,
                       Color{76, 39, 51, 242}, UiTheme::DangerBorder);
-    drawHudButton(logisticsButton, UiControlIcons::HudIcon::Logistics, logisticsHovered,
-                  logisticsEnabled ? Color{27, 66, 62, 242} : Color{26, 43, 61, 242},
-                  logisticsEnabled ? UiTheme::SelectedBorder : UiTheme::Bronze);
-
-    // Roster button — pulses red border when this player's HQ is under siege.
-    const Color rosterLine = incomingAttack ? Color{244, 132, 142, 255} : UiTheme::Bronze;
     drawHudButton(rosterButton, UiControlIcons::HudIcon::Roster, rosterHovered,
-                  Color{40, 42, 62, 242}, rosterLine);
+                  Color{40, 42, 62, 242}, UiTheme::Bronze, barracksUnlocked);
     const float badgeRadius = std::max(8.0f, rosterButton.height * 0.145f);
     const Vector2 badgeCenter{rosterButton.x + rosterButton.width * 0.50f,
                               rosterButton.y + rosterButton.height * 0.65f};
     DrawCircleV(badgeCenter, badgeRadius,
-                incomingAttack ? Color{88, 35, 49, 235} : Color{8, 17, 30, 238});
+                barracksUnlocked ? Color{8, 17, 30, 238} : Color{20, 24, 30, 210});
     DrawCircleLines(static_cast<int>(badgeCenter.x), static_cast<int>(badgeCenter.y),
-                    badgeRadius, incomingAttack ? rosterLine : UiTheme::Iron);
+                    badgeRadius, barracksUnlocked ? UiTheme::Iron : Color{76, 82, 90, 220});
     const std::string rosterCountText = std::to_string(rosterCount);
     const int rosterCountFont = std::max(13, static_cast<int>(badgeRadius * 1.45f));
     const int rosterCountWidth = UiText::Measure(rosterCountText, rosterCountFont);
@@ -651,12 +615,8 @@ void StrategicResourceHudWidget::Update(double dt)
     UiText::Draw(rosterCountText, rosterCountX + 1.0f, rosterCountY + 1.0f,
                  rosterCountFont, Color{0, 0, 0, 220});
     UiText::Draw(rosterCountText, rosterCountX, rosterCountY,
-                 rosterCountFont, UiTheme::Parchment);
-    if (incomingAttack)
-    {
-        DrawRectangleRoundedLines(rosterButton, 0.12f, 8, 1.2f + warningPulse * 1.8f, rosterLine);
-    }
-
+                 rosterCountFont,
+                 barracksUnlocked ? UiTheme::Parchment : Color{116, 124, 134, 255});
     const Color focusLine = disableDecisions ? UiTheme::Iron
         : focusAvailable ? Color{210, 170, 255, 255} : Color{158, 132, 218, 255};
     drawHudButton(focusButton, UiControlIcons::HudIcon::Decisions, focusHovered,
@@ -707,18 +667,9 @@ void StrategicResourceHudWidget::Update(double dt)
     {
         Tooltip::Draw("Builders", {
             "Free: " + std::to_string(freeBuilders),
-            "Working: " + std::to_string(player->construction.ActiveCount()),
+            "Working: " + std::to_string(economy->construction.ActiveCount()),
             "Total: " + std::to_string(totalBuilders)
         }, 250.0f);
-    }
-    else if (showAmmo && CheckCollisionPointRec(mouse, ammoChip))
-    {
-        Tooltip::Draw("Ammunition", {
-            "Average fill across " + std::to_string(stats.towerCount) + " tower(s): " +
-                std::to_string(stats.ammunitionSupplyPercent) + "%",
-            "Each tower keeps its own ammo buffer, refilled",
-            "from the warehouse network over the roads."
-        }, 300.0f);
     }
     // Warehouse chips: the total, plus which warehouse holds how much (user
     // request, 2026-07-25) — StockpileTooltipLines is shared with the
@@ -746,15 +697,6 @@ void StrategicResourceHudWidget::Update(double dt)
     else if (destroyHovered)
     {
         Tooltip::Draw("Destroy", {"[D] Open destroy mode"}, 220.0f);
-    }
-    else if (logisticsHovered)
-    {
-        Tooltip::Draw("Logistics overlay", {
-            "[L] Toggle road load overlay",
-            logisticsEnabled ? "Status: enabled" : "Status: disabled",
-            "10 s trend: green = light, red = congested",
-            "Pulsing dot = recently reached full capacity"
-        }, 300.0f);
     }
     else if (statsHovered)
     {
@@ -787,14 +729,28 @@ void StrategicResourceHudWidget::Update(double dt)
         else
             Tooltip::Draw("Technology", {"Requires a completed University"}, 270.0f);
     }
+    else if (!barracksUnlocked && rosterButtonHovered)
+    {
+        Tooltip::Draw("Roster", {"Requires a completed Barracks"}, 260.0f);
+    }
+    else if (!barracksUnlocked && globalMapButtonHovered)
+    {
+        Tooltip::Draw("Global map", {"Requires a completed Barracks"}, 270.0f);
+    }
     else if (rosterHovered)
     {
         Tooltip::Draw("Roster", {
-            "[U] Open roster and deploy",
-            "Ready to deploy: " + std::to_string(rosterCount),
-            hqUnderAttack ? "Your HQ is under attack!" :
-            incomingAttack ? "Enemy units are marching toward your HQ!" : "No incoming enemy units"
+            "[U] Open recruited roster",
+            "Recruited units: " + std::to_string(rosterCount),
+            "Provincial expeditions arrive with the global map"
         }, 260.0f);
+    }
+    else if (globalMapHovered)
+    {
+        Tooltip::Draw("Global map", {
+            "[M] Open/close global map",
+            "Known provinces and tracks"
+        }, 250.0f);
     }
 }
 
@@ -856,12 +812,15 @@ void StatsPanelWidget::Update(double dt)
     Player* player = GuiLocalPlayer(scene);
     if (player == nullptr)
         return;
+    const ProvinceEconomy* economy = player->GetProvinceEconomy();
+    if (economy == nullptr)
+        return;
 
     PlayerStatsSnapshot stats = BuildPlayerStatsSnapshot(player);
     const bool showingConsumption = selectedFlowMode == 1;
     const auto& currentRates = showingConsumption ? stats.consumptionRatesPerMinute : stats.productionRatesPerMinute;
-    const auto& flowHistory = player->economyTelemetry.history;
-    double historyTime = player->economyTelemetry.elapsedTime;
+    const auto& flowHistory = economy->economyTelemetry.history;
+    double historyTime = economy->economyTelemetry.elapsedTime;
 
     Rectangle bounds{static_cast<float>(pos.x), static_cast<float>(pos.y), static_cast<float>(size.x), static_cast<float>(size.y)};
     if (!UiControlIcons::DrawPixelHudFrame(bounds))
@@ -1020,7 +979,7 @@ void StatsPanelWidget::Update(double dt)
     };
     std::vector<SeriesEndpoint> endpoints;
     std::vector<ResourceFlowSnapshot> chartSamples(flowHistory.begin(), flowHistory.end());
-    chartSamples.push_back(player->economyTelemetry.current);
+    chartSamples.push_back(economy->economyTelemetry.current);
 
     BeginScissorMode(static_cast<int>(plot.x), static_cast<int>(plot.y),
                      static_cast<int>(plot.width), static_cast<int>(plot.height));

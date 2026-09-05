@@ -6,6 +6,9 @@
 #include <algorithm>
 #include <filesystem>
 #include <fstream>
+#include <set>
+#include <stdexcept>
+#include <string>
 
 namespace
 {
@@ -41,16 +44,6 @@ TEST(BuildingConfigTests, CoreDefinitionsAreLoaded)
     EXPECT_GT(road.road.maxCapacity, 0);
     EXPECT_GT(road.road.speedModifier, 0.0);
 
-    // A bridge is the mandatory early-game crossing over the military track;
-    // it must not be hidden behind a late research prerequisite.
-    const auto& bridge = GetBuildingDefinition(BuildingType::Bridge);
-    EXPECT_TRUE(bridge.requiredTechnologies.empty());
-    ASSERT_EQ(bridge.buildCosts.size(), 2u);
-    EXPECT_EQ(bridge.buildCosts[0].type, ResourceType::PLANKS);
-    EXPECT_EQ(bridge.buildCosts[0].amount, 6);
-    EXPECT_EQ(bridge.buildCosts[1].type, ResourceType::STONE);
-    EXPECT_EQ(bridge.buildCosts[1].amount, 6);
-
     const auto& university = GetBuildingDefinition(BuildingType::University);
     EXPECT_EQ(university.production.workerCapacity, 60);
 
@@ -75,25 +68,8 @@ TEST(BuildingConfigTests, BuildPanelListsContainExpectedTypes)
     EXPECT_NE(std::find(buildings.begin(), buildings.end(), BuildingType::Barracks), buildings.end());
     EXPECT_EQ(std::find(buildings.begin(), buildings.end(), BuildingType::Headquarters), buildings.end());
 
-    // B6 (docs/work_plan_2026-07-13.md): Bridge shares the road build panel.
-    ASSERT_EQ(roads.size(), 2u);
+    ASSERT_EQ(roads.size(), 1u);
     EXPECT_EQ(roads.front(), BuildingType::Road);
-    EXPECT_NE(std::find(roads.begin(), roads.end(), BuildingType::Bridge), roads.end());
-}
-
-TEST(BuildingConfigTests, BridgeUsesTheSameUpgradeTiersAsRoad)
-{
-    const auto& road = GetBuildingDefinition(BuildingType::Road);
-    const auto& bridge = GetBuildingDefinition(BuildingType::Bridge);
-
-    ASSERT_EQ(bridge.upgradeLevels.size(), road.upgradeLevels.size());
-    ASSERT_FALSE(bridge.upgradeLevels.empty());
-    for (size_t i = 0; i < road.upgradeLevels.size(); ++i)
-    {
-        EXPECT_EQ(bridge.upgradeLevels[i].level, road.upgradeLevels[i].level);
-        EXPECT_EQ(bridge.upgradeLevels[i].cost.size(), road.upgradeLevels[i].cost.size());
-        EXPECT_DOUBLE_EQ(bridge.upgradeLevels[i].buildTime, road.upgradeLevels[i].buildTime);
-    }
 }
 
 TEST(BuildingConfigTests, RoadUpgradeTiersExposeCapacityAndTransportSpeedEffects)
@@ -196,6 +172,7 @@ building Woodcutter
     tag "[Fast]"
     texture "assets/fast.png"
     placement_category wood
+    build_category materials
     build_cost WOOD 11
     build_cost STONE 4
     build_time 6
@@ -211,6 +188,7 @@ building Woodcutter
     end
 end
 building Mine
+    build_category materials
     terrain_production IRON_ORE
         workers 5
         cycle_time 3.5
@@ -222,6 +200,7 @@ building Road
     road upgrade_level 2 max_capacity 9 speed_modifier 1.75
 end
 building Village
+    build_category food
     village manpower_rate 0.4 population_cap 120 upkeep_interval 9 food_package_upkeep 2
     upgrade level 2 population_cap 360 manpower_rate 0.9 cost WOOD 5 build_time 3
 end
@@ -245,6 +224,7 @@ end
 
     const auto& woodcutter = definitions[1];
     EXPECT_EQ(woodcutter.placementCategory, BuildingPlacementCategory::Wood);
+    EXPECT_EQ(woodcutter.buildCategory, BuildingBuildCategory::Materials);
     EXPECT_EQ(woodcutter.buildCostText, "WOOD 11, STONE 4");
     ASSERT_EQ(woodcutter.buildCosts.size(), 2u);
     EXPECT_EQ(woodcutter.production.workerCapacity, 4);
@@ -278,6 +258,25 @@ end
     EXPECT_DOUBLE_EQ(*village.upgradeLevels[0].manpowerRate, 0.9);
 }
 
+TEST(BuildingConfigTests, BuildableBuildingsHaveExactlyOneDataDrivenBuildCategory)
+{
+    std::set<BuildingBuildCategory> categories;
+    for (BuildingType type : GetBuildableBuildingTypes())
+    {
+        const auto& definition = GetBuildingDefinition(type);
+        EXPECT_NE(definition.buildCategory, BuildingBuildCategory::None)
+            << definition.name;
+        categories.insert(definition.buildCategory);
+    }
+
+    EXPECT_EQ(categories.size(), 5u);
+    EXPECT_TRUE(categories.contains(BuildingBuildCategory::Materials));
+    EXPECT_TRUE(categories.contains(BuildingBuildCategory::Food));
+    EXPECT_TRUE(categories.contains(BuildingBuildCategory::Goods));
+    EXPECT_TRUE(categories.contains(BuildingBuildCategory::Military));
+    EXPECT_TRUE(categories.contains(BuildingBuildCategory::Science));
+}
+
 TEST(BuildingConfigTests, ProductionChainsHaveThematicPlacementCategories)
 {
     EXPECT_EQ(GetBuildingDefinition(BuildingType::Woodcutter).placementCategory,
@@ -294,14 +293,13 @@ TEST(BuildingConfigTests, ProductionChainsHaveThematicPlacementCategories)
               BuildingPlacementCategory::Food);
     EXPECT_EQ(GetBuildingDefinition(BuildingType::Barracks).placementCategory,
               BuildingPlacementCategory::Military);
-    EXPECT_EQ(GetBuildingDefinition(BuildingType::DefenseTower).placementCategory,
-              BuildingPlacementCategory::Military);
 }
 
 TEST(BuildingConfigTests, RecipeTechnologyAndFocusRequirementsAreLoaded)
 {
     const auto path = WriteBuildingFixture(R"DATA(
 building Smith
+    build_category goods
     recipe "Refined Tools"
         requires_tech waterwheel_gearing
         requires_focus crown_manufactories
@@ -331,6 +329,46 @@ TEST(BuildingConfigTests, MissingBuildingDataUsesBuiltInDefaults)
     {
         return definition.type == BuildingType::Headquarters;
     }), definitions.end());
+}
+
+TEST(BuildingConfigTests, RejectsUnknownBuildCategoryWithReadableError)
+{
+    const auto path = WriteBuildingFixture(R"DATA(
+building Mine
+    build_category industrial
+end
+)DATA");
+
+    try
+    {
+        (void)LoadBuildingDefinitionsFromFile(path.string());
+        FAIL() << "invalid build category should be rejected";
+    }
+    catch (const std::runtime_error& error)
+    {
+        EXPECT_NE(std::string(error.what()).find("build_category"), std::string::npos);
+        EXPECT_NE(std::string(error.what()).find("industrial"), std::string::npos);
+    }
+}
+
+TEST(BuildingConfigTests, RejectsMissingBuildCategoryForBuildPanelBuilding)
+{
+    const auto path = WriteBuildingFixture(R"DATA(
+building Mine
+    name "Uncategorized Mine"
+end
+)DATA");
+
+    try
+    {
+        (void)LoadBuildingDefinitionsFromFile(path.string());
+        FAIL() << "missing build category should be rejected";
+    }
+    catch (const std::runtime_error& error)
+    {
+        EXPECT_NE(std::string(error.what()).find("Missing build_category"), std::string::npos);
+        EXPECT_NE(std::string(error.what()).find("Uncategorized Mine"), std::string::npos);
+    }
 }
 
 TEST(BuildingConfigTests, UpgradeLookupRequiresAnExactValidNextLevel)

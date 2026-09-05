@@ -107,7 +107,7 @@ TEST(PlayerEconomyTests, TelemetryDoesNotReportTheoreticalProduction)
 
     player.UpdateEconomyTelemetry(1.0);
 
-    EXPECT_FALSE(player.economyTelemetry.current.productionRatesPerMinute.contains(ResourceType::WOOD));
+    EXPECT_FALSE(player.GetProvinceEconomy()->economyTelemetry.current.productionRatesPerMinute.contains(ResourceType::WOOD));
 }
 
 TEST(PlayerEconomyTests, TelemetryRecordsActualProductionAndInputConsumption)
@@ -127,15 +127,15 @@ TEST(PlayerEconomyTests, TelemetryRecordsActualProductionAndInputConsumption)
     lumberMill.production.Produce(lumberMill, 0.01);
     player.UpdateEconomyTelemetry(1.0);
 
-    EXPECT_GE(player.economyTelemetry.current.consumptionRatesPerMinute[ResourceType::WOOD],
+    EXPECT_GE(player.GetProvinceEconomy()->economyTelemetry.current.consumptionRatesPerMinute[ResourceType::WOOD],
               woodPerCycle * 60);
-    EXPECT_FALSE(player.economyTelemetry.current.productionRatesPerMinute.contains(ResourceType::PLANKS));
+    EXPECT_FALSE(player.GetProvinceEconomy()->economyTelemetry.current.productionRatesPerMinute.contains(ResourceType::PLANKS));
 
     lumberMill.production.elapsed = lumberMill.production.GetModifiedCycleTime(lumberMill);
     lumberMill.production.Produce(lumberMill, 0.01);
     player.UpdateEconomyTelemetry(1.0);
 
-    EXPECT_GT(player.economyTelemetry.current.productionRatesPerMinute[ResourceType::PLANKS], 0);
+    EXPECT_GT(player.GetProvinceEconomy()->economyTelemetry.current.productionRatesPerMinute[ResourceType::PLANKS], 0);
 }
 
 TEST(PlayerEconomyTests, TelemetryDoesNotRecordBuildCostAsConsumption)
@@ -162,7 +162,7 @@ TEST(PlayerEconomyTests, TelemetryDoesNotRecordBuildCostAsConsumption)
     ASSERT_TRUE(player.TryPayBuildCost({{ResourceType::WOOD, 3}}));
     player.UpdateEconomyTelemetry(1.0);
 
-    EXPECT_EQ(player.economyTelemetry.current.consumptionRatesPerMinute[ResourceType::WOOD], 0);
+    EXPECT_EQ(player.GetProvinceEconomy()->economyTelemetry.current.consumptionRatesPerMinute[ResourceType::WOOD], 0);
 }
 
 TEST(PlayerEconomyTests, TelemetryDoesNotRecordBuildingPlacementCostAsConsumption)
@@ -182,7 +182,7 @@ TEST(PlayerEconomyTests, TelemetryDoesNotRecordBuildingPlacementCostAsConsumptio
     ASSERT_NE(player.Build<Road>(map.GetIdFromCoords({0, 0})), nullptr);
     player.UpdateEconomyTelemetry(1.0);
 
-    EXPECT_EQ(player.economyTelemetry.current.consumptionRatesPerMinute[ResourceType::STONE], 0);
+    EXPECT_EQ(player.GetProvinceEconomy()->economyTelemetry.current.consumptionRatesPerMinute[ResourceType::STONE], 0);
 }
 
 TEST(PlayerEconomyTests, BuildCostModifierReducesEffectiveBuildCosts)

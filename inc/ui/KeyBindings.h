@@ -34,6 +34,23 @@ enum class GameAction
     ToggleTerritoryView,
     ToggleRoadNetworkView,
     ToggleResourceView,
+    OpenGlobalMap,
+
+    // Actions currently handled by the gameplay input/debug seams. Keeping
+    // them here lets Controls and the direct checks use the same defaults.
+    OpenStockpilePanel,
+    OpenRosterPanel,
+    EnterUpgradeMode,
+    ToggleLogisticsOverlay,
+    CenterCameraOnHeadquarters,
+    ToggleNightPreview,
+    ToggleDayNightCycle,
+    ToggleDynamicLights,
+    CycleRendererDebugView,
+    GrantDebugResources,
+    SpawnDebugRaid,
+    AdvanceTutorialStep,
+    CaptureFinalFrame,
 
     Count  // For iteration bounds
 };
@@ -62,5 +79,17 @@ private:
 
     void SetDefault(GameAction action, int raylib_key);
 };
+
+// Defaults shared by gameplay input, direct debug checks and the Controls
+// screen. Callers should treat this as read-only configuration.
+const KeyBindingMap& GetDefaultKeyBindings();
+
+// Human-readable key name used by the Controls screen and diagnostics.
+// Returns an empty string for an unbound/unknown key.
+std::string GetKeyDisplayName(int raylib_key);
+
+// Formats one action's current binding, including a stable fallback for an
+// intentionally unbound action.
+std::string GetBindingDisplayName(const KeyBindingMap& bindings, GameAction action);
 
 #endif

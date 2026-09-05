@@ -2,22 +2,32 @@
 #define GUI_CONTROLLER_H
 
 #include "ui/Gui.h"
+#include "ui/BuildInteractionState.h"
+#include "ui/UpgradeGestureTargets.h"
 #include "ui/GameplayClock.h"
+#include "ui/ShaderLibrary.h"
 #include "ui/UiTheme.h"
 #include "economy/BuildingConfig.h"
 #include "economy/BuildingSalvage.h"
+#include "world/GlobalMap.h"
+#include "warfare/TaskGroupIds.h"
 #include "raylib.h"
 
+#include <cstdint>
+#include <array>
 #include <functional>
 #include <limits>
 #include <map>
 #include <memory>
+#include <optional>
 #include <set>
 #include <string>
 #include <vector>
 
 class Scene;
 class GameScene;
+class CampaignStatusWidget;
+struct JourneyStatusView;
 
 class GameplayClockWidget : public UiWidget
 {
@@ -163,6 +173,9 @@ public:
     // Switches active interaction system (refuses when the target system's
     // own CanActivate() precondition isn't met, e.g. TechGuiSystem).
     void ChangeSystem(std::string name);
+    // Checks the current interaction layer without exposing pointer identity
+    // to scene/render orchestration.
+    bool IsSystemActive(const std::string& name) const;
     // Returns widgets that should be drawn by the renderer.
     inline std::vector<UiWidget*> GetUiWidgets() { return ui; }
     // Adds a widget to the current draw list.
@@ -235,6 +248,32 @@ public:
     GameScene* scene{nullptr};
 };
 
+// Delayed hover tooltip for buildings in the default map view.
+class BuildingHoverTooltipWidget : public UiWidget
+{
+public:
+    void Update(double dt) override;
+
+    GameScene* scene{nullptr};
+    int hoveredBuildingId{-1};
+    double hoverDuration{0.0};
+    int connectivityBuildingId{-1};
+    double connectivityAge{0.0};
+    bool connectivityKnown{false};
+    bool roadDisconnected{false};
+};
+
+// Screen-space marker for an upgrade target or an already upgrading building.
+class UpgradeTargetWidget : public UiWidget
+{
+public:
+    void Update(double dt) override;
+
+    GameScene* scene{nullptr};
+    Building* building{nullptr};
+    bool actionable{false};
+};
+
 // ─── HUD and full-screen panels ──────────────────────────────────────────────
 
 // Top-screen strategic resource summary for the local player.
@@ -262,6 +301,216 @@ public:
     bool tutorialDisableDestroy{false};
     bool tutorialDisableDecisions{false};
     bool tutorialDisableStatistics{false};
+};
+
+// Geometry-only hit testing for the pointer-free global-map presentation
+// snapshot. Screen coordinates are kept outside the campaign model.
+class GlobalMapNodeHitTester
+{
+public:
+    static std::optional<ProvinceId> HitTest(const GlobalMapView& view, Vector2 point,
+                                             Vector2 origin, float scale,
+                                             float radius = 18.0f);
+};
+
+// Geometry-only tract hit testing. A scaled tolerance is supplied by the
+// canvas, and equal-distance candidates are resolved by stable connection ID.
+class GlobalMapEdgeHitTester
+{
+public:
+    static std::optional<ProvinceConnectionId> HitTest(const GlobalMapView& view,
+                                                        Vector2 point, Vector2 origin,
+                                                        float scale,
+                                                        float tolerance = 9.0f);
+};
+
+class GlobalMapPanelWidget : public UiWidget
+{
+public:
+    GlobalMapPanelWidget();
+    ~GlobalMapPanelWidget() override;
+    void UpdateSize(Vec2i windowSize) override;
+    void Update(double dt) override;
+    void DrawOverlay(double dt) override;
+    // The global-map interaction system delegates the same camera gestures
+    // used by the decision tree to these methods. Keeping them on the widget
+    // makes drawing and hit testing share one transform.
+    void AdjustMapZoom(Vec2i point, float wheel);
+    void BeginPanning();
+    void EndPanning();
+    void HandleLeftClick();
+
+    GameScene* scene{nullptr};
+    ProvinceId selectedProvinceId{InvalidProvinceId};
+    ProvinceConnectionId selectedConnectionId{InvalidProvinceConnectionId};
+
+private:
+    enum class OperationDialogKind : std::uint8_t
+    {
+        None,
+        Trade,
+        Attack,
+        Colonize,
+        ResourceTransfer,
+        ArmyTransfer
+    };
+
+    enum class ProvinceAction : std::uint8_t
+    {
+        Scout,
+        Trade,
+        Attack,
+        Colonize,
+        ResourceTransfer,
+        ArmyTransfer
+    };
+
+    Rectangle CanvasRect() const;
+    Vector2 MapOrigin() const;
+    float MapScale() const;
+    Rectangle ProvinceTooltipRect(const GlobalMapNodeView& selected, Vector2 origin,
+                                  float scale) const;
+    Rectangle ProvinceActionRect(Rectangle tooltip, std::size_t actionIndex) const;
+    Rectangle ScoutCountButtonRect(Rectangle tooltip, bool increment) const;
+    Rectangle ScoutConfirmButtonRect(Rectangle tooltip) const;
+    Rectangle ScoutCancelButtonRect(Rectangle tooltip) const;
+    Rectangle RouteTooltipRect(const GlobalMapView& view, const ProvinceEdgeView& selected,
+                               Vector2 origin, float scale) const;
+    Rectangle OperationDialogRect() const;
+    Rectangle OperationCloseButtonRect() const;
+    Rectangle OperationConfirmButtonRect() const;
+    std::vector<ProvinceAction> AvailableProvinceActions(const GlobalMapNodeView& selected) const;
+    std::vector<int> AvailableScoutIds(ProvinceId sourceProvinceId) const;
+    const JourneyStatusView* FindLatestScoutJourney(ProvinceId targetProvinceId,
+                                                     bool activeOnly) const;
+    const JourneyStatusView* FindLatestActiveJourney(ProvinceId targetProvinceId) const;
+    bool IsNodeAnchorVisible(const GlobalMapNodeView& node, Vector2 origin,
+                             float scale) const;
+    void DrawParchmentBackground(Rectangle bounds, Vector2 anchor,
+                                 float textureScale = 1.0f) const;
+    void EnsureFogResources(Rectangle canvas);
+    void DrawFogOfWar(const GlobalMapView& view, Vector2 origin, float scale,
+                      Rectangle canvas);
+    void DrawCanvas(const GlobalMapView& view, Vector2 origin, float scale);
+    void DrawProvinceTooltip(const GlobalMapNodeView* selected, Vector2 origin,
+                             float scale) const;
+    void DrawRouteTooltip(const GlobalMapView& view, const ProvinceEdgeView* selectedEdge,
+                          Vector2 origin, float scale) const;
+    void DrawOperationDialog(const GlobalMapView& view);
+    void HandleInput(const GlobalMapView& view, Vector2 origin, float scale,
+                     const GlobalMapNodeView* selected,
+                     const ProvinceEdgeView* selectedEdge);
+
+    std::array<tvorin::ui::TextureHandle, 6> provinceTextures{};
+    std::array<tvorin::ui::TextureHandle, 6> provinceHoverTextures{};
+    std::array<tvorin::ui::TextureHandle, 4> globalMapBackgrounds{};
+    tvorin::ui::TextureHandle globalMapFogRevealTexture{};
+    tvorin::ui::RenderTextureHandle globalMapFogMask{};
+    ShaderLibrary globalMapShaders{};
+    Vec2i fogMaskSize{};
+
+    Vec2f mapPanOffset{0.0f, 0.0f};
+    float mapZoom{1.0f};
+    bool panning{false};
+    Vec2f lastPanMouse{0.0f, 0.0f};
+
+    OperationDialogKind operationDialog{OperationDialogKind::None};
+    ProvinceId operationTargetProvinceId{InvalidProvinceId};
+    ProvinceId operationOriginProvinceId{InvalidProvinceId};
+    ProvinceId scoutSetupProvinceId{InvalidProvinceId};
+    ProvinceId scoutPendingProvinceId{InvalidProvinceId};
+    int selectedScoutCount{1};
+    double scoutPendingUntil{0.0};
+    std::vector<TaskGroupId> selectedOperationTaskGroups;
+    std::map<ResourceType, int> resourceTransferDraft;
+    int destinationBarracksBuildingId{0};
+    int attackFoodDraft{0};
+    int attackSwordDraft{0};
+};
+
+// Compact, collapsible navigation for players who own more than one local
+// province. The widget only requests a presentation switch; it never changes
+// province simulation state or issues gameplay commands.
+class OwnedProvinceListWidget : public UiWidget
+{
+public:
+    void UpdateSize(Vec2i windowSize) override;
+    void Update(double dt) override;
+    bool CapturesPointer(Vector2 point) const;
+
+    GameScene* scene{nullptr};
+    CampaignStatusWidget* journal{nullptr};
+    bool expanded{false};
+    float scrollOffset{0.0f};
+    float maxScrollOffset{0.0f};
+    std::map<ProvinceId, WorldEventInstanceId> alertAcknowledgedEventIds;
+};
+
+// Read-only campaign alert/status card. It consumes only the pointer-free
+// presentation snapshot, so displaying an event or battle can never mutate
+// authority state or pause a multiplayer simulation.
+class CampaignStatusWidget : public UiWidget
+{
+public:
+    void UpdateSize(Vec2i windowSize) override;
+    void Update(double dt) override;
+    bool CapturesPointer(Vector2 point) const;
+
+    GameScene* scene{nullptr};
+    bool journalExpanded{false};
+    WorldEventInstanceId newestSeenEventId{InvalidWorldEventInstanceId};
+    double headlineVisibleUntil{0.0};
+    float scrollOffset{0.0f};
+    float maxScrollOffset{0.0f};
+    std::set<WorldEventInstanceId> expandedEventIds;
+};
+
+// Owns the two campaign cards so their dynamic heights and the bottom inset
+// are coordinated in one layout pass. The cards remain separate widgets for
+// their content and input logic, but the sidebar is the only gameplay widget
+// registered with the renderer.
+class CampaignSidebarWidget : public UiWidget
+{
+public:
+    void UpdateSize(Vec2i windowSize) override;
+    void Update(double dt) override;
+    bool CapturesPointer(Vector2 point) const;
+
+    OwnedProvinceListWidget* provinces{nullptr};
+    CampaignStatusWidget* journal{nullptr};
+    Vec2i windowSize{};
+};
+
+class GlobalMapGuiSystem : public GuiSystem
+{
+public:
+    explicit GlobalMapGuiSystem(GuiController* con);
+    GlobalMapGuiSystem() = delete;
+
+    void Update(double dt) override;
+    void UpdateUiWidgets(Vec2i size) override;
+
+    void EscPressed();
+    void BuildPressed();
+    void RoadBuildPressed();
+    void DestroyPressed();
+    void StockpilePressed();
+    void StatsPressed();
+    void FocusPressed();
+    void TechPressed();
+    void RosterPressed();
+    void LmbPressed();
+    void LmbReleased();
+    void RmbPressed();
+    void RmbReleased();
+    void Scroll();
+    bool CanActivate() override;
+
+    GameScene* scene{nullptr};
+    GlobalMapPanelWidget panel;
+
+private:
+    CameraMovement cameraMovement;
 };
 
 // Full-screen economy and strategic statistics overview.
@@ -347,8 +596,16 @@ class BuildPanelWidget : public UiWidget
 public:
     // Draws available build options and handles hover visuals.
     void Update(double dt) override;
+    // Rebuilds the signed tab list from the data-driven option categories.
+    void RefreshCategoryTabs();
+    // Selects a tab by its visible order.
+    void SelectCategory(size_t index);
+    // Returns the tab index under a screen point, or -1 when none is hit.
+    int GetTabAt(Vec2i point) const;
     // Scrolls the build option list.
     void Scroll(float wheel);
+    // Applies a direct scrollbar offset and persists it for the active tab.
+    void SetScrollOffset(float offset);
     // Returns option index under a point, or -1 when none is hit.
     int GetOptionAt(Vec2i point) const;
 
@@ -359,35 +616,25 @@ public:
     std::string title{"Build"};
     float scrollOffset{0.0f};
     float maxScrollOffset{0.0f};
+    std::vector<std::string> categoryTabs;
+    std::map<std::string, float> categoryScrollOffsets;
+    std::string activeCategory;
     bool dragging{false};
     Vec2i dragOffset{0, 0};
     bool scrollbarDragging{false};
     float scrollbarDragOffset{0.0f};
 };
 
-// Roster/deploy panel (TD etap-8.1): composes an ordered attack group
-// (spearhead first) from the local player's recruited-but-undeployed roster
-// and submits GameCommand::DeployUnits. Interaction is entirely via
-// temporary, per-frame UiButtons created inside Update() (same approach as
-// GuiPanel's recruitment branch) rather than a separate HandleClick — no
-// per-row state needs to persist between frames.
+// Roster panel for recruited units. Expedition controls are handled by the
+// global map layer and are intentionally absent from the local-map panel.
 class RosterPanelWidget : public UiWidget
 {
 public:
     void Update(double dt) override;
 
     GameScene* scene{nullptr};
-    // Ordered attack group (index 0 = spearhead) — instance ids currently
-    // staged from the local roster. Cleared after a successful Deploy, and
-    // pruned of any id that stopped being a valid InRoster unit (e.g. it was
-    // deployed through some other path) every frame.
-    std::vector<int> selectedGroup;
-    // -1 = no target chosen yet; auto-filled when exactly one reachable
-    // enemy exists (the plan's "w 1vs1 auto" rule generalized to "only one
-    // choice").
-    int selectedTargetPlayerId{-1};
-    float scrollOffset{0.0f};
-    float maxScrollOffset{0.0f};
+    TaskGroupId selectedTaskGroupId{InvalidTaskGroupId};
+    int selectedBarracksId{0};
 };
 
 // ─── Interaction systems ─────────────────────────────────────────────────────
@@ -445,6 +692,7 @@ public:
     ResearchPanel researchPanel;
     SelectedBuildingWidget selectedBuildingWidget;
     ProductionWarningWidget productionWarningWidget;
+    BuildingHoverTooltipWidget buildingHoverTooltipWidget;
     StrategicResourceHudWidget strategicHudWidget;
 
     bool isBuildingSelected{false};
@@ -470,6 +718,8 @@ public:
 
     // Rebuilds build-mode widget list.
     void UpdateUiWidgets(Vec2i) override;
+    void OnActivate() override;
+    void OnDeactivate() override;
     // Updates camera drag, build panel and ghost preview.
     void Update(double dt) override;
 
@@ -508,12 +758,14 @@ protected:
     // Rebuilds ghost preview for the selected option.
     void RefreshGhost();
     // Places selected option under cursor when placement is valid.
-    bool TryPlaceSelectedAtHovered(bool returnAfterBuild);
+    bool TryPlaceSelectedAtHovered();
+    void ResetBuildInteraction();
 
     CameraMovement cameraMovement;
     BuildPanelWidget buildPanel;
     StrategicResourceHudWidget strategicHudWidget;
     std::vector<BuildOption> options;
+    BuildInteractionState interactionState{BuildInteractionState::Browse};
     size_t selectedIndex{std::numeric_limits<size_t>::max()};
     std::unique_ptr<Building> selectedPreview;
     BuildGhostWidget ghostWidget;
@@ -543,12 +795,7 @@ private:
     bool TryPlaceRoadTowards(Vec2i tilePos);
     bool TryPlaceRoadAt(Vec2i tilePos);
     // Road mode has no visible option panel (Update never draws buildPanel),
-    // so the Road/Bridge choice can't be a manual selection — instead it
-    // follows the cursor: hovering an isMilitaryRoad tile selects Bridge,
-    // anywhere else selects Road. Dragging a road across the unit track
-    // therefore inserts the bridge automatically (B6 follow-up #2, playtest
-    // 2026-07-14 — both "can't build roads" and "can't build bridges" were
-    // this same invisible, unswitchable selection stuck on one type).
+    // so it keeps the sole road option selected while dragging.
     void SyncSelectionToTile(Vec2i tilePos);
     Vec2i GetRoadPlacementTile(double dt);
 
@@ -595,6 +842,55 @@ private:
     Building* hoveredBuilding{nullptr};
     DemolitionPreview demolitionPreview;
     StrategicResourceHudWidget strategicHudWidget;
+};
+
+// Mass-upgrade interaction mode. It submits one existing upgrade command per
+// visited building, preserving deterministic gesture order.
+class UpgradeGuiSystem : public GuiSystem
+{
+public:
+    explicit UpgradeGuiSystem(GuiController* con);
+    UpgradeGuiSystem() = delete;
+
+    void UpdateUiWidgets(Vec2i) override;
+    void OnActivate() override;
+    void OnDeactivate() override;
+    void Update(double dt) override;
+    void EscPressed();
+    void BuildPressed();
+    void RoadBuildPressed();
+    void DestroyPressed();
+    void StockpilePressed();
+    void StatsPressed();
+    void FocusPressed();
+    void TechPressed();
+    void RosterPressed();
+    void UpgradePressed();
+    void LmbPressed();
+    void LmbReleased();
+    void RmbPressed();
+    void RmbReleased();
+    void Scroll();
+
+    GameScene* gameScene{nullptr};
+    // Shadows GuiSystem::scene so shared debug actions receive the concrete
+    // gameplay scene type.
+    GameScene* scene{nullptr};
+
+private:
+    Building* GetHoveredBuilding() const;
+    bool CanUpgrade(Building* building) const;
+    void SubmitUpgrade(Building* building);
+    void SubmitUpgradeLine(Vec2i tile);
+    void ReturnToMapView();
+
+    CameraMovement cameraMovement;
+    StrategicResourceHudWidget strategicHudWidget;
+    UpgradeTargetWidget targetWidget;
+    Building* hoveredBuilding{nullptr};
+    UpgradeGestureTargets visitedBuildingIds;
+    Vec2i lastGestureTile{-9999, -9999};
+    bool gestureActive{false};
 };
 
 class StatsGuiSystem : public GuiSystem
@@ -703,9 +999,8 @@ private:
     StrategicResourceHudWidget strategicHudWidget;
 };
 
-// Roster/deploy full-screen mode (TD etap-8.1) — opened via the strategic
-// HUD's Roster button or the U key, following the same recipe as
-// FocusGuiSystem/TechGuiSystem.
+// Roster full-screen mode — opened via the strategic HUD's Roster button or
+// the U key, following the same recipe as FocusGuiSystem/TechGuiSystem.
 class RosterGuiSystem : public GuiSystem
 {
 public:
@@ -733,6 +1028,7 @@ public:
     void RmbPressed();
     void RmbReleased();
     void Scroll();
+    bool CanActivate() override;
 
 private:
     CameraMovement cameraMovement;

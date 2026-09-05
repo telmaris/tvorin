@@ -11,7 +11,6 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
-#include <set>
 #include <string>
 #include <vector>
 
@@ -26,6 +25,7 @@ public:
     ~StudioSplashScene() override;
 
     void Update(double dt) override;
+    void OnActivated() override;
     void OnDeactivated() override;
 
 private:
@@ -122,7 +122,6 @@ class OptionsScene : public Scene, public IGuiHandler
         SliderBar masterVolume;
         SliderBar musicVolume;
           SliderBar sfxVolume;
-          CheckBox fogOfWarCheckBox;
           CheckBox colorGradingCheckBox;
           CheckBox retroFilterCheckBox;
           CheckBox localLightBloomCheckBox;
@@ -152,29 +151,36 @@ class NewGameScene : public Scene, public IGuiHandler
         void OnTutorialPressed();
         // Cycles map size preset.
         void OnSizePressed();
-        // Cycles placeholder AI difficulty.
-        void OnDifficultyPressed();
         // Refreshes option labels from current values.
         void RefreshOptionLabels();
+        // Clears legacy AI settings from newly created single-player games.
+        static void ApplySinglePlayerParameters(MapParameters& params);
         MapParameters BuildMapParameters();
+        CampaignGenerationParameters BuildCampaignParameters();
 
         UiButton backButton;
         UiParallaxBackground menuBackground;
         UiPanel menuPanel;
-        TextBox gameName;
         UiButton sizeButton;
-        UiButton difficultyButton;
         SliderBar resourceDensity;
         SliderBar resourceFieldSize;
         SliderBar resourceRichness;
-        SliderBar aiOpponents;
+        SliderBar globalProvinceCount;
+        SliderBar globalProvinceSpacing;
+        SliderBar globalBuildableWeight;
+        SliderBar globalCityWeight;
+        SliderBar globalBanditWeight;
+        SliderBar globalEventWeight;
+        SliderBar globalBuildableWealth;
+        SliderBar globalCityWealth;
+        SliderBar globalBanditStrength;
+        SliderBar globalMapFogOfWar;
         CheckBox debugMode;
         UiButton startGame;
         UiButton startTutorial;
         FuncWidget tooltipWidget;
         MapSizePreset selectedSize{MapSizePreset::S};
-        int selectedDifficulty{0};
-};
+    };
 
 // LAN multiplayer entry scene.
 class MultiplayerScene : public Scene, public IGuiHandler
@@ -210,8 +216,12 @@ class MultiplayerScene : public Scene, public IGuiHandler
         void OnCloseGameSettingsPressed();
         // Cycles hosted game size preset.
         void OnMultiplayerSizePressed();
-        // Cycles hosted game AI difficulty.
-        void OnMultiplayerDifficultyPressed();
+        // Cycles host-controlled global campaign layout preset.
+        void OnMultiplayerGlobalLayoutPressed();
+        // Cycles host-controlled global province type weights.
+        void OnMultiplayerGlobalTypeWeightsPressed();
+        // Cycles host-controlled global province value scales.
+        void OnMultiplayerGlobalValueScalesPressed();
         // Sends one lobby chat message.
         void OnSendChatPressed();
         void AddLobbyLine(const std::string& line, Color color = Color{190, 205, 224, 255});
@@ -223,7 +233,7 @@ class MultiplayerScene : public Scene, public IGuiHandler
         void DrawGameSettingsPanel() const;
         void RefreshMultiplayerLabels();
         void SaveMultiplayerSettings() const;
-        MapParameters BuildLobbyMapParameters() const;
+        CampaignGenerationParameters BuildLobbyMapParameters() const;
         void BroadcastLobbyState(const std::string& infoMessage = "");
         bool ApplyLobbyState(const std::string& payload);
         void MaybeBroadcastSettingsChange(const std::string& infoMessage = "");
@@ -237,14 +247,15 @@ class MultiplayerScene : public Scene, public IGuiHandler
         TextBox address;
         UiLabel portLabel;
         TextBox port;
-        SliderBar aiOpponents;
         UiButton hostButton;
         UiButton joinButton;
         UiButton startButton;
         UiButton gameSettingsButton;
         UiButton closeSettingsButton;
         UiButton multiplayerSizeButton;
-        UiButton multiplayerDifficultyButton;
+        UiButton multiplayerGlobalLayoutButton;
+        UiButton multiplayerGlobalTypeWeightsButton;
+        UiButton multiplayerGlobalValueScalesButton;
         SliderBar multiplayerResourceDensity;
         SliderBar multiplayerResourceFieldSize;
         SliderBar multiplayerResourceRichness;
@@ -258,9 +269,10 @@ class MultiplayerScene : public Scene, public IGuiHandler
         std::string lobbySessionName{"lan_test"};
         std::string lobbyAddress{"127.0.0.1"};
         unsigned short lobbyPort{27015};
-        int lobbyAiOpponentCount{0};
         MapSizePreset lobbySizePreset{MapSizePreset::S};
-        int lobbyDifficulty{0};
+        int lobbyGlobalLayoutPreset{1};
+        int lobbyGlobalTypeWeightsPreset{0};
+        int lobbyGlobalValueScalesPreset{0};
         bool showGameSettings{false};
         bool isLobbyHost{false};
         bool lobbyActive{false};
@@ -343,18 +355,68 @@ class SaveGameScene : public Scene, public IGuiHandler
         bool overwriteConfirmationVisible{false};
 };
 
-// Live gameplay scene owning world simulation, renderer and GUI controller.
+// Main-thread interstitial. HostSession generates on its simulation worker;
+// ClientSession receives/restores the host snapshot on its session worker.
+class LoadingScene : public Scene, public IGuiHandler
+{
+public:
+    LoadingScene() = default;
+    ~LoadingScene() override;
+
+    void Update(double dt) override;
+    void OnActivated() override;
+    void OnDeactivated() override;
+    void HandleEvent(std::shared_ptr<Event> event) override;
+    void HandleGuiInput(double dt) override;
+
+private:
+    enum class Mode
+    {
+        SinglePlayer,
+        MultiplayerHost,
+        MultiplayerClient
+    };
+
+    struct LaunchRequest
+    {
+        Mode mode{Mode::SinglePlayer};
+        std::string targetScene{"GameScene"};
+        std::string worldName;
+        CampaignGenerationParameters params;
+        std::string address;
+        unsigned short port{27015};
+        std::shared_ptr<IGameTransport> transport;
+    };
+
+    void StartPendingSession();
+    void CancelAndReturn(const std::string& reason);
+    void DrawLoadingFrame(const GameSessionStartupStatus& status);
+
+    std::optional<LaunchRequest> pendingRequest;
+    std::unique_ptr<IGameSession> session;
+    GameSessionStartupStatus displayedStatus;
+    Mode activeMode{Mode::SinglePlayer};
+    std::string targetScene{"GameScene"};
+    std::string returnScene{"MainScene"};
+    double visibleElapsed{0.0};
+    float displayedProgress{0.01f};
+    bool transitionRequested{false};
+    bool cursorWasVisible{true};
+    bool cursorHidden{false};
+};
+
+// Live gameplay scene observing the world owned by its active session.
 class GameScene : public Scene, public IGuiHandler
 {
     public:
 
         GameScene();
+        ~GameScene() override;
         // Advances input, world simulation and rendering.
         void Update(double dt) override;
         void OnActivated() override;
         void OnDeactivated() override;
-        // True when GameWindow has reached the opaque part of a transition.
-        bool IsSceneTransitionOpaque() const;
+        void OnWindowFocusChanged(bool focused) override;
         // Handles game lifecycle and menu events.
         void HandleEvent(std::shared_ptr<Event>) override;
         // Routes gameplay input through this scene's InputProcessor into the
@@ -363,12 +425,6 @@ class GameScene : public Scene, public IGuiHandler
         void HandleGuiInput(double dt) override { inputs.HandleInputs(); }
 
 
-        // Creates and enters a generated world.
-        void StartNewGame(std::string, MapParameters);
-        // Creates and hosts a LAN multiplayer world.
-        void StartMultiplayerHost(std::string, MapParameters, unsigned short port, std::shared_ptr<IGameTransport> transport = nullptr);
-        // Joins a LAN multiplayer world with a local mirror.
-        void StartMultiplayerClient(std::string, MapParameters, const std::string& address, unsigned short port, std::shared_ptr<IGameTransport> transport = nullptr);
         // Loads a save file into the gameplay scene.
         bool LoadGame(std::string);
         // Saves the current gameplay state.
@@ -387,29 +443,30 @@ class GameScene : public Scene, public IGuiHandler
         virtual bool AreTutorialDestroyLocked() const { return AreTutorialHudButtonsLocked(); }
         virtual bool AreTutorialDecisionsLocked() const { return AreTutorialHudButtonsLocked(); }
         virtual bool AreTutorialStatisticsLocked() const { return AreTutorialHudButtonsLocked(); }
-        virtual void AppendGameplayWidgets(std::vector<UiWidget*>&) {}
+        virtual void AppendGameplayWidgets(std::vector<UiWidget*>& widgets);
         virtual void PrepareGameplayRender() {}
         // Modal hooks used by gameplay-derived scenes without duplicating the
         // runtime/render loop.
         virtual bool HasBlockingPopup() const { return false; }
         virtual UiWidget* GetBlockingPopupWidget() { return nullptr; }
 
-        std::unique_ptr<GameWorld> game{nullptr};
+        GameWorld* game{nullptr};
         std::unique_ptr<IGameRuntimeLoop> runtimeLoop{nullptr};
         std::unique_ptr<GuiController> controller{nullptr};
         InputProcessor inputs;
         UiLabel networkStatusLabel;
         GameSnapshot latestSnapshot;
         std::vector<GameCommandResult> commandResults;
+        OwnedProvinceListWidget ownedProvinceList;
+        CampaignStatusWidget campaignStatus;
+        CampaignSidebarWidget campaignSidebar;
         std::size_t prevUnlockedTechCount{0};
         std::size_t prevUnlockedFocusCount{0};
-        std::set<int> knownIncomingUnitIds;
-        struct PendingNewGame
-        {
-            std::string name;
-            MapParameters params;
-        };
-        std::optional<PendingNewGame> pendingNewGame;
+
+    private:
+        void AdoptPreparedSession(std::unique_ptr<IGameSession> session,
+                                  bool multiplayerClient,
+                                  bool usedFallback);
 };
 
 // Scripted single-player scene. It reuses GameScene wholesale and drives a
@@ -428,7 +485,11 @@ public:
     bool AreTutorialDestroyLocked() const override { return tutorialHudLocked || tutorialDecisionsUnlocked; }
     bool AreTutorialDecisionsLocked() const override { return !tutorialDecisionsUnlocked; }
     bool AreTutorialStatisticsLocked() const override { return tutorialHudLocked || tutorialDecisionsUnlocked; }
-    void AppendGameplayWidgets(std::vector<UiWidget*>& widgets) override { widgets.push_back(&tutorialTasks); }
+    void AppendGameplayWidgets(std::vector<UiWidget*>& widgets) override
+    {
+        GameScene::AppendGameplayWidgets(widgets);
+        widgets.push_back(&tutorialTasks);
+    }
     bool HasBlockingPopup() const override { return tutorialPopup.IsVisible(); }
     UiWidget* GetBlockingPopupWidget() override { return &tutorialPopup; }
 
@@ -440,9 +501,6 @@ private:
     void ClearTutorialHighlights();
     void SetTutorialHudLock(bool locked);
     void UnlockTutorialDecisions();
-    void StartScriptedDefenseAttack();
-    bool IsScriptedDefenseAttackCleared() const;
-    bool IsCounterattackDeployed() const;
     void UpdateTutorialTasks();
     void FinishPendingTutorialStart();
 
@@ -456,25 +514,19 @@ private:
     bool basicProductionReported{false};
     bool foodChainReported{false};
     bool decisionSelectedReported{false};
-    bool awaitingDefense{false};
-    bool defenseAttackStarted{false};
-    bool defenseReported{false};
+    bool awaitingRecruitment{false};
+    bool recruitmentReported{false};
     struct PendingTutorialStart
     {
         std::string name;
-        MapParameters params;
+        CampaignGenerationParameters params;
     };
     std::optional<PendingTutorialStart> pendingTutorialStart;
-    bool counterattackStageActive{false};
-    bool counterattackDeployed{false};
     bool tutorialHudLocked{false};
     bool tutorialDecisionsUnlocked{false};
     bool taskCameraBaselineSet{false};
     bool taskBuildModeSeen{false};
     Vec2f taskCameraStart{};
-    int scriptedEnemyPlayerId{-1};
-    std::vector<int> scriptedEnemyUnitIds;
-    bool defenseRouteRevealActive{false};
     TutorialTaskWidget tutorialTasks;
 };
 

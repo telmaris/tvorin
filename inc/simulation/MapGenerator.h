@@ -11,6 +11,7 @@
 #include <vector>
 
 class Player;
+struct ProvinceEconomy;
 
 enum class MapSizePreset
 {
@@ -36,11 +37,11 @@ struct ResourcePatchParameters
 // Thresholds shaping the biome pass (all tunable; deterministic on seed).
 struct BiomeParameters
 {
-    float mountainElevation{0.72f};  // elevation above this → MOUNTAINS
-    float hillElevation{0.55f};      // elevation above this → HILLS
-    float desertMoisture{0.30f};     // moisture below this (and warm lowland) → DESERT
-    float wetlandMoisture{0.72f};    // moisture above this (and low ground) → WETLAND
-    float forestMoisture{0.55f};     // moisture above this → FOREST, else PLAINS
+    float mountainElevation{0.72f};  // elevation above this -> MOUNTAINS
+    float hillElevation{0.55f};      // elevation above this -> HILLS
+    float desertMoisture{0.30f};     // moisture below this (and warm lowland) -> DESERT
+    float wetlandMoisture{0.72f};    // moisture above this (and low ground) -> WETLAND
+    float forestMoisture{0.55f};     // moisture above this -> FOREST, else PLAINS
     float noiseScale{0.045f};        // lattice frequency; lower = larger regions
 };
 
@@ -48,13 +49,13 @@ struct BiomeParameters
 struct MapParameters
 {
     MapSizePreset sizePreset{MapSizePreset::S};
-    // Default follows the S preset (401 since 2026-07-17 — see
-    // MapGenerator::SizeFromPreset for why the minimum grew).
-    int sizeX{401}, sizeY{401};
+    // Default follows the S preset. Keep these dimensions in sync with
+    // MapGenerator::SizeFromPreset and the new-game UI labels.
+    int sizeX{201}, sizeY{201};
     unsigned int seed{12345};
-    float resourceDensity{0.5f};
-    float resourceFieldSize{0.5f};
-    int resourceRichness{80};
+    float resourceDensity{0.18f};
+    float resourceFieldSize{0.80f};
+    int resourceRichness{180};
     int aiOpponentCount{1};
     int aiDifficulty{0};
     bool debugMode{false};
@@ -64,15 +65,15 @@ struct MapParameters
     // with rarity — rare strategic resources get few patches.
     std::vector<ResourcePatchParameters> resourcePatches{
         // Common — widely available.
-        {TileType::WOOD,       18, 4, 10, {BiomeType::FOREST},                       1.0f},
-        {TileType::STONE,       9, 3,  8, {BiomeType::HILLS, BiomeType::MOUNTAINS},   1.0f},
-        {TileType::COAL,        8, 3,  7, {BiomeType::HILLS, BiomeType::MOUNTAINS},   1.0f},
-        {TileType::IRON_ORE,    8, 3,  7, {BiomeType::MOUNTAINS, BiomeType::HILLS},   1.0f},
+        {TileType::WOOD,        6, 7, 14, {BiomeType::FOREST},                       1.0f},
+        {TileType::STONE,       2, 6, 11, {BiomeType::HILLS, BiomeType::MOUNTAINS},   1.10f},
+        {TileType::COAL,        2, 5, 10, {BiomeType::HILLS, BiomeType::MOUNTAINS},   1.20f},
+        {TileType::IRON_ORE,    2, 5, 10, {BiomeType::MOUNTAINS, BiomeType::HILLS},   1.20f},
         // Uncommon.
-        {TileType::COPPER_ORE,  6, 2,  6, {BiomeType::HILLS, BiomeType::MOUNTAINS},   1.0f},
-        {TileType::CLAY,         7, 3,  7, {BiomeType::PLAINS, BiomeType::WETLAND},    1.0f},
+        {TileType::COPPER_ORE,  1, 3,  6, {BiomeType::HILLS, BiomeType::MOUNTAINS},   0.75f},
+        {TileType::CLAY,         1, 3,  6, {BiomeType::PLAINS, BiomeType::WETLAND},    0.75f},
         // Rare — strategic, drives trade. Few, concentrated patches.
-        {TileType::SAND,        4, 3,  8, {BiomeType::DESERT},                        1.0f},
+        {TileType::SAND,         1, 3,  6, {BiomeType::DESERT},                        0.75f},
     };
 };
 
@@ -87,11 +88,9 @@ class MapGenerator
         // Converts a size preset to square map side length.
         static int SizeFromPreset(MapSizePreset preset);
         // Deterministically places `playerCount` starting HQ anchors around
-        // the map on a (possibly irregular/concave) n-gon, spaced far enough
-        // apart and never collinear, so the military road ring connects
-        // angular neighbors unambiguously — see docs/work_plan_2026-07-13.md
-        // B1. No player is special-cased to the map center; anchors[i] is
-        // simply the i-th vertex in angular order.
+        // the local map on a (possibly irregular/concave) n-gon. No player is
+        // special-cased to the map center; anchors[i] is simply the i-th
+        // vertex in angular order.
         static std::vector<Vec2i> PickHeadquartersAnchors(const MapParameters& params, int playerCount);
         // Returns the fixed headquarters footprint.
         static Vec2i HeadquartersFootprint() { return {4, 4}; }
@@ -102,6 +101,9 @@ class MapGenerator
         static int HeadquartersTerritorySize() { return 35; }
         // Ensures a starting territory contains required early resources.
         static void PrepareStartingArea(TileMap&, Vec2i hqAnchor, std::mt19937&);
+        static ResourceType ResourceTypeFromTileType(TileType type);
+        static void FilterResourcePatchesForProfile(
+            MapParameters&, const std::vector<ResourceType>& naturalResourceTypes);
 
     private:
         // Assigns a biome to every tile from elevation + moisture noise fields.
@@ -137,6 +139,9 @@ class Tile
         bool IsBuildingAnchor() const { return building != nullptr; }
 
         int id;
+        // Stable ownership value used by persistence/checksum. `owner` is a
+        // runtime presentation cache rebuilt after load.
+        PlayerId ownerId{InvalidPlayerId};
         Player* owner{nullptr};
         std::unique_ptr<Building> building{nullptr};
         Building* buildingRef{nullptr};
@@ -146,10 +151,6 @@ class Tile
         // Transparent resource sprite over the ground. -1 means no overlay.
         int resourceOverlayTextureId{-1};
         int resourceRichness{0};
-        // Immutable military road track (TD etap-2), generated once at world init.
-        // Disjoint from resource roads/buildings: nothing may be built here, and
-        // this flag is never set on a tile already carrying a building.
-        bool isMilitaryRoad{false};
 };
 
 // Weighted renderer texture candidate for a terrain type.
@@ -221,23 +222,16 @@ class TileMap
         Building* GetBuilding(Vec2i pos);
         // Checks object identity without dereferencing the candidate. UI uses
         // this to invalidate selections after simulation-side destruction or
-        // replacement, such as a defeated HQ becoming a StorageBuilding.
+        // replacement.
         bool ContainsBuilding(const Building* candidate) const;
         // Returns true when coordinates are within map bounds.
         bool IsInside(Vec2i coords) const;
         // Returns true when every footprint tile is inside map bounds.
         bool IsInsideFootprint(Vec2i anchor, Vec2i footprint) const;
-        // Returns true when a footprint can be placed for the player: every tile is
-        // free of buildings and outside the enemy-proximity radius (see
-        // IsWithinEnemyProximity). Territory ownership no longer gates placement
-        // (TD(etap-1) — replaced by the proximity rule).
-        // `type` defaults to the generic rule (every tile must NOT be an
-        // isMilitaryRoad tile). Bridge (B6, docs/work_plan_2026-07-13.md) is the
-        // one type that INVERTS this — its footprint must sit entirely ON
-        // isMilitaryRoad ground instead. Callers that already know the concrete
-        // type being placed (CanPlaceBuilding, Player::Build<T>) pass it through;
-        // callers placing generic terrain features (village, start roads) can
-        // omit it and get today's behavior unchanged.
+        // Returns true when a footprint can be placed on this local map: every
+        // tile is inside the map and free of buildings. Province access is
+        // validated by the campaign command router, not by tile proximity.
+        // `type` is passed by callers that need type-specific placement rules.
         bool CanBuildFootprint(Vec2i anchor, Vec2i footprint, Player* player, BuildingType type = BuildingType::Building) const;
         // Returns the canonical terrain variant selected for a footprint.
         TerrainPlacementEvaluation EvaluateTerrainPlacement(BuildingType type, Vec2i anchor,
@@ -246,27 +240,11 @@ class TileMap
         bool HasRequiredTerrainForBuilding(BuildingType type, Vec2i anchor, Vec2i footprint, int minimumTiles = 2) const;
         // Returns true when all gameplay placement rules are satisfied.
         bool CanPlaceBuilding(BuildingType type, Vec2i anchor, Vec2i footprint, Player* player) const;
-        // True when any tile within `radius` of the (possibly multi-tile) footprint
-        // is occupied by a building owned by a different player. The sole placement
-        // rule that replaces the old radial territory system (TD(etap-1) reguła
-        // bliskości): building/road placement is refused near enemy structures,
-        // which also prevents an enemy from ever attaching their road network to
-        // yours. Own buildings and unowned ground never block.
-        bool IsWithinEnemyProximity(Vec2i anchor, Vec2i footprint, const Player* player, int radius) const;
-        // User request (2026-07-17): buildings crowding right against the HQ
-        // jam the base exit — true when any tile within `radius` (Chebyshev,
-        // expanded bounding box) of the footprint belongs to ANY player's
-        // Headquarters. CanBuildFootprint refuses such placements for every
-        // type except Road/Bridge (logistics must reach the HQ), DefenseTower
-        // (the apron may be fortified), and the Headquarters itself.
-        bool IsWithinHqClearance(Vec2i anchor, Vec2i footprint, int radius) const;
         // Returns all tile ids occupied by a building footprint.
         std::vector<int> GetBuildingTileIds(const Building* building) const;
         // Returns all tile ids adjacent to a building footprint.
         std::vector<int> GetAdjacentTileIds(const Building* building) const;
-        // Same as above, for a footprint that hasn't been placed yet (B6 follow-up:
-        // used by CanBuildFootprint to reject two adjacent Bridges before either
-        // exists as a Building).
+        // Same as above, for a footprint that hasn't been placed yet.
         std::vector<int> GetAdjacentTileIds(Vec2i anchor, Vec2i footprint) const;
         // Returns the selected terrain texture for a terrain type.
         int GetTerrainTextureId(TileType type) const;
@@ -286,7 +264,7 @@ class TileMap
         Building* FindNearestStorage(Building* source, Player* player);
         // Returns the automatic logistics hub: Headquarters first, with the
         // nearest ordinary warehouse used only when the HQ is unavailable.
-        // Per-building buffers (towers, Barracks) are never default hubs.
+        // Per-building buffers (including Barracks) are never default hubs.
         Building* FindDefaultStorage(Building* source, Player* player);
         // Connects a placed building to default supplier and receiver candidates.
         void AutoConnectBuilding(Building* building);
@@ -303,6 +281,9 @@ class TileMap
         
         MapParameters params;
         MapGenerator generator;
+        // Non-owning runtime link to the province-local economy. The owning
+        // ProvinceSimulation rebinds this after load/move or map attachment.
+        ProvinceEconomy* provinceEconomy{nullptr};
         std::map<TileType, std::vector<WeightedTileVariant>> terrainVariants{
             // These are a single cohesive palette. Older prototype grass cells
             // remain in the atlas for save compatibility but never generate on

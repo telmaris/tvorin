@@ -1,16 +1,18 @@
 #include "core/GameWorld.h"
 #include "core/GameWorldInternal.h"
 #include "simulation/MapGenerator.h"
-#include "ai/AIActions.h"
 
 #include <gtest/gtest.h>
 
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <future>
 #include <limits>
 #include <random>
 #include <set>
+#include <thread>
+#include <tuple>
 #include <vector>
 
 namespace
@@ -31,39 +33,163 @@ namespace
         return abx * acy - aby * acx;
     }
 
-    Vec2i DirectionFromFootprint(Vec2i anchor, Vec2i footprint, Vec2i point)
-    {
-        if (point.x < anchor.x)
-            return {-1, 0};
-        if (point.x >= anchor.x + footprint.x)
-            return {1, 0};
-        if (point.y < anchor.y)
-            return {0, -1};
-        if (point.y >= anchor.y + footprint.y)
-            return {0, 1};
-        return {};
-    }
+}
 
-    bool TouchesMilitaryRoad(TileMap& map, const Building* building)
-    {
-        Vec2i anchor = map.GetCoordsFromId(building->positionId);
-        Vec2i footprint = building->GetFootprint();
-        for (int y = anchor.y; y < anchor.y + footprint.y; y++)
+TEST(MapGeneratorTests, WorldInitializationReportsMonotonicPresentationProgress)
+{
+    GameWorld world;
+    MapParameters params = MakeParams(20260828u);
+    params.aiOpponentCount = 1;
+    std::vector<float> progressValues;
+    std::vector<std::string> messages;
+
+    ASSERT_TRUE(world.InitWorld(
+        "progress-callback", nullptr, params,
+        [&](float value, const std::string& message)
         {
-            for (int x = anchor.x; x < anchor.x + footprint.x; x++)
+            progressValues.push_back(value);
+            messages.push_back(message);
+        }));
+
+    ASSERT_FALSE(progressValues.empty());
+    EXPECT_TRUE(std::is_sorted(progressValues.begin(), progressValues.end()));
+    EXPECT_FLOAT_EQ(progressValues.back(), 1.0f);
+    EXPECT_EQ(messages.back(), "World ready");
+}
+
+TEST(MapGeneratorTests, WorldInitializesOnBackgroundThreadWithoutPresentationServices)
+{
+    const std::thread::id mainThread = std::this_thread::get_id();
+    auto future = std::async(std::launch::async, []
+    {
+        GameWorld world;
+        std::thread::id callbackThread;
+        MapParameters params = MakeParams(20260829u);
+        params.aiOpponentCount = 1;
+        const bool initialized = world.InitWorld(
+            "background-generation", nullptr, params,
+            [&](float, const std::string&)
             {
-                for (int offsetY = -1; offsetY <= 1; offsetY++)
-                {
-                    for (int offsetX = -1; offsetX <= 1; offsetX++)
-                    {
-                        Vec2i nearby{x + offsetX, y + offsetY};
-                        if (map.IsInside(nearby) && map[nearby].isMilitaryRoad)
-                            return true;
-                    }
-                }
-            }
+                callbackThread = std::this_thread::get_id();
+            });
+        return std::tuple{initialized, world.IsInitialized(), callbackThread};
+    });
+
+    const auto [initialized, worldInitialized, callbackThread] = future.get();
+    EXPECT_TRUE(initialized);
+    EXPECT_TRUE(worldInitialized);
+    EXPECT_NE(callbackThread, std::thread::id{});
+    EXPECT_NE(callbackThread, mainThread);
+}
+
+TEST(MapGeneratorTests, EmergencySafeSeedInitializesSingleAndMultiplayerWorlds)
+{
+    MapParameters singleParams = MakeParams(12345u);
+    singleParams.sizeX = MapGenerator::SizeFromPreset(MapSizePreset::S);
+    singleParams.sizeY = singleParams.sizeX;
+    singleParams.aiOpponentCount = 1;
+    GameWorld singleWorld;
+    ASSERT_TRUE(singleWorld.InitWorld(
+        "safe-single", nullptr, singleParams));
+
+    MapParameters multiplayerParams = singleParams;
+    multiplayerParams.aiOpponentCount = 0;
+    GameWorld multiplayerWorld;
+    ASSERT_TRUE(multiplayerWorld.InitMultiplayerWorld(
+        "safe-multiplayer", nullptr,
+        multiplayerParams, 0, true));
+}
+
+TEST(MapGeneratorTests, WorldInitializationUsesPeacefulPlayerCountsAndProvinceSizes)
+{
+    MapParameters singleParams = MakeParams(111u);
+    singleParams.sizePreset = MapSizePreset::L;
+    singleParams.sizeX = MapGenerator::SizeFromPreset(MapSizePreset::L);
+    singleParams.sizeY = singleParams.sizeX;
+    singleParams.aiOpponentCount = 4;
+
+    GameWorld singlePlayerWorld;
+    ASSERT_TRUE(singlePlayerWorld.InitWorld(
+        "peaceful-large-single", nullptr, singleParams));
+    EXPECT_EQ(singlePlayerWorld.GetPlayerHandler().players.size(), 1u);
+    EXPECT_EQ(singlePlayerWorld.GetTileMap().params.sizeX, 401);
+
+    MapParameters multiplayerParams = singleParams;
+    multiplayerParams.aiOpponentCount = 5;
+    GameWorld multiplayerWorld;
+    ASSERT_TRUE(multiplayerWorld.InitMultiplayerWorld(
+        "peaceful-large-multiplayer", nullptr,
+        multiplayerParams, 0, true));
+    EXPECT_EQ(multiplayerWorld.GetPlayerHandler().players.size(), 2u);
+    EXPECT_EQ(multiplayerWorld.GetTileMap().params.sizeX, 401);
+}
+
+TEST(MapGeneratorTests, ResourcePatchCountScalesWithProvinceArea)
+{
+    auto makeParameters = [](MapSizePreset preset)
+    {
+        MapParameters params;
+        params.sizePreset = preset;
+        params.sizeX = MapGenerator::SizeFromPreset(preset);
+        params.sizeY = params.sizeX;
+        params.seed = 91731u;
+        params.resourceDensity = 0.5f;
+        params.resourceFieldSize = 0.5f;
+        params.resourcePatches = {
+            {TileType::WOOD, 200, 1, 1, {}, 1.0f}};
+        return params;
+    };
+
+    auto countWoodTiles = [](const TileMap& map)
+    {
+        return std::count_if(map.tilemap.begin(), map.tilemap.end(),
+                             [](const Tile& tile) { return tile.tileType == TileType::WOOD; });
+    };
+
+    TileMap smallMap;
+    TileMap largeMap;
+    MapGenerator generator;
+    MapParameters smallParams = makeParameters(MapSizePreset::S);
+    MapParameters largeParams = makeParameters(MapSizePreset::XL);
+    generator.GenerateTileMap(smallMap, smallParams);
+    generator.GenerateTileMap(largeMap, largeParams);
+
+    const int smallWoodTiles = countWoodTiles(smallMap);
+    const int largeWoodTiles = countWoodTiles(largeMap);
+    EXPECT_GT(smallWoodTiles, 0);
+    EXPECT_GT(largeWoodTiles, smallWoodTiles)
+        << "larger provinces must receive more deposit patches, not only larger empty space";
+}
+
+// The starting road is now validated only by its own buildability and length;
+// no military gates or track-clearance rule participates in the choice.
+TEST(MapGeneratorTests, StartingVillageRoadStaysWithinPeacefulBudget)
+{
+    const std::vector<std::pair<int, unsigned int>> scenarios{
+        {1, 11u}, {2, 222u}, {1, 3333u}};
+    for (const auto& [playerCount, seed] : scenarios)
+    {
+        MapParameters params = MakeParams(seed);
+        params.aiOpponentCount = 5;
+        GameWorld world;
+        if (playerCount == 1)
+        {
+            ASSERT_TRUE(world.InitWorld("peaceful-road", nullptr, params));
         }
-        return false;
+        else
+        {
+            ASSERT_TRUE(world.InitMultiplayerWorld(
+                "peaceful-road-multiplayer", nullptr, params, 0, true));
+        }
+
+        for (const auto& [playerId, player] : world.GetPlayerHandler().players)
+        {
+            ASSERT_NE(player, nullptr);
+            EXPECT_GE(player->GetTrackedBuildingCount(BuildingType::Road), 20)
+                << "seed=" << seed << " player=" << playerId;
+            EXPECT_LE(player->GetTrackedBuildingCount(BuildingType::Road), 30)
+                << "seed=" << seed << " player=" << playerId;
+        }
     }
 }
 
@@ -144,12 +270,11 @@ TEST(MapGeneratorTests, FailedWorldGenerationReturnsControlledErrorWithoutPartia
     params.aiOpponentCount = 5;
 
     GameWorld world;
-    EXPECT_FALSE(world.InitWorld("invalid-layout", nullptr, nullptr, params));
+    EXPECT_FALSE(world.InitWorld("invalid-layout", nullptr, params));
     EXPECT_FALSE(world.IsInitialized());
     EXPECT_THAT(world.GetInitializationError(), testing::HasSubstr("seed"));
     EXPECT_THAT(world.GetInitializationError(), testing::HasSubstr("last attempt seed"));
     EXPECT_TRUE(world.GetPlayerHandler().players.empty());
-    EXPECT_TRUE(world.GetMilitaryRoads().GetRoutes().empty());
     EXPECT_TRUE(world.GetTileMap().tilemap.empty());
 }
 
@@ -228,7 +353,7 @@ TEST(MapGeneratorTests, EveryHqGetsStartingCoalAndIronOrePatches)
         params.seed = seed;
 
         GameWorld world;
-        world.InitWorld("test", nullptr, nullptr, params);
+        world.InitWorld("test", nullptr, params);
         TileMap& map = world.GetTileMap();
 
         for (auto& [playerId, player] : world.GetPlayerHandler().players)
@@ -242,8 +367,6 @@ TEST(MapGeneratorTests, EveryHqGetsStartingCoalAndIronOrePatches)
 
             int coalTiles = 0;
             int ironTiles = 0;
-            int coalOnTrack = 0;
-            int ironOnTrack = 0;
             constexpr int kSearchRadius = 35;
             for (int y = -kSearchRadius; y <= kSearchRadius; y++)
             {
@@ -256,20 +379,16 @@ TEST(MapGeneratorTests, EveryHqGetsStartingCoalAndIronOrePatches)
                     if (tile.tileType == TileType::COAL)
                     {
                         coalTiles++;
-                        if (tile.isMilitaryRoad) coalOnTrack++;
                     }
                     else if (tile.tileType == TileType::IRON_ORE)
                     {
                         ironTiles++;
-                        if (tile.isMilitaryRoad) ironOnTrack++;
                     }
                 }
             }
 
             EXPECT_GE(coalTiles, 10) << "seed=" << seed << " player=" << playerId << " too few COAL tiles near HQ";
             EXPECT_GE(ironTiles, 10) << "seed=" << seed << " player=" << playerId << " too few IRON_ORE tiles near HQ";
-            EXPECT_EQ(coalOnTrack, 0) << "seed=" << seed << " player=" << playerId << " COAL patch overlaps the track";
-            EXPECT_EQ(ironOnTrack, 0) << "seed=" << seed << " player=" << playerId << " IRON_ORE patch overlaps the track";
         }
     }
 }
@@ -287,7 +406,6 @@ TEST(MapGeneratorTests, StartingResourceLayoutIsDeterministicButNotCardinal)
         tile.tileType = TileType::GRASS;
         tile.resourceRichness = 0;
         tile.resourceOverlayTextureId = -1;
-        tile.isMilitaryRoad = false;
     }
 
     const Vec2i hqAnchor{198, 198};
@@ -346,7 +464,7 @@ TEST(MapGeneratorTests, StartingVillageRoadStaysWithinBudget)
         params.seed = seed;
 
         GameWorld world;
-        world.InitWorld("test", nullptr, nullptr, params);
+        world.InitWorld("test", nullptr, params);
 
         for (auto& [playerId, player] : world.GetPlayerHandler().players)
         {
@@ -372,104 +490,11 @@ TEST(MapGeneratorTests, StartingVillageRoadStaysWithinBudget)
             // footprint-inclusive convention (which always counts 2 more —
             // one tile from each endpoint's own footprint). At world-init
             // time the only roads a fresh player owns are this start road.
-            int roadTiles = AIActions::CountOwnedBuildings(player.get(), BuildingType::Road);
+            int roadTiles = player->GetTrackedBuildingCount(BuildingType::Road);
             EXPECT_GE(roadTiles, kMinVillageRoadTiles)
                 << "seed=" << seed << " player=" << playerId << " village road is " << roadTiles << " tiles";
             EXPECT_LE(roadTiles, kMaxVillageRoadTiles)
                 << "seed=" << seed << " player=" << playerId << " village road is " << roadTiles << " tiles";
         }
-    }
-}
-
-// User report 2026-07-28: a random starting-village candidate could land on
-// a side occupied by one of the HQ's military gates. Its road would then run
-// parallel to (or directly beside) the unit track. The generator now ranks
-// an unused/opposite side first and requires a one-tile Chebyshev buffer
-// around both the Village footprint and every start-road tile whenever such
-// a route is available.
-TEST(MapGeneratorTests, StartingVillageAndRoadStayOppositeAndDetachedFromUnitTrack)
-{
-    // Cover every seed and both tested player counts without generating the
-    // full Cartesian product of gameplay-sized worlds.
-    const std::vector<std::pair<int, unsigned int>> scenarios{
-        {1, 11u}, {2, 222u}, {1, 3333u}};
-    for (const auto& [aiOpponentCount, seed] : scenarios)
-    {
-            MapParameters params;
-            params.sizePreset = MapSizePreset::S;
-            params.aiOpponentCount = aiOpponentCount;
-            params.seed = seed;
-
-            GameWorld world;
-            world.InitWorld("test", nullptr, nullptr, params);
-            TileMap& map = world.GetTileMap();
-
-            for (const auto& [playerId, player] : world.GetPlayerHandler().players)
-            {
-                Building* hq = nullptr;
-                Building* village = nullptr;
-                for (Building* building : player->GetTrackedBuildings())
-                {
-                    if (building == nullptr)
-                        continue;
-                    if (building->buildingType == BuildingType::Headquarters)
-                        hq = building;
-                    else if (building->buildingType == BuildingType::Village)
-                        village = building;
-                }
-
-                ASSERT_NE(hq, nullptr) << "seed=" << seed << " player=" << playerId;
-                ASSERT_NE(village, nullptr) << "seed=" << seed << " player=" << playerId;
-
-                Vec2i hqAnchor = map.GetCoordsFromId(hq->positionId);
-                std::vector<Vec2i> gateDirections;
-                for (const MilitaryRoute& route : world.GetMilitaryRoads().GetRoutes())
-                {
-                    int gateTile = -1;
-                    if (route.playerA == playerId && !route.tiles.empty())
-                        gateTile = route.tiles.front();
-                    else if (route.playerB == playerId && !route.tiles.empty())
-                        gateTile = route.tiles.back();
-                    if (gateTile >= 0)
-                    {
-                        gateDirections.push_back(DirectionFromFootprint(
-                            hqAnchor, hq->GetFootprint(), map.GetCoordsFromId(gateTile)));
-                    }
-                }
-
-                ASSERT_FALSE(gateDirections.empty())
-                    << "seed=" << seed << " player=" << playerId;
-                Vec2i villageDirection = DirectionFromFootprint(
-                    hqAnchor, hq->GetFootprint(), map.GetCoordsFromId(village->positionId));
-                if (gateDirections.size() == 1)
-                {
-                    EXPECT_EQ(villageDirection,
-                              (Vec2i{-gateDirections[0].x, -gateDirections[0].y}))
-                        << "seed=" << seed << " player=" << playerId
-                        << " village is not opposite its military gate";
-                }
-                else
-                {
-                    EXPECT_EQ(std::count(gateDirections.begin(), gateDirections.end(),
-                                         villageDirection), 0)
-                        << "seed=" << seed << " player=" << playerId
-                        << " village shares a side with a military gate";
-                }
-
-                EXPECT_FALSE(TouchesMilitaryRoad(map, village))
-                    << "seed=" << seed << " player=" << playerId
-                    << " village touches the military track";
-
-                for (Building* building : player->GetTrackedBuildings())
-                {
-                    if (building != nullptr && building->buildingType == BuildingType::Road)
-                    {
-                        EXPECT_FALSE(TouchesMilitaryRoad(map, building))
-                            << "seed=" << seed << " player=" << playerId
-                            << " start road touches the military track at tile "
-                            << building->positionId;
-                    }
-                }
-            }
     }
 }

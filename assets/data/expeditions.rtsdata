@@ -1,0 +1,9 @@
+# Data contract for the pilot's non-combat scouting expedition.
+expedition scout
+    role Scout
+    required_unit_role Scout
+    required_unit_count 1
+    supply_resource SupplyPackages
+    supply_cost 1
+    duration_ticks 200
+end

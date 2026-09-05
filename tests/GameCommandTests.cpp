@@ -1,4 +1,4 @@
-﻿#include "core/GameCommand.h"
+#include "core/GameCommand.h"
 #include "core/GameSession.h"
 #include "core/GameWorld.h"
 #include "multiplayer/FaultInjectingGameTransport.h"
@@ -28,6 +28,25 @@ TEST(GameCommandTests, SerializesAndDeserializesBuildCommand)
     EXPECT_EQ(parsed.tilePos.y, 34);
 }
 
+TEST(GameCommandTests, ProvinceAndExpeditionContextRoundTripWithoutPackingIntoTileIds)
+{
+    const GameCommand original = GameCommand::StartScoutExpedition(
+        1, 17, 23, {100001});
+    GameCommand parsed;
+    ASSERT_TRUE(GameCommand::TryDeserialize(original.Serialize(), parsed));
+
+    EXPECT_EQ(parsed.playerId, 1);
+    EXPECT_EQ(parsed.type, GameCommandType::StartScoutExpedition);
+    EXPECT_EQ(parsed.provinceId, 17u);
+    EXPECT_EQ(parsed.targetProvinceId, 23u);
+    EXPECT_EQ(parsed.unitInstanceIds, std::vector<int>({100001}));
+
+    const GameCommand build = GameCommand::BuildBuilding(0, 41, BuildingType::Road, {7, 9});
+    ASSERT_TRUE(GameCommand::TryDeserialize(build.Serialize(), parsed));
+    EXPECT_EQ(parsed.provinceId, 41u);
+    EXPECT_EQ(parsed.tilePos, (Vec2i{7, 9}));
+}
+
 TEST(GameCommandTests, SerializesAndDeserializesFocusAndResearchIds)
 {
     GameCommand focus = GameCommand::StartFocus(3, "tribal_council");
@@ -44,20 +63,6 @@ TEST(GameCommandTests, SerializesAndDeserializesFocusAndResearchIds)
     EXPECT_EQ(parsedResearch.type, GameCommandType::StartTechnologyResearch);
     EXPECT_EQ(parsedResearch.researchId, "sawmill blades");
     EXPECT_EQ(parsedResearch.sourceTileId, 99);
-}
-
-TEST(GameCommandTests, SerializesAndDeserializesTowerTargetMode)
-{
-    GameCommand original = GameCommand::SetTowerTargetMode(
-        2, 123, static_cast<int>(TowerTargetMode::StrongestUnit));
-
-    GameCommand parsed;
-    ASSERT_TRUE(GameCommand::TryDeserialize(original.Serialize(), parsed));
-
-    EXPECT_EQ(parsed.type, GameCommandType::SetTowerTargetMode);
-    EXPECT_EQ(parsed.playerId, 2);
-    EXPECT_EQ(parsed.sourceTileId, 123);
-    EXPECT_EQ(parsed.targetTileId, static_cast<int>(TowerTargetMode::StrongestUnit));
 }
 
 TEST(GameCommandTests, SerializesAndDeserializesProductionBlock)
@@ -89,6 +94,49 @@ TEST(GameCommandTests, SerializesAndDeserializesRoadPriority)
     }
 }
 
+TEST(GameCommandTests, SerializesAndDeserializesUpgradeBuilding)
+{
+    GameCommand original = GameCommand::UpgradeBuilding(2, 456);
+    GameCommand parsed;
+
+    ASSERT_TRUE(GameCommand::TryDeserialize(original.Serialize(), parsed));
+    EXPECT_EQ(parsed.type, GameCommandType::UpgradeBuilding);
+    EXPECT_EQ(parsed.playerId, 2);
+    EXPECT_EQ(parsed.sourceTileId, 456);
+}
+
+TEST(GameCommandTests, SerializesTaskGroupTransferAndDebugRaidPayloads)
+{
+    const GameCommand groupCommand = GameCommand::StartProvinceAttackWithTaskGroups(
+        2, 17, 23, {3, 11});
+    GameCommand parsed;
+    ASSERT_TRUE(GameCommand::TryDeserialize(groupCommand.Serialize(), parsed));
+    EXPECT_EQ(parsed.type, GameCommandType::StartProvinceAttack);
+    EXPECT_EQ(parsed.taskGroupIds, std::vector<TaskGroupId>({3, 11}));
+
+    const GameCommand resourceCommand = GameCommand::StartResourceTransfer(
+        2, 17, 23, {{ResourceType::WOOD, 5}, {ResourceType::STONE, 2}});
+    ASSERT_TRUE(GameCommand::TryDeserialize(resourceCommand.Serialize(), parsed));
+    EXPECT_EQ(parsed.type, GameCommandType::StartResourceTransfer);
+    ASSERT_EQ(parsed.resourceCargo.size(), 2u);
+    EXPECT_EQ(parsed.resourceCargo[0].type, ResourceType::WOOD);
+    EXPECT_EQ(parsed.resourceCargo[0].amount, 5);
+    EXPECT_EQ(parsed.resourceCargo[1].type, ResourceType::STONE);
+
+    const GameCommand armyCommand = GameCommand::StartArmyTransfer(
+        2, 17, 23, {3, 11}, 901);
+    ASSERT_TRUE(GameCommand::TryDeserialize(armyCommand.Serialize(), parsed));
+    EXPECT_EQ(parsed.type, GameCommandType::StartArmyTransfer);
+    EXPECT_EQ(parsed.taskGroupIds, std::vector<TaskGroupId>({3, 11}));
+    EXPECT_EQ(parsed.destinationBarracksId, 901);
+
+    const GameCommand raidCommand = GameCommand::SpawnDebugRaid(2, 23, 20);
+    ASSERT_TRUE(GameCommand::TryDeserialize(raidCommand.Serialize(), parsed));
+    EXPECT_EQ(parsed.type, GameCommandType::SpawnDebugRaid);
+    EXPECT_EQ(parsed.targetProvinceId, 23u);
+    EXPECT_EQ(parsed.raidStrength, 20);
+}
+
 TEST(GameCommandTests, RejectsUnknownCommandType)
 {
     GameCommand parsed;
@@ -102,9 +150,9 @@ TEST(GameCommandTests, RoadPriorityRequiresFinishedOwnedRoadAndPhysicalResource)
     GameWorld world;
     MapParameters params;
     params.sizePreset = MapSizePreset::S;
-    params.aiOpponentCount = 1;
+    params.aiOpponentCount = 1; // compatibility input is ignored by transitional MP
     params.seed = 4242;
-    ASSERT_TRUE(world.InitWorld("road-priority", nullptr, nullptr, params));
+    ASSERT_TRUE(world.InitWorld("road-priority", nullptr, params));
 
     Player* player = world.GetPlayerHandler().players.at(0).get();
     ASSERT_NE(player, nullptr);
@@ -154,35 +202,32 @@ TEST(GameCommandTests, RoadPriorityRequiresFinishedOwnedRoadAndPhysicalResource)
     EXPECT_EQ(road->road.priorityResource, ResourceType::Null);
 }
 
-TEST(GameCommandTests, SerializesDebugEnemyDeployment)
+TEST(GameCommandTests, UpgradeRejectsBuildingStillUnderConstruction)
 {
-    GameCommand original = GameCommand::DebugDeployEnemyUnits(2, 4);
-    GameCommand parsed;
-    ASSERT_TRUE(GameCommand::TryDeserialize(original.Serialize(), parsed));
-    EXPECT_EQ(parsed.type, GameCommandType::DebugDeployEnemyUnits);
-    EXPECT_EQ(parsed.playerId, 2);
-    EXPECT_EQ(parsed.targetTileId, 4);
-}
-
-TEST(GameCommandTests, DebugEnemyDeploymentRequiresDebugModeAndSpawnsEnemyColumn)
-{
-    MapParameters params;
-    params.sizeX = 81;
-    params.sizeY = 81;
-    params.aiOpponentCount = 1;
-    params.seed = 8128;
-    params.debugMode = true;
-
     GameWorld world;
-    world.InitWorld("test", nullptr, nullptr, params);
-    ASSERT_TRUE(world.GetMilitaryRoads().AreConnected(0, 1));
-    const std::vector<int> route = world.GetMilitaryRoads().GetDirectedTiles(1, 0);
-    ASSERT_FALSE(route.empty());
-    const int expectedHeadIndex = std::min(
-        std::max(0, static_cast<int>(route.size()) - 2),
-        (static_cast<int>(route.size()) - 1) * 3 / 4);
+    MapParameters params;
+    params.sizePreset = MapSizePreset::S;
+    params.aiOpponentCount = 1;
+    params.seed = 5150;
+    ASSERT_TRUE(world.InitWorld("upgrade-under-construction", nullptr, params));
 
-    const std::uint64_t commandId = world.SubmitCommand(GameCommand::DebugDeployEnemyUnits(0, 4));
+    Player* player = world.GetPlayerHandler().players.at(0).get();
+    ASSERT_NE(player, nullptr);
+
+    Road* road = nullptr;
+    for (Building* building : player->GetTrackedBuildings())
+        if (auto* candidate = dynamic_cast<Road*>(building); candidate != nullptr)
+        {
+            road = candidate;
+            break;
+        }
+    ASSERT_NE(road, nullptr);
+    ASSERT_NE(FindUpgradeLevelDefinition(GetBuildingDefinition(BuildingType::Road), 2), nullptr);
+
+    road->constructionRemaining = 1.0;
+    const int levelBefore = road->upgrade.level;
+    const std::uint64_t commandId = world.SubmitCommand(
+        GameCommand::UpgradeBuilding(player->id, road->positionId));
     world.UpdateSimulation(FixedSimulationClock::FixedDt);
 
     const auto results = world.ConsumeCommandResults();
@@ -191,25 +236,9 @@ TEST(GameCommandTests, DebugEnemyDeploymentRequiresDebugModeAndSpawnsEnemyColumn
         return result.commandId == commandId;
     });
     ASSERT_NE(resultIt, results.end());
-    EXPECT_TRUE(resultIt->accepted);
-
-    int spawnedEnemyUnits = 0;
-    std::vector<int> spawnedTileIndices;
-    for (const auto& [instanceId, unit] : world.GetDeployedUnits())
-    {
-        (void)instanceId;
-        if (unit.ownerPlayerId == 1 && unit.routeFromPlayerId == 1 && unit.routeToPlayerId == 0)
-        {
-            ++spawnedEnemyUnits;
-            spawnedTileIndices.push_back(unit.tileIndex);
-            EXPECT_EQ(unit.unitDefId, "militia");
-        }
-    }
-    EXPECT_EQ(spawnedEnemyUnits, 4);
-    std::sort(spawnedTileIndices.begin(), spawnedTileIndices.end(), std::greater<int>());
-    ASSERT_EQ(spawnedTileIndices.size(), 4u);
-    for (size_t i = 0; i < spawnedTileIndices.size(); ++i)
-        EXPECT_EQ(spawnedTileIndices[i], std::max(0, expectedHeadIndex - static_cast<int>(i)));
+    EXPECT_FALSE(resultIt->accepted);
+    EXPECT_EQ(road->upgrade.level, levelBefore);
+    EXPECT_FALSE(road->upgrade.isUpgrading);
 }
 
 TEST(GameCommandTests, RejectsMalformedPayload)
@@ -328,7 +357,7 @@ TEST(GameCommandTests, HostReplaysCachedResultForDuplicateRemoteCommandWithoutSe
 {
     GameWorld world;
     auto transport = std::make_shared<LocalhostGameTransport>();
-    HostSession host(world, transport, 1);
+    HostSession host(world, transport, 1, false);
 
     GameCommand command = GameCommand::DestroyBuilding(0, 123);
     command.commandId = 901;
@@ -353,7 +382,9 @@ TEST(GameCommandTests, HostReplaysCachedResultForDuplicateRemoteCommandWithoutSe
 
     transport->SendClientCommand(command.Serialize());
     std::vector<std::string> replayReplies;
-    for (int i = 0; i < 30 && replayReplies.empty(); ++i)
+    // The host is deliberately worker-thread driven. Give the replay path the
+    // same scheduling margin as the initial result path under a loaded suite.
+    for (int i = 0; i < 100 && replayReplies.empty(); ++i)
     {
         replayReplies = transport->ReceiveClientResults();
         if (replayReplies.empty())
@@ -421,18 +452,6 @@ TEST(GameCommandTests, ClientSessionReplaysOnlyUnacknowledgedCommandsAfterReconn
     transport->SetConnected(true);
     client.Update(0.0);
     EXPECT_TRUE(transport->ReceiveHostCommands().empty());
-}
-
-TEST(GameCommandTests, RejectsCommandWithTooManyUnitIdsBeforeReservingMemory)
-{
-    GameCommand command = GameCommand::DeployUnits(1, 2, {});
-    std::string payload = command.Serialize();
-    ASSERT_EQ(payload.back(), '0');
-    payload.back() = '1';
-    payload += "025";
-
-    GameCommand parsed;
-    EXPECT_FALSE(GameCommand::TryDeserialize(payload, parsed));
 }
 
 TEST(GameCommandTests, RejectsServerFrameWithTooManyResultsBeforeReservingMemory)
@@ -508,8 +527,8 @@ TEST(GameCommandTests, MultiplayerWorldAssignsStableServerSlotsAndColors)
 
     GameWorld hostWorld;
     GameWorld clientWorld;
-    hostWorld.InitMultiplayerWorld("test", nullptr, nullptr, params, 0, true);
-    clientWorld.InitMultiplayerWorld("test", nullptr, nullptr, params, 1, false);
+    hostWorld.InitMultiplayerWorld("test", nullptr, params, 0, true);
+    clientWorld.InitMultiplayerWorld("test", nullptr, params, 1, false);
 
     ASSERT_EQ(hostWorld.GetLocalPlayerId(), 0);
     ASSERT_EQ(clientWorld.GetLocalPlayerId(), 1);
@@ -531,5 +550,6 @@ TEST(GameCommandTests, MultiplayerWorldAssignsStableServerSlotsAndColors)
     EXPECT_EQ(hostSlot1.b, clientSlot1.b);
     EXPECT_EQ(hostWorld.GetPlayerHandlerForTesting().players[1]->controllerType, PlayerControllerType::Remote);
     EXPECT_EQ(clientWorld.GetPlayerHandlerForTesting().players[1]->controllerType, PlayerControllerType::LocalHuman);
-    EXPECT_EQ(clientWorld.GetPlayerHandlerForTesting().players[2]->controllerType, PlayerControllerType::Remote);
+    EXPECT_EQ(hostWorld.GetPlayerHandlerForTesting().players.size(), 2u);
+    EXPECT_EQ(clientWorld.GetPlayerHandlerForTesting().players.size(), 2u);
 }

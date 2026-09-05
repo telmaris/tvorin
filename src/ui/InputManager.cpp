@@ -46,6 +46,16 @@ void InputManager::Poll()
     mouseX = static_cast<float>(GetMouseX());
     mouseY = static_cast<float>(GetMouseY());
 
+    if (!inputEnabled)
+    {
+        // Drain queued text/key events while a transition, popup or focus
+        // recovery frame suppresses input. They must not fire on the first
+        // enabled frame after the overlay disappears.
+        while (GetKeyPressed() != 0) {}
+        while (GetCharPressed() != 0) {}
+        return;
+    }
+
     PollKeyboardInput();
     PollMouseInput();
 }

@@ -7,6 +7,27 @@
 
 namespace
 {
+    void ApplyBorderlessMonitorWindow()
+    {
+        if (!IsWindowReady())
+            return;
+
+        const int monitor = GetCurrentMonitor();
+        const int monitorWidth = GetMonitorWidth(monitor);
+        const int monitorHeight = GetMonitorHeight(monitor);
+        const Vector2 monitorPosition = GetMonitorPosition(monitor);
+
+        // Maximized windows use the Windows work area and therefore leave the
+        // taskbar visible. A borderless window sized to the monitor bounds is
+        // the actual fullscreen-windowed presentation we want here.
+        ClearWindowState(FLAG_FULLSCREEN_MODE | FLAG_WINDOW_MAXIMIZED);
+        SetWindowState(FLAG_WINDOW_UNDECORATED | FLAG_BORDERLESS_WINDOWED_MODE |
+                       FLAG_WINDOW_ALWAYS_RUN);
+        SetWindowPosition(static_cast<int>(monitorPosition.x),
+                          static_cast<int>(monitorPosition.y));
+        SetWindowSize(monitorWidth, monitorHeight);
+    }
+
     float SmoothStep(float value)
     {
         value = std::clamp(value, 0.0f, 1.0f);
@@ -17,12 +38,15 @@ namespace
 // Initializes GameWindow::LaunchGame.
 void GameWindow::LaunchGame()
 {
-    SetConfigFlags(FLAG_WINDOW_RESIZABLE | FLAG_VSYNC_HINT);
+    // Keep presentation driven by the explicit frame cap in MainLoop. VSync
+    // adds a second limiter and makes frame pacing depend on the compositor.
+    SetConfigFlags(FLAG_WINDOW_RESIZABLE | FLAG_WINDOW_UNDECORATED |
+                   FLAG_BORDERLESS_WINDOWED_MODE | FLAG_WINDOW_ALWAYS_RUN |
+                   FLAG_WINDOW_HIDDEN);
     InitWindow(1920, 1080, "Tvorin");
-    int monitor = GetCurrentMonitor();
-    SetWindowSize(GetMonitorWidth(monitor), GetMonitorHeight(monitor));
-    SetWindowState(FLAG_BORDERLESS_WINDOWED_MODE);
+    ApplyBorderlessMonitorWindow();
     SetWindowMinSize(1280, 720);
+    Renderer::InitializeCustomCursor();
     // Pilot: use Departure Mono consistently for both shared UI roles. Keeping
     // both roles loaded preserves the existing title/body role switching while
     // making panels, title bars, buttons, tooltips and dense labels identical.
@@ -63,12 +87,11 @@ void GameWindow::LaunchGame()
     audio.RegisterSound("research",     "assets/sfx/research_ready.mp3");
     audio.RegisterSound("destroy",      "assets/sfx/destroy.wav");
     audio.RegisterSound("recruit",      "assets/sfx/recruit.wav");
-    audio.RegisterSound("march",        "assets/sfx/march.wav");
-    audio.RegisterSound("attack",       "assets/sfx/attack.wav");
 
     AddScene<StudioSplashScene>("StudioSplashScene");
     AddScene<MainMenuScene>("MainScene");
     AddScene<OptionsScene>("OptionsScene");
+    AddScene<LoadingScene>("LoadingScene");
     AddScene<GameScene>("GameScene");
     AddScene<TutorialScene>("TutorialScene");
     AddScene<NewGameScene>("NewGameScene");
@@ -84,8 +107,17 @@ void GameWindow::LaunchGame()
     transitionPhase = SceneTransitionPhase::FadeIn;
     ActivateScene("StudioSplashScene", "");
 
+    // Present one intentional black frame while the native window is still
+    // hidden. This prevents DWM from exposing the provisional 1920x1080
+    // window/background during scene and asset initialization.
+    BeginDrawing();
+    ClearBackground(BLACK);
+    EndDrawing();
+    ClearWindowState(FLAG_WINDOW_HIDDEN);
+
     MainLoop();
 
+    DiscardPreparedGameSession();
     ShutdownRenderers();
     // Destroy scene-owned widget handles while the native window is still
     // alive. This keeps move-only UI assets from attempting a late raylib
@@ -96,8 +128,10 @@ void GameWindow::LaunchGame()
     GuiPanel::UnloadResourceAtlas();
     UiTextFont::Unload();
     UiControlIcons::Unload();
+    Renderer::ShutdownCustomCursor();
     audio.Cleanup();
     CloseAudioDevice();
+    ShowCursor();
     CloseWindow();
 }
 
@@ -123,13 +157,19 @@ void GameWindow::HandleEvent(std::shared_ptr<Event> e)
     auto newGame = std::dynamic_pointer_cast<NewGameEvent>(e);
     if (newGame != nullptr)
     {
-        RequestSceneChange("GameScene", activeScene != nullptr ? activeScene->name : "", true);
+        RequestSceneChange("LoadingScene", activeScene != nullptr ? activeScene->name : "", true);
     }
 
     auto tutorialGame = std::dynamic_pointer_cast<TutorialGameEvent>(e);
     if (tutorialGame != nullptr)
     {
-        RequestSceneChange("TutorialScene", activeScene != nullptr ? activeScene->name : "", true);
+        RequestSceneChange("LoadingScene", activeScene != nullptr ? activeScene->name : "", true);
+    }
+
+    if (std::dynamic_pointer_cast<HostMultiplayerGameEvent>(e) != nullptr ||
+        std::dynamic_pointer_cast<JoinMultiplayerGameEvent>(e) != nullptr)
+    {
+        RequestSceneChange("LoadingScene", activeScene != nullptr ? activeScene->name : "", true);
     }
 
     auto ptr2 = std::dynamic_pointer_cast<ChangeSceneEvent>(e);
@@ -140,26 +180,94 @@ void GameWindow::HandleEvent(std::shared_ptr<Event> e)
 
     auto ptr3 = std::dynamic_pointer_cast<ToggleFullscreenEvent>(e);
     if (ptr3 != nullptr)
-    {
-        if (IsWindowState(FLAG_BORDERLESS_WINDOWED_MODE))
-            ClearWindowState(FLAG_BORDERLESS_WINDOWED_MODE);
-        else
-            SetWindowState(FLAG_BORDERLESS_WINDOWED_MODE);
-    }
+        ApplyBorderlessMonitorWindow();
 }
 
 // Initializes GameWindow::MainLoop.
 void GameWindow::MainLoop()
 {
     SetTargetFPS(150);
+    bool focusSuspended = false;
+    bool inputEnabledBeforeFocusLoss = true;
     while (isRunning)
     {
+        const bool windowFocused = IsWindowFocused();
+        if (!windowFocused && !focusSuspended)
+        {
+            focusSuspended = true;
+            inputEnabledBeforeFocusLoss = InputManager::IsInputEnabled();
+            InputManager::SetInputEnabled(false);
+            if (activeScene != nullptr)
+                activeScene->OnWindowFocusChanged(false);
+        }
+
+        const bool firstFrameAfterFocusReturn = windowFocused && focusSuspended;
+        if (firstFrameAfterFocusReturn)
+            focusSuspended = false;
         UpdateWindowSize();
+        const KeyBindingMap& bindings = GetDefaultKeyBindings();
+        const int captureKey = bindings.GetKeyForAction(GameAction::CaptureFinalFrame);
+        if (captureKey != 0 &&
+            (InputManager::IsKeyDown(KEY_LEFT_CONTROL) || InputManager::IsKeyDown(KEY_RIGHT_CONTROL)) &&
+            InputManager::IsKeyPressed(captureKey))
+            Renderer::RequestFinalFrameCapture();
         const float dt = GetFrameTime();
         UpdateSceneTransition(dt);
         audio.Update(dt);
         Update(dt);
+
+        // Keep local input suppressed through the first complete frame after
+        // focus returns so stale mouse/key edges cannot affect gameplay. The
+        // simulation and networking continue on every frame while unfocused.
+        if (firstFrameAfterFocusReturn)
+        {
+            InputManager::SetInputEnabled(inputEnabledBeforeFocusLoss);
+            if (activeScene != nullptr)
+                activeScene->OnWindowFocusChanged(true);
+        }
     }
+}
+
+bool GameWindow::IsSceneTransitionIdle() const
+{
+    return transitionPhase == SceneTransitionPhase::Idle;
+}
+
+void GameWindow::PublishPreparedGameSession(
+    std::unique_ptr<IGameSession> session,
+    std::string targetScene,
+    bool multiplayerClient,
+    bool usedFallback)
+{
+    DiscardPreparedGameSession();
+    preparedGameSession = std::move(session);
+    preparedGameTarget = std::move(targetScene);
+    preparedGameIsClient = multiplayerClient;
+    preparedGameUsedFallback = usedFallback;
+}
+
+std::unique_ptr<IGameSession> GameWindow::TakePreparedGameSession(
+    const std::string& targetScene,
+    bool& multiplayerClient,
+    bool& usedFallback)
+{
+    if (preparedGameSession == nullptr || preparedGameTarget != targetScene)
+        return nullptr;
+
+    multiplayerClient = preparedGameIsClient;
+    usedFallback = preparedGameUsedFallback;
+    preparedGameTarget.clear();
+    preparedGameIsClient = false;
+    preparedGameUsedFallback = false;
+    return std::move(preparedGameSession);
+}
+
+void GameWindow::DiscardPreparedGameSession()
+{
+    preparedGameSession.reset();
+    preparedGameTarget.clear();
+    preparedGameIsClient = false;
+    preparedGameUsedFallback = false;
 }
 
 void GameWindow::ActivateScene(const std::string& name, const std::string& previousSceneName)
@@ -260,7 +368,10 @@ void GameWindow::UpdateSceneTransition(float dt)
 // Advances UpdateWindowSize for one frame or simulation tick.
 void GameWindow::UpdateWindowSize()
 {
-    Vec2i currentSize{GetRenderWidth(), GetRenderHeight()};
+    // UI anchors and mouse coordinates are expressed in logical screen
+    // pixels. Framebuffer/render dimensions are telemetry only and must not
+    // leak into layout events on a scaled display.
+    Vec2i currentSize{GetScreenWidth(), GetScreenHeight()};
     if(currentSize != lastWindowSize)
     {
         auto e = std::make_shared<WindowSizeChangedEvent>();

@@ -127,7 +127,7 @@ void StockpilePanelWidget::Update(double dt)
                         " / " + std::to_string(totalCapacity),
                     Rectangle{bounds.x + PanelMargin, summaryY, bounds.width - PanelMargin * 2.0f, 24.0f},
                     20, UiTheme::Parchment);
-    UiText::DrawFit("Each warehouse keeps its own stock — this is the sum. Hover a resource to see where it sits.",
+    UiText::DrawFit("Each warehouse keeps its own stock - this is the sum. Hover a resource to see where it sits.",
                     Rectangle{bounds.x + PanelMargin, summaryY + 28.0f, bounds.width - PanelMargin * 2.0f, 20.0f},
                     16, UiTheme::ParchmentDim);
 

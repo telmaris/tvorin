@@ -1,13 +1,11 @@
 #include "scenes/Scenes.h"
+#include "scenes/MultiplayerLobbyProtocol.h"
 #include "scenes/SceneUtils.h"
 #include "core/Log.h"
 #include "multiplayer/TcpGameTransport.h"
 #include "ui/ControlIcons.h"
 
-#include <array>
 #include <fstream>
-#include <iomanip>
-#include <sstream>
 
 namespace
 {
@@ -17,13 +15,14 @@ namespace
         std::string sessionName{"lan_test"};
         std::string hostIp{"127.0.0.1"};
         unsigned short port{27015};
-        int aiOpponents{0};
         MapSizePreset sizePreset{MapSizePreset::S};
-        int difficulty{0};
         float resourceDensity{0.65f};
         float resourceFieldSize{0.45f};
         float resourceRichness{0.5f};
         bool debugMode{false};
+        int globalLayoutPreset{1};
+        int globalTypeWeightsPreset{0};
+        int globalValueScalesPreset{0};
     };
 
     unsigned short ParsePort(const std::string& text)
@@ -96,12 +95,8 @@ namespace
                 config.hostIp = value;
             else if (key == "port")
                 config.port = ParsePort(value);
-            else if (key == "ai_opponents")
-                config.aiOpponents = std::clamp(ParseIntOrDefault(value, 0), 0, 5);
             else if (key == "size")
                 config.sizePreset = static_cast<MapSizePreset>(std::clamp(ParseIntOrDefault(value, 0), 0, 3));
-            else if (key == "difficulty")
-                config.difficulty = std::clamp(ParseIntOrDefault(value, 0), 0, 3);
             else if (key == "resource_density")
                 config.resourceDensity = std::clamp(ParseFloatOrDefault(value, config.resourceDensity), 0.0f, 1.0f);
             else if (key == "resource_field_size")
@@ -110,6 +105,12 @@ namespace
                 config.resourceRichness = std::clamp(ParseFloatOrDefault(value, config.resourceRichness), 0.0f, 1.0f);
             else if (key == "debug_mode")
                 config.debugMode = ParseBoolOrDefault(value, false);
+            else if (key == "global_layout")
+                config.globalLayoutPreset = std::clamp(ParseIntOrDefault(value, 1), 0, 2);
+            else if (key == "global_type_weights")
+                config.globalTypeWeightsPreset = std::clamp(ParseIntOrDefault(value, 0), 0, 2);
+            else if (key == "global_value_scales")
+                config.globalValueScalesPreset = std::clamp(ParseIntOrDefault(value, 0), 0, 2);
         }
         return config;
     }
@@ -126,108 +127,37 @@ namespace
         file << "session=" << config.sessionName << '\n';
         file << "host_ip=" << config.hostIp << '\n';
         file << "port=" << config.port << '\n';
-        file << "ai_opponents=" << config.aiOpponents << '\n';
         file << "size=" << static_cast<int>(config.sizePreset) << '\n';
-        file << "difficulty=" << config.difficulty << '\n';
         file << "resource_density=" << config.resourceDensity << '\n';
         file << "resource_field_size=" << config.resourceFieldSize << '\n';
         file << "resource_richness=" << config.resourceRichness << '\n';
         file << "debug_mode=" << (config.debugMode ? 1 : 0) << '\n';
+        file << "global_layout=" << config.globalLayoutPreset << '\n';
+        file << "global_type_weights=" << config.globalTypeWeightsPreset << '\n';
+        file << "global_value_scales=" << config.globalValueScalesPreset << '\n';
     }
 
-    MapParameters MakeDefaultMultiplayerParams(int aiOpponentCount = 0, MapSizePreset sizePreset = MapSizePreset::S, int difficulty = 0,
-        float resourceDensity = 0.65f, float resourceFieldSize = 0.45f, float resourceRichnessSlider = 0.5f, bool debugMode = false)
+    CampaignGenerationParameters MakeDefaultMultiplayerParams(MapSizePreset sizePreset = MapSizePreset::S,
+        float resourceDensity = 0.65f, float resourceFieldSize = 0.45f,
+        float resourceRichnessSlider = 0.5f, bool debugMode = false)
     {
-        MapParameters params;
-        params.sizePreset = sizePreset;
-        params.sizeX = MapGenerator::SizeFromPreset(params.sizePreset);
-        params.sizeY = params.sizeX;
-        params.seed = 27015;
-        params.resourceDensity = resourceDensity;
-        params.resourceFieldSize = resourceFieldSize;
-        params.resourceRichness = SliderToInt(resourceRichnessSlider, 40, 160);
-        params.aiOpponentCount = std::clamp(aiOpponentCount, 0, 5);
-        params.aiDifficulty = std::clamp(difficulty, 0, 3);
-        params.debugMode = debugMode;
-        return params;
+        MapParameters local;
+        local.sizePreset = sizePreset;
+        local.sizeX = MapGenerator::SizeFromPreset(local.sizePreset);
+        local.sizeY = local.sizeX;
+        local.seed = 27015;
+        local.resourceDensity = resourceDensity;
+        local.resourceFieldSize = resourceFieldSize;
+        local.resourceRichness = SliderToInt(resourceRichnessSlider, 40, 160);
+        local.aiOpponentCount = 0;
+        local.aiDifficulty = 0;
+        local.debugMode = debugMode;
+        if (local.debugMode)
+            ApplyDebugLocalMapPreset(local);
+        CampaignGenerationParameters campaign{std::move(local)};
+        campaign.globalMap.seed = campaign.localMap.seed;
+        return campaign;
     }
-
-    std::string SerializeMultiplayerStart(const std::string& sessionName, const MapParameters& params)
-    {
-        std::ostringstream out;
-        out << "START " << std::quoted(sessionName) << ' '
-            << params.aiOpponentCount << ' '
-            << static_cast<int>(params.sizePreset) << ' '
-            << params.aiDifficulty << ' '
-            << params.resourceDensity << ' '
-            << params.resourceFieldSize << ' '
-            << params.resourceRichness << ' '
-            << (params.debugMode ? 1 : 0);
-        return out.str();
-    }
-
-    bool TryDeserializeMultiplayerStart(const std::string& payload, std::string& sessionName, MapParameters& params)
-    {
-        std::istringstream in(payload);
-        int aiCount = 0;
-        int size = 0;
-        int difficulty = 0;
-        int richness = 120;
-        int debug = 0;
-        float density = 0.65f;
-        float fieldSize = 0.45f;
-        if (!(in >> std::quoted(sessionName) >> aiCount >> size >> difficulty >> density >> fieldSize >> richness >> debug))
-            return false;
-
-        params = MakeDefaultMultiplayerParams(std::clamp(aiCount, 0, 5),
-            static_cast<MapSizePreset>(std::clamp(size, 0, 3)),
-            std::clamp(difficulty, 0, 3),
-            std::clamp(density, 0.0f, 1.0f),
-            std::clamp(fieldSize, 0.0f, 1.0f),
-            std::clamp((richness - 40) / 120.0f, 0.0f, 1.0f),
-            debug != 0);
-        return true;
-    }
-
-    std::string SerializeMultiplayerLobbyState(const std::string& sessionName, const std::string& hostName, const std::string& remoteName, const MapParameters& params)
-    {
-        std::ostringstream out;
-        out << "STATE " << std::quoted(sessionName) << ' '
-            << std::quoted(hostName) << ' '
-            << std::quoted(remoteName) << ' '
-            << params.aiOpponentCount << ' '
-            << static_cast<int>(params.sizePreset) << ' '
-            << params.aiDifficulty << ' '
-            << params.resourceDensity << ' '
-            << params.resourceFieldSize << ' '
-            << params.resourceRichness << ' '
-            << (params.debugMode ? 1 : 0);
-        return out.str();
-    }
-
-    bool TryDeserializeMultiplayerLobbyState(const std::string& payload, std::string& sessionName, std::string& hostName, std::string& remoteName, MapParameters& params)
-    {
-        std::istringstream in(payload);
-        int aiCount = 0;
-        int size = 0;
-        int difficulty = 0;
-        int richness = 120;
-        int debug = 0;
-        float density = 0.65f;
-        float fieldSize = 0.45f;
-        if (!(in >> std::quoted(sessionName) >> std::quoted(hostName) >> std::quoted(remoteName) >> aiCount >> size >> difficulty >> density >> fieldSize >> richness >> debug))
-            return false;
-
-        params = MakeDefaultMultiplayerParams(std::clamp(aiCount, 0, 5),
-            static_cast<MapSizePreset>(std::clamp(size, 0, 3)),
-            std::clamp(difficulty, 0, 3),
-            std::clamp(density, 0.0f, 1.0f),
-            std::clamp(fieldSize, 0.0f, 1.0f),
-            std::clamp((richness - 40) / 120.0f, 0.0f, 1.0f),
-            debug != 0);
-        return true;
-    }
-
     Color LocalPlayerChatColor()
     {
         return Color{66, 154, 255, 255};
@@ -238,17 +168,6 @@ namespace
         return Color{220, 72, 72, 255};
     }
 
-    Color AiPlayerColor(int index)
-    {
-        static const std::array<Color, 5> colors{
-            Color{220, 72, 72, 255},
-            Color{230, 151, 62, 255},
-            Color{176, 86, 216, 255},
-            Color{73, 181, 126, 255},
-            Color{217, 210, 82, 255}
-        };
-        return colors[static_cast<size_t>(std::clamp(index, 0, 4))];
-    }
 }
 
 MultiplayerScene::MultiplayerScene()
@@ -292,11 +211,10 @@ MultiplayerScene::MultiplayerScene()
     port.ChangeSizeAnchor(Vec2f{0.18f, 0.07f});
     port.ChangePositionAnchor(Vec2f{0.41f, 0.46f});
 
-    aiOpponents.ChangePositionAnchor(Vec2f{0.34f, 0.56f});
-    aiOpponents.ChangeSizeAnchor(Vec2f{0.32f, 0.045f});
-    aiOpponents.currentValue = std::clamp(config.aiOpponents / 5.0f, 0.0f, 1.0f);
     lobbySizePreset = config.sizePreset;
-    lobbyDifficulty = config.difficulty;
+    lobbyGlobalLayoutPreset = config.globalLayoutPreset;
+    lobbyGlobalTypeWeightsPreset = config.globalTypeWeightsPreset;
+    lobbyGlobalValueScalesPreset = config.globalValueScalesPreset;
 
     hostButton.ChangeText("Host");
     hostButton.ChangeSizeAnchor(Vec2f{0.24f, 0.08f});
@@ -327,21 +245,27 @@ MultiplayerScene::MultiplayerScene()
     multiplayerSizeButton.ChangePositionAnchor(Vec2f{0.30f, 0.22f});
     multiplayerSizeButton.func = std::bind(&MultiplayerScene::OnMultiplayerSizePressed, this);
 
-    multiplayerDifficultyButton.ChangeSizeAnchor(Vec2f{0.40f, 0.055f});
-    multiplayerDifficultyButton.ChangePositionAnchor(Vec2f{0.30f, 0.29f});
-    multiplayerDifficultyButton.func = std::bind(&MultiplayerScene::OnMultiplayerDifficultyPressed, this);
+    multiplayerGlobalLayoutButton.ChangeSizeAnchor(Vec2f{0.40f, 0.045f});
+    multiplayerGlobalLayoutButton.ChangePositionAnchor(Vec2f{0.08f, 0.65f});
+    multiplayerGlobalLayoutButton.func = std::bind(&MultiplayerScene::OnMultiplayerGlobalLayoutPressed, this);
+    multiplayerGlobalTypeWeightsButton.ChangeSizeAnchor(Vec2f{0.40f, 0.045f});
+    multiplayerGlobalTypeWeightsButton.ChangePositionAnchor(Vec2f{0.52f, 0.65f});
+    multiplayerGlobalTypeWeightsButton.func = std::bind(&MultiplayerScene::OnMultiplayerGlobalTypeWeightsPressed, this);
+    multiplayerGlobalValueScalesButton.ChangeSizeAnchor(Vec2f{0.84f, 0.045f});
+    multiplayerGlobalValueScalesButton.ChangePositionAnchor(Vec2f{0.08f, 0.71f});
+    multiplayerGlobalValueScalesButton.func = std::bind(&MultiplayerScene::OnMultiplayerGlobalValueScalesPressed, this);
 
-    multiplayerResourceDensity.ChangePositionAnchor(Vec2f{0.30f, 0.38f});
+    multiplayerResourceDensity.ChangePositionAnchor(Vec2f{0.30f, 0.32f});
     multiplayerResourceDensity.ChangeSizeAnchor(Vec2f{0.40f, 0.045f});
     multiplayerResourceDensity.currentValue = config.resourceDensity;
-    multiplayerResourceFieldSize.ChangePositionAnchor(Vec2f{0.30f, 0.47f});
+    multiplayerResourceFieldSize.ChangePositionAnchor(Vec2f{0.30f, 0.41f});
     multiplayerResourceFieldSize.ChangeSizeAnchor(Vec2f{0.40f, 0.045f});
     multiplayerResourceFieldSize.currentValue = config.resourceFieldSize;
-    multiplayerResourceRichness.ChangePositionAnchor(Vec2f{0.30f, 0.56f});
+    multiplayerResourceRichness.ChangePositionAnchor(Vec2f{0.30f, 0.50f});
     multiplayerResourceRichness.ChangeSizeAnchor(Vec2f{0.40f, 0.045f});
     multiplayerResourceRichness.currentValue = config.resourceRichness;
     multiplayerDebugMode.ChangeText("Debug mode");
-    multiplayerDebugMode.ChangePositionAnchor(Vec2f{0.30f, 0.73f});
+    multiplayerDebugMode.ChangePositionAnchor(Vec2f{0.30f, 0.59f});
     multiplayerDebugMode.ChangeSizeAnchor(Vec2f{0.20f, 0.045f});
     multiplayerDebugMode.currentState = config.debugMode;
 
@@ -364,14 +288,15 @@ MultiplayerScene::MultiplayerScene()
     address.UpdateSize(size);
     portLabel.UpdateSize(size);
     port.UpdateSize(size);
-    aiOpponents.UpdateSize(size);
     hostButton.UpdateSize(size);
     joinButton.UpdateSize(size);
     startButton.UpdateSize(size);
     gameSettingsButton.UpdateSize(size);
     closeSettingsButton.UpdateSize(size);
     multiplayerSizeButton.UpdateSize(size);
-    multiplayerDifficultyButton.UpdateSize(size);
+    multiplayerGlobalLayoutButton.UpdateSize(size);
+    multiplayerGlobalTypeWeightsButton.UpdateSize(size);
+    multiplayerGlobalValueScalesButton.UpdateSize(size);
     multiplayerResourceDensity.UpdateSize(size);
     multiplayerResourceFieldSize.UpdateSize(size);
     multiplayerResourceRichness.UpdateSize(size);
@@ -395,17 +320,15 @@ void MultiplayerScene::Update(double dt)
     {
         if (showGameSettings && isLobbyHost)
         {
-            aiOpponents.ChangePositionAnchor(Vec2f{0.30f, 0.65f});
-            aiOpponents.ChangeSizeAnchor(Vec2f{0.40f, 0.045f});
-            aiOpponents.UpdateSize({GetScreenWidth(), GetScreenHeight()});
             widgets = {
                 &multiplayerSizeButton,
-                &multiplayerDifficultyButton,
                 &multiplayerResourceDensity,
                 &multiplayerResourceFieldSize,
                 &multiplayerResourceRichness,
-                &aiOpponents,
                 &multiplayerDebugMode,
+                &multiplayerGlobalLayoutButton,
+                &multiplayerGlobalTypeWeightsButton,
+                &multiplayerGlobalValueScalesButton,
                 &closeSettingsButton,
                 &backButton};
         }
@@ -483,14 +406,15 @@ void MultiplayerScene::HandleEvent(std::shared_ptr<Event> e)
         address.UpdateSize(ptr->windowSize);
         portLabel.UpdateSize(ptr->windowSize);
         port.UpdateSize(ptr->windowSize);
-        aiOpponents.UpdateSize(ptr->windowSize);
         hostButton.UpdateSize(ptr->windowSize);
         joinButton.UpdateSize(ptr->windowSize);
         startButton.UpdateSize(ptr->windowSize);
         gameSettingsButton.UpdateSize(ptr->windowSize);
         closeSettingsButton.UpdateSize(ptr->windowSize);
         multiplayerSizeButton.UpdateSize(ptr->windowSize);
-        multiplayerDifficultyButton.UpdateSize(ptr->windowSize);
+        multiplayerGlobalLayoutButton.UpdateSize(ptr->windowSize);
+        multiplayerGlobalTypeWeightsButton.UpdateSize(ptr->windowSize);
+        multiplayerGlobalValueScalesButton.UpdateSize(ptr->windowSize);
         multiplayerResourceDensity.UpdateSize(ptr->windowSize);
         multiplayerResourceFieldSize.UpdateSize(ptr->windowSize);
         multiplayerResourceRichness.UpdateSize(ptr->windowSize);
@@ -537,12 +461,10 @@ void MultiplayerScene::OnHostPressed()
     lobbyNickname = SanitizeSaveName(nickname.GetText());
     lobbySessionName = SanitizeSaveName(sessionName.GetText());
     lobbyPort = ParsePort(port.GetText());
-    lobbyAiOpponentCount = SliderToInt(aiOpponents.GetValue(), 0, 5);
     lobbyTransport = TcpGameTransport::CreateHost(lobbyPort);
     isLobbyHost = true;
     lobbyActive = true;
     AddLobbyLine(lobbyNickname + " is hosting '" + lobbySessionName + "' on port " + std::to_string(lobbyPort));
-    AddLobbyLine("AI players: " + std::to_string(lobbyAiOpponentCount));
     AddLobbyLine("Waiting for players...");
     lastBroadcastLobbyState.clear();
     Log::Msg("[Lobby]", "Host lobby opened: ", lobbySessionName, " port=", lobbyPort);
@@ -579,8 +501,8 @@ void MultiplayerScene::OnStartPressed()
 
     SaveMultiplayerSettings();
     MaybeBroadcastSettingsChange();
-    MapParameters params = BuildLobbyMapParameters();
-    lobbyTransport->SendLobbyMessage(SerializeMultiplayerStart(lobbySessionName, params));
+    CampaignGenerationParameters params = BuildLobbyMapParameters();
+    lobbyTransport->SendLobbyMessage(MultiplayerLobbyProtocol::SerializeStart(lobbySessionName, params));
     AddLobbyLine("Starting game...");
     Log::Msg("[Lobby]", "Host starting multiplayer game: ", lobbySessionName);
 
@@ -618,12 +540,31 @@ void MultiplayerScene::OnMultiplayerSizePressed()
     MaybeBroadcastSettingsChange("Map size set to " + MapSizeName(lobbySizePreset) + ".");
 }
 
-// Handles the UI action represented by OnMultiplayerDifficultyPressed.
-void MultiplayerScene::OnMultiplayerDifficultyPressed()
+void MultiplayerScene::OnMultiplayerGlobalLayoutPressed()
 {
-    lobbyDifficulty = (lobbyDifficulty + 1) % 4;
+    if (!isLobbyHost)
+        return;
+    lobbyGlobalLayoutPreset = (lobbyGlobalLayoutPreset + 1) % 3;
     RefreshMultiplayerLabels();
-    MaybeBroadcastSettingsChange("Difficulty set to " + DifficultyName(lobbyDifficulty) + ".");
+    MaybeBroadcastSettingsChange("Global campaign layout updated.");
+}
+
+void MultiplayerScene::OnMultiplayerGlobalTypeWeightsPressed()
+{
+    if (!isLobbyHost)
+        return;
+    lobbyGlobalTypeWeightsPreset = (lobbyGlobalTypeWeightsPreset + 1) % 3;
+    RefreshMultiplayerLabels();
+    MaybeBroadcastSettingsChange("Global province type weights updated.");
+}
+
+void MultiplayerScene::OnMultiplayerGlobalValueScalesPressed()
+{
+    if (!isLobbyHost)
+        return;
+    lobbyGlobalValueScalesPreset = (lobbyGlobalValueScalesPreset + 1) % 3;
+    RefreshMultiplayerLabels();
+    MaybeBroadcastSettingsChange("Global province value scales updated.");
 }
 
 // Handles the UI action represented by OnSendChatPressed.
@@ -757,13 +698,12 @@ void MultiplayerScene::UpdateLobbyMessages(double dt)
         }
         else if (payload.rfind("START ", 0) == 0)
         {
-            MapParameters params;
-            if (!TryDeserializeMultiplayerStart(payload.substr(6), lobbySessionName, params))
+            CampaignGenerationParameters params;
+            if (!MultiplayerLobbyProtocol::TryDeserializeStart(payload.substr(6), lobbySessionName, params))
             {
                 AddLobbyLine("Failed to parse game settings from host.", Color{240, 120, 120, 255});
                 continue;
             }
-            lobbyAiOpponentCount = params.aiOpponentCount;
             AddLobbyLine("Host started the game.");
             Log::Msg("[Lobby]", "Client received start for session ", lobbySessionName);
 
@@ -791,12 +731,28 @@ void MultiplayerScene::UpdateLobbyMessages(double dt)
 // Refreshes dynamic labels in the multiplayer setup view.
 void MultiplayerScene::RefreshMultiplayerLabels()
 {
-    aiOpponents.ChangeText("AI players " + std::to_string(SliderToInt(aiOpponents.GetValue(), 0, 5)));
     multiplayerSizeButton.ChangeText("Map size " + MapSizeName(lobbySizePreset));
-    multiplayerDifficultyButton.ChangeText("Difficulty " + DifficultyName(lobbyDifficulty));
     multiplayerResourceDensity.ChangeText("Resource density " + std::to_string(SliderToInt(multiplayerResourceDensity.GetValue(), 50, 225)) + "%");
     multiplayerResourceFieldSize.ChangeText("Resource field size " + std::to_string(SliderToInt(multiplayerResourceFieldSize.GetValue(), 50, 225)) + "%");
     multiplayerResourceRichness.ChangeText("Resource richness " + std::to_string(SliderToInt(multiplayerResourceRichness.GetValue(), 40, 160)));
+    static const std::array<const char*, 3> layouts{
+        "Global layout: 16 provinces / 105 spacing",
+        "Global layout: 32 provinces / 120 spacing",
+        "Global layout: 500 provinces / 145 spacing"};
+    static const std::array<const char*, 3> weights{
+        "Types: frontier 55 / city 20 / bandit 15 / event 10",
+        "Types: frontier 40 / city 30 / bandit 20 / event 10",
+        "Types: frontier 65 / city 15 / bandit 10 / event 10"};
+    static const std::array<const char*, 3> values{
+        "Values: standard resources / city / bandit",
+        "Values: rich resources / wealthy city / strong bandit",
+        "Values: sparse resources / modest city / weak bandit"};
+    multiplayerGlobalLayoutButton.ChangeText(
+        layouts[static_cast<std::size_t>(lobbyGlobalLayoutPreset)]);
+    multiplayerGlobalTypeWeightsButton.ChangeText(
+        weights[static_cast<std::size_t>(lobbyGlobalTypeWeightsPreset)]);
+    multiplayerGlobalValueScalesButton.ChangeText(
+        values[static_cast<std::size_t>(lobbyGlobalValueScalesPreset)]);
 }
 
 // Stores the multiplayer setup for future sessions.
@@ -807,27 +763,87 @@ void MultiplayerScene::SaveMultiplayerSettings() const
     config.sessionName = SanitizeSaveName(sessionName.GetText());
     config.hostIp = address.GetText();
     config.port = ParsePort(port.GetText());
-    config.aiOpponents = SliderToInt(aiOpponents.GetValue(), 0, 5);
     config.sizePreset = lobbySizePreset;
-    config.difficulty = lobbyDifficulty;
     config.resourceDensity = multiplayerResourceDensity.GetValue();
     config.resourceFieldSize = multiplayerResourceFieldSize.GetValue();
     config.resourceRichness = multiplayerResourceRichness.GetValue();
     config.debugMode = multiplayerDebugMode.currentState;
+    config.globalLayoutPreset = lobbyGlobalLayoutPreset;
+    config.globalTypeWeightsPreset = lobbyGlobalTypeWeightsPreset;
+    config.globalValueScalesPreset = lobbyGlobalValueScalesPreset;
     SaveMultiplayerConfig(config);
 }
 
 // Builds the authoritative hosted game generation parameters.
-MapParameters MultiplayerScene::BuildLobbyMapParameters() const
+CampaignGenerationParameters MultiplayerScene::BuildLobbyMapParameters() const
 {
-    return MakeDefaultMultiplayerParams(
-        SliderToInt(aiOpponents.GetValue(), 0, 5),
+    CampaignGenerationParameters campaign = MakeDefaultMultiplayerParams(
         lobbySizePreset,
-        lobbyDifficulty,
         multiplayerResourceDensity.GetValue(),
         multiplayerResourceFieldSize.GetValue(),
         multiplayerResourceRichness.GetValue(),
         multiplayerDebugMode.currentState);
+    switch (lobbyGlobalLayoutPreset)
+    {
+        case 0:
+            campaign.globalMap.provinceCount = 16;
+            campaign.globalMap.extraEdgeCount = 7;
+            campaign.globalMap.layoutRadius = 800;
+            campaign.globalMap.minimumLayoutSpacing = 105;
+            break;
+        case 1:
+            campaign.globalMap.provinceCount = 32;
+            campaign.globalMap.extraEdgeCount = 12;
+            campaign.globalMap.layoutRadius = 1000;
+            campaign.globalMap.minimumLayoutSpacing = 120;
+            break;
+        case 2:
+            campaign.globalMap.provinceCount = 500;
+            campaign.globalMap.extraEdgeCount = 188;
+            campaign.globalMap.layoutRadius = 4472;
+            campaign.globalMap.minimumLayoutSpacing = 145;
+            break;
+    }
+    switch (lobbyGlobalTypeWeightsPreset)
+    {
+        case 0:
+            campaign.globalMap.buildableWeight = 55;
+            campaign.globalMap.neutralCityWeight = 20;
+            campaign.globalMap.banditCampWeight = 15;
+            campaign.globalMap.eventSiteWeight = 10;
+            break;
+        case 1:
+            campaign.globalMap.buildableWeight = 40;
+            campaign.globalMap.neutralCityWeight = 30;
+            campaign.globalMap.banditCampWeight = 20;
+            campaign.globalMap.eventSiteWeight = 10;
+            break;
+        case 2:
+            campaign.globalMap.buildableWeight = 65;
+            campaign.globalMap.neutralCityWeight = 15;
+            campaign.globalMap.banditCampWeight = 10;
+            campaign.globalMap.eventSiteWeight = 10;
+            break;
+    }
+    switch (lobbyGlobalValueScalesPreset)
+    {
+        case 0:
+            campaign.globalMap.buildableWealthScale = 1.0;
+            campaign.globalMap.cityWealthScale = 1.0;
+            campaign.globalMap.banditStrengthScale = 1.0;
+            break;
+        case 1:
+            campaign.globalMap.buildableWealthScale = 1.35;
+            campaign.globalMap.cityWealthScale = 1.35;
+            campaign.globalMap.banditStrengthScale = 1.25;
+            break;
+        case 2:
+            campaign.globalMap.buildableWealthScale = 0.80;
+            campaign.globalMap.cityWealthScale = 0.85;
+            campaign.globalMap.banditStrengthScale = 0.75;
+            break;
+    }
+    return campaign;
 }
 
 void MultiplayerScene::BroadcastLobbyState(const std::string& infoMessage)
@@ -835,9 +851,8 @@ void MultiplayerScene::BroadcastLobbyState(const std::string& infoMessage)
     if (!lobbyActive || !isLobbyHost || lobbyTransport == nullptr)
         return;
 
-    lobbyAiOpponentCount = SliderToInt(aiOpponents.GetValue(), 0, 5);
-    MapParameters params = BuildLobbyMapParameters();
-    std::string state = SerializeMultiplayerLobbyState(lobbySessionName, lobbyNickname, remoteLobbyNickname, params);
+    CampaignGenerationParameters params = BuildLobbyMapParameters();
+    std::string state = MultiplayerLobbyProtocol::SerializeState(lobbySessionName, lobbyNickname, remoteLobbyNickname, params);
     lobbyTransport->SendLobbyMessage(state);
     lastBroadcastLobbyState = state;
     if (!infoMessage.empty())
@@ -855,20 +870,37 @@ bool MultiplayerScene::ApplyLobbyState(const std::string& payload)
     std::string session;
     std::string hostName;
     std::string remoteName;
-    MapParameters params;
-    if (!TryDeserializeMultiplayerLobbyState(payload, session, hostName, remoteName, params))
+    CampaignGenerationParameters params;
+    if (!MultiplayerLobbyProtocol::TryDeserializeState(payload, session, hostName, remoteName, params))
         return false;
 
     lobbySessionName = session;
     remoteLobbyNickname = hostName.empty() ? "Host" : hostName;
     hasRemoteLobbyPlayer = true;
-    lobbyAiOpponentCount = params.aiOpponentCount;
-    lobbySizePreset = params.sizePreset;
-    lobbyDifficulty = params.aiDifficulty;
-    multiplayerResourceDensity.currentValue = params.resourceDensity;
-    multiplayerResourceFieldSize.currentValue = params.resourceFieldSize;
-    multiplayerResourceRichness.currentValue = std::clamp((params.resourceRichness - 40) / 120.0f, 0.0f, 1.0f);
-    multiplayerDebugMode.currentState = params.debugMode;
+    lobbySizePreset = params.localMap.sizePreset;
+    const auto& global = params.globalMap;
+    if (global.provinceCount <= 16)
+        lobbyGlobalLayoutPreset = 0;
+    else if (global.provinceCount >= 266)
+        lobbyGlobalLayoutPreset = 2;
+    else
+        lobbyGlobalLayoutPreset = 1;
+    if (global.neutralCityWeight >= 25)
+        lobbyGlobalTypeWeightsPreset = 1;
+    else if (global.buildableWeight >= 60)
+        lobbyGlobalTypeWeightsPreset = 2;
+    else
+        lobbyGlobalTypeWeightsPreset = 0;
+    if (global.buildableWealthScale > 1.1)
+        lobbyGlobalValueScalesPreset = 1;
+    else if (global.buildableWealthScale < 0.95)
+        lobbyGlobalValueScalesPreset = 2;
+    else
+        lobbyGlobalValueScalesPreset = 0;
+    multiplayerResourceDensity.currentValue = params.localMap.resourceDensity;
+    multiplayerResourceFieldSize.currentValue = params.localMap.resourceFieldSize;
+    multiplayerResourceRichness.currentValue = std::clamp((params.localMap.resourceRichness - 40) / 120.0f, 0.0f, 1.0f);
+    multiplayerDebugMode.currentState = params.localMap.debugMode;
     RefreshMultiplayerLabels();
     return true;
 }
@@ -878,9 +910,8 @@ void MultiplayerScene::MaybeBroadcastSettingsChange(const std::string& infoMessa
     if (!lobbyActive || !isLobbyHost || lobbyTransport == nullptr)
         return;
 
-    lobbyAiOpponentCount = SliderToInt(aiOpponents.GetValue(), 0, 5);
-    MapParameters params = BuildLobbyMapParameters();
-    std::string state = SerializeMultiplayerLobbyState(lobbySessionName, lobbyNickname, remoteLobbyNickname, params);
+    CampaignGenerationParameters params = BuildLobbyMapParameters();
+    std::string state = MultiplayerLobbyProtocol::SerializeState(lobbySessionName, lobbyNickname, remoteLobbyNickname, params);
     if (state == lastBroadcastLobbyState)
         return;
 
@@ -1026,10 +1057,6 @@ void MultiplayerScene::DrawLobbyPlayerPanels() const
     if (hasRemoteLobbyPlayer || !isLobbyHost)
         drawCard(1, hasRemoteLobbyPlayer ? remoteLobbyNickname : "Host", isLobbyHost ? "Client" : "Host", RemotePlayerChatColor());
 
-    int aiCount = isLobbyHost ? SliderToInt(aiOpponents.GetValue(), 0, 5) : lobbyAiOpponentCount;
-    int startIndex = (hasRemoteLobbyPlayer || !isLobbyHost) ? 2 : 1;
-    for (int i = 0; i < aiCount && startIndex + i < 5; i++)
-        drawCard(startIndex + i, "AI Opponent " + std::to_string(i + 1), "AI", AiPlayerColor(i));
 }
 
 // Draws the hosted game settings panel behind controls.

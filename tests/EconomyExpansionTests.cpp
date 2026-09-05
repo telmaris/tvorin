@@ -154,7 +154,7 @@ TEST(EconomyExpansionTests, CityTierAndLocalSupplyBuffersSurviveSaveLoad)
     params.sizePreset = MapSizePreset::S;
     params.aiOpponentCount = 0;
     params.seed = 1701;
-    world.InitWorld("settlement-save-test", nullptr, nullptr, params);
+    world.InitWorld("settlement-save-test", nullptr, params);
 
     Player* player = world.GetPlayerHandler().players.at(0).get();
     ASSERT_NE(player, nullptr);
@@ -182,7 +182,7 @@ TEST(EconomyExpansionTests, CityTierAndLocalSupplyBuffersSurviveSaveLoad)
     ASSERT_TRUE(world.SaveToFile(path));
 
     GameWorld loaded;
-    ASSERT_TRUE(loaded.LoadFromFile(path, nullptr, nullptr));
+    ASSERT_TRUE(loaded.LoadFromFile(path, nullptr));
     std::filesystem::remove(path);
 
     Player* loadedPlayer = loaded.GetPlayerHandler().players.at(0).get();
@@ -241,7 +241,7 @@ TEST(EconomyExpansionTests, NewRosterCoversRangedCavalryCounterAndSiegeRoles)
                            }),
               heavyCavalry->cost.end());
     EXPECT_GT(spearman->antiCavalryMultiplier, 1.0);
-    EXPECT_GT(catapult->siegeAttack, catapult->roadAttack);
+    EXPECT_GT(catapult->siegePower, catapult->fieldAttack);
     EXPECT_GT(catapult->areaTargets, 1);
 }
 

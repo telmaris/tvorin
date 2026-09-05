@@ -76,25 +76,6 @@ TEST(BuildingPlacementTests, FootprintBlockedByOccupancy)
     EXPECT_FALSE(map.CanBuildFootprint({2, 2}, {2, 2}, &player));
 }
 
-// TD(etap-1): territory ownership no longer gates placement — replaced by the
-// enemy-proximity rule (reguła bliskości, radius = 3 tiles).
-TEST(BuildingPlacementTests, EnemyProximityBlocksPlacementWithinRadius)
-{
-    TileMap map;
-    Player player{0, map};
-    Player enemy{1, map};
-    FillOwnedGrassMap(map, nullptr, 20, 20);
-
-    int enemyTileId = map.GetIdFromCoords({10, 10});
-    map.tilemap[enemyTileId].building = std::make_unique<Woodcutter>(1);
-    map.tilemap[enemyTileId].building->owner = &enemy;
-
-    // Exactly at the 3-tile radius boundary: still blocked.
-    EXPECT_FALSE(map.CanBuildFootprint({7, 10}, {1, 1}, &player));
-    // One tile further out: outside the radius, no longer blocked.
-    EXPECT_TRUE(map.CanBuildFootprint({6, 10}, {1, 1}, &player));
-}
-
 TEST(BuildingPlacementTests, OwnStructuresNeverBlockPlacement)
 {
     TileMap map;
@@ -107,25 +88,6 @@ TEST(BuildingPlacementTests, OwnStructuresNeverBlockPlacement)
 
     // Directly adjacent to a friendly structure — always fine, regardless of radius.
     EXPECT_TRUE(map.CanBuildFootprint({9, 10}, {1, 1}, &player));
-}
-
-TEST(BuildingPlacementTests, DefenseTowerIsExemptFromHeadquartersClearance)
-{
-    TileMap map;
-    Player player{0, map};
-    FillOwnedGrassMap(map, &player, 24, 24);
-
-    Building* headquarters = map.PlaceLoadedBuilding(
-        map.GetIdFromCoords({10, 10}), &player, std::make_unique<Headquarters>(1));
-    ASSERT_NE(headquarters, nullptr);
-
-    const Vec2i closeAnchor{5, 10};
-    EXPECT_TRUE(map.CanPlaceBuilding(
-        BuildingType::DefenseTower, closeAnchor,
-        GetBuildingDefinition(BuildingType::DefenseTower).footprint, &player));
-    EXPECT_FALSE(map.CanPlaceBuilding(
-        BuildingType::StorageBuilding, closeAnchor,
-        GetBuildingDefinition(BuildingType::StorageBuilding).footprint, &player));
 }
 
 TEST(BuildingPlacementTests, ResourceProducerRequiresMatchingTerrainAndRichness)

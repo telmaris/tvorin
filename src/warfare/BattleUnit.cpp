@@ -13,16 +13,16 @@ double BattleUnit::GetEffectiveMaxHp(const Player& owner) const
     return def != nullptr ? owner.ModifyBalanceForUnit(BalanceStat::UnitHp, def->maxHp, unitDefId) : 0.0;
 }
 
-double BattleUnit::GetEffectiveRoadAttack(const Player& owner) const
+double BattleUnit::GetEffectiveFieldAttack(const Player& owner) const
 {
     const UnitDefinition* def = FindUnitDefinition(unitDefId);
-    return def != nullptr ? owner.ModifyBalanceForUnit(BalanceStat::UnitRoadAttack, def->roadAttack, unitDefId) : 0.0;
+    return def != nullptr ? owner.ModifyBalanceForUnit(BalanceStat::UnitFieldAttack, def->fieldAttack, unitDefId) : 0.0;
 }
 
-double BattleUnit::GetEffectiveSiegeAttack(const Player& owner) const
+double BattleUnit::GetEffectiveSiegePower(const Player& owner) const
 {
     const UnitDefinition* def = FindUnitDefinition(unitDefId);
-    return def != nullptr ? owner.ModifyBalanceForUnit(BalanceStat::UnitSiegeAttack, def->siegeAttack, unitDefId) : 0.0;
+    return def != nullptr ? owner.ModifyBalanceForUnit(BalanceStat::UnitSiegePower, def->siegePower, unitDefId) : 0.0;
 }
 
 double BattleUnit::GetEffectiveArmor(const Player& owner) const

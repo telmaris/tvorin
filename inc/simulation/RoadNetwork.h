@@ -5,15 +5,34 @@
 #include "simulation/ResourceShipment.h"
 #include "simulation/ShipmentRenderState.h"
 
+#include <cstdint>
 #include <deque>
+#include <map>
+#include <tuple>
+#include <vector>
 
 class TileMap;
+
+struct RoadTraversalCostConfig
+{
+    double instantaneousWeight{0.35};
+    double emaWeight{0.65};
+    double quadraticPenalty{1.5};
+    double quarticPenalty{8.0};
+    double matchingPriorityFactor{0.85};
+    double otherPriorityFactor{1.05};
+    double minimumCostSeconds{0.05};
+};
+
+// Pure, deterministic cost model used by weighted transport routing.
+double ComputeRoadTraversalCost(const Building& road,
+                                ResourceType resourceType,
+                                const RoadTraversalCostConfig& config = {});
 
 struct NavigationNode
 {
     Building* node{nullptr};
-    // Returns true when this navigation node contains a road-like building
-    // (Road or Bridge, B6 — see IsRoadLike in economy/Building.h).
+    // Returns true when this navigation node contains a road-like building.
     bool IsRoad()
     {
         if( node == nullptr) return false;
@@ -54,12 +73,18 @@ class RoadNetwork
     bool BeginTransport(Building* src, Building* dest, Transportable* res);
     // Removes a completed/cancelled transport from the world-owned registry.
     void ReleaseShipment(Transportable* transportable);
-    // Updates the pointer-free value record from the legacy payload while the
-    // two representations coexist during the WP-11 migration.
-    void RefreshShipment(const Transportable& transportable);
     std::size_t GetLiveShipmentCount() const { return activeShipments.size(); }
-    std::size_t GetShipmentRecordCount() const { return shipmentRecords.Size(); }
-    const ResourceShipment* FindShipmentRecord(ShipmentId id) const { return shipmentRecords.Find(id); }
+    std::size_t GetShipmentRecordCount() const { return activeShipments.size(); }
+    bool TryGetShipmentRecord(ShipmentId id, ResourceShipment& out) const;
+    // Copies pointer-free shipment records in deterministic shipment-id order
+    // for read-only diagnostics and presentation projections.
+    void AppendShipmentRecords(std::vector<ResourceShipment>& out) const;
+    ShipmentId GetNextShipmentId() const noexcept { return nextShipmentId; }
+    // Persistence-only reconstruction after every building and navigation
+    // node in the province has been restored.
+    bool RestoreShipment(const ResourceShipment& shipment, Building* source,
+                         Building* target);
+    bool RestoreNextShipmentId(ShipmentId value) noexcept;
     // Pointer-safe membership check for carrier cleanup. Callers may use this
     // before dereferencing a raw pointer held by a building's legacy carrier
     // vector, because completed shipments can leave stale entries there.
@@ -71,6 +96,12 @@ class RoadNetwork
     void UpdateNavMap(int id, Building* bld);
     // Calculates a tile-id path between two building footprints.
     std::vector<int> CalculatePath(Building* src, Building* dest);
+    // Calculates a weighted path for a concrete resource shipment. Dynamic
+    // traffic is sampled at dispatch; in-flight shipments are not rerouted.
+    std::vector<int> CalculatePath(Building* src, Building* dest, ResourceType resourceType);
+    // Invalidates weighted paths after a deterministic gameplay change alters
+    // road speed, capacity or priority without changing map topology.
+    void InvalidateRoutingCosts();
 
     const std::string tag{"[Road Network]"};
 
@@ -89,18 +120,46 @@ class RoadNetwork
         int CountIncomingToDestination(Building* dest, ResourceType type) const;
 
         // Perf fix (docs/post_pivot_audit_2026-07-12.md follow-up, 2026-07-12):
-        // CalculatePath does a full grid BFS over the whole tilemap (allocating
-        // three map-sized vectors) on every call. Before the T1 tile.owner fix
-        // this cost was latent (every lookup failed instantly); with transport
-        // actually working, every dispatching building calls it at least once
-        // per (src, dest) pair per tick, and per RESOURCE UNIT within a
-        // dispatch batch. Cache every computed (src, dest) -> path, keyed by
-        // building ids (deterministic ordering), cleared on any road-network
-        // topology change (UpdateNavMap — fires on every build/destroy).
-        // Purely a performance memo: identical inputs, identical BFS result.
-        std::map<std::pair<int, int>, std::vector<int>> pathCache;
+        struct PathCacheKey
+        {
+            int sourceId{0};
+            int destinationId{0};
+            ResourceType resourceType{ResourceType::Null};
+            std::uint64_t topologyRevision{0};
+            std::uint64_t trafficEpoch{0};
+
+            bool operator<(const PathCacheKey& other) const
+            {
+                return std::tie(sourceId, destinationId, resourceType,
+                                topologyRevision, trafficEpoch) <
+                    std::tie(other.sourceId, other.destinationId, other.resourceType,
+                              other.topologyRevision, other.trafficEpoch);
+            }
+        };
+
+        struct PathCacheEntry
+        {
+            std::vector<int> path;
+            std::uint64_t expiresAtTick{0};
+            std::uint64_t createdAtTick{0};
+        };
+
+        static constexpr std::uint64_t PathCacheTtlTicks = 50; // 0.5 s at 100 Hz
+        static constexpr std::size_t PathCacheMaxEntries = 512;
+
+        void RefreshTrafficEpoch();
+        bool TryGetCachedPath(const PathCacheKey& key, std::vector<int>& path);
+        void StoreCachedPath(const PathCacheKey& key, std::vector<int> path);
+
+        // Weighted routes are valid only for the current topology and traffic
+        // bucket. The short TTL bounds the lifetime of a route when traffic
+        // changes without crossing a 25% utilization bucket.
+        std::map<PathCacheKey, PathCacheEntry> pathCache;
+        std::uint64_t topologyRevision{1};
+        std::uint64_t trafficEpoch{1};
+        std::uint64_t routingTick{0};
+        std::map<int, std::pair<int, int>> trafficSignature;
         std::map<ShipmentId, Transportable*> activeShipments;
-        ResourceShipmentIndex shipmentRecords;
         ShipmentId nextShipmentId{1};
         std::map<int, std::deque<ShipmentId>> prioritizedAdmissionGrants;
 };

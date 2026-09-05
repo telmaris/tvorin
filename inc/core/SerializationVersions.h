@@ -6,11 +6,11 @@
 // literals in individual message/state classes.
 struct SerializationVersion
 {
-    static constexpr int GameCommandVersion = 17; // added road product-priority intent
+    static constexpr int GameCommandVersion = 27; // authoritative debug raid command
     static constexpr int GameCommandResultVersion = 4;
     static constexpr int GameServerFrameVersion = 1;
-    static constexpr int GameSnapshotVersion = 14;
-    static constexpr int GameWorldSaveVersion = 36; // persisted RoadComponent priority
+    static constexpr int GameSnapshotVersion = 28; // raid-start event effect
+    static constexpr int GameWorldSaveVersion = 57; // raid-start event effect
 };
 
 #endif

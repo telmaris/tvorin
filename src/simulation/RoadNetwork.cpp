@@ -1,6 +1,10 @@
 #include "simulation/RoadNetwork.h"
 
+#include <cmath>
+#include <iterator>
 #include <queue>
+#include <tuple>
+#include <utility>
 #include "simulation/MapGenerator.h"
 #include "economy/Player.h"
 #include "core/Log.h"
@@ -12,9 +16,8 @@ namespace
     // building (step 0 of any path), the final destination building, or a
     // road owned by `owner` (every intermediate step, per
     // RoadNetwork::CalculatePath's BFS). Checked against the actual building
-    // occupying the tile (source of truth), not Tile::owner — the old
-    // territory system that populated Tile::owner was removed in the Tower
-    // Defense pivot (ETAP 1) and nothing sets it anymore.
+    // occupying the tile (source of truth), not Tile::owner — local logistics
+    // no longer use a separate territory system.
     bool IsTileTraversableForOwner(TileMap* map, int tileId, Player* owner, Building* origin, Building* destination)
     {
         if (map == nullptr || tileId < 0 || tileId >= static_cast<int>(map->tilemap.size()))
@@ -24,7 +27,6 @@ namespace
         if (building == origin || building == destination)
             return true;
 
-        // B6: Bridge is road-like for transport purposes (IsRoadLike, economy/Building.h).
         return building != nullptr && building->owner == owner &&
                IsRoadLike(building->buildingType);
     }
@@ -33,17 +35,6 @@ namespace
 // Advances this object's state for one frame.
 TransportUpdateResult Transportable::Update(double dt)
 {
-    struct ShipmentRecordRefreshGuard
-    {
-        Transportable& transportable;
-
-        ~ShipmentRecordRefreshGuard()
-        {
-            if (transportable.shipmentNetwork != nullptr)
-                transportable.shipmentNetwork->RefreshShipment(transportable);
-        }
-    } refreshGuard{*this};
-
     auto cancelTransport = [&]()
     {
         auto* resource = dynamic_cast<Resource*>(this);
@@ -76,7 +67,9 @@ TransportUpdateResult Transportable::Update(double dt)
         {
             Building* current = map->GetBuilding(currentTileId);
             if (current != nullptr && current == targetBuilding)
+            {
                 current->ReceptTransport(this);
+            }
             else
                 cancelTransport();
             return TransportUpdateResult::Finished;
@@ -151,6 +144,35 @@ TransportUpdateResult Transportable::Update(double dt)
     return TransportUpdateResult::Waiting;
 }
 
+double ComputeRoadTraversalCost(const Building& road,
+                                ResourceType resourceType,
+                                const RoadTraversalCostConfig& config)
+{
+    const auto* component = road.GetComponent<RoadComponent>();
+    if (component == nullptr)
+        return config.minimumCostSeconds;
+
+    const int capacity = std::max(1, component->GetModifiedMaxCapacity(road));
+    const double instant = std::clamp(
+        static_cast<double>(road.transportables.size()) / static_cast<double>(capacity),
+        0.0, 1.0);
+    const double ema = std::clamp(component->GetTrafficUtilizationTrend(), 0.0, 1.0);
+    const double utilization = std::clamp(
+        config.instantaneousWeight * instant + config.emaWeight * ema, 0.0, 1.0);
+    const double penalty = config.quadraticPenalty * utilization * utilization +
+        config.quarticPenalty * std::pow(utilization, 4.0);
+
+    double priorityFactor = 1.0;
+    const ResourceType priority = component->GetPriorityResource();
+    if (priority != ResourceType::Null)
+        priorityFactor = priority == resourceType
+            ? config.matchingPriorityFactor : config.otherPriorityFactor;
+
+    const double baseSeconds = std::max(config.minimumCostSeconds, road.GetModifiedTransportTime());
+    return std::max(config.minimumCostSeconds,
+        baseSeconds * (1.0 + penalty) * priorityFactor);
+}
+
 // Initializes Transportable::BeginTransport.
 void Transportable::BeginTransport(Building* src,Building* target, TileMap* tmap, const std::vector<int>& path)
 {
@@ -186,13 +208,21 @@ RoadNetwork::~RoadNetwork()
         }
     }
     activeShipments.clear();
-    shipmentRecords.Clear();
     prioritizedAdmissionGrants.clear();
 }
 
 void RoadNetwork::RebindWorld(TileMap& map)
 {
     tilemap = &map;
+    if (navMap == nullptr)
+        navMap = std::make_unique<NavigationMap>();
+    if (navMap->map.size() != map.tilemap.size())
+        navMap->map = std::vector<NavigationNode>(map.tilemap.size());
+    navMap->sizeX = map.params.sizeX;
+    navMap->sizeY = map.params.sizeY;
+    ++topologyRevision;
+    pathCache.clear();
+    trafficSignature.clear();
     for (auto& [shipmentId, transport] : activeShipments)
     {
         (void)shipmentId;
@@ -219,10 +249,24 @@ void Transportable::ReleaseShipment()
 void RoadNetwork::Update(double dt)
 {
     (void)dt;
+    ++routingTick;
+    RefreshTrafficEpoch();
     // Admission grants are scoped to one fixed simulation tick. Rebuilding
     // them lets a newly-ready shipment participate in the next tick without
     // allowing a stale grant to cross a tick boundary.
     prioritizedAdmissionGrants.clear();
+}
+
+void RoadNetwork::InvalidateRoutingCosts()
+{
+    if (trafficEpoch == std::numeric_limits<std::uint64_t>::max())
+        trafficEpoch = 1;
+    else
+        ++trafficEpoch;
+    pathCache.clear();
+    // The next fixed tick rebuilds the occupancy/priority baseline without
+    // incrementing the epoch a second time for the same explicit change.
+    trafficSignature.clear();
 }
 
 bool RoadNetwork::TryAdmitRoadEntry(Transportable* transportable, Building* road)
@@ -293,7 +337,9 @@ bool RoadNetwork::BeginTransport(Building *src, Building *dest, Transportable* r
 {
     if (src == nullptr || dest == nullptr || res == nullptr || res->shipmentNetwork != nullptr)
         return false;
-    auto path = CalculatePath(src, dest);
+    const auto* resource = dynamic_cast<const Resource*>(res);
+    auto path = CalculatePath(src, dest,
+                              resource != nullptr ? resource->type : ResourceType::Null);
     if(path.empty())
     {
         // Debug-level: no spam when supply packages retry without drogi (happens constantly).
@@ -316,28 +362,10 @@ bool RoadNetwork::BeginTransport(Building *src, Building *dest, Transportable* r
     // ReceptTransport normally selects the carrier's traversal time. The
     // source is a loading stage instead: hold the shipment on the source/road
     // boundary for a short, independently modifiable dispatch delay.
-    const auto* resource = dynamic_cast<const Resource*>(res);
     res->elapsedTime = 0.0;
     res->transportTime = src->GetModifiedDispatchDelay(
         resource != nullptr ? resource->type : ResourceType::Null);
 
-    // Keep a pointer-free value projection in lockstep with the legacy
-    // payload. Quantity is intentionally one for this migration stage so the
-    // existing economy balance and dispatch semantics remain unchanged.
-    if (resource != nullptr && resource->type != ResourceType::Null)
-    {
-        ResourceShipment record;
-        record.id = shipmentId;
-        record.type = resource->type;
-        record.quantity = 1;
-        record.sourceBuildingId = src->id;
-        record.targetBuildingId = dest->id;
-        record.pathTileIds = path;
-        record.currentPathStep = res->currentPathStep;
-        record.elapsedTime = res->elapsedTime;
-        record.transportTime = res->transportTime;
-        shipmentRecords.Insert(std::move(record));
-    }
     return true;
 }
 
@@ -375,29 +403,33 @@ void RoadNetwork::ReleaseShipment(Transportable* transportable)
 
     if (released || transportable->shipmentNetwork == this)
     {
-        shipmentRecords.Erase(shipmentId);
         transportable->shipmentNetwork = nullptr;
         transportable->shipmentId = 0;
     }
 }
 
-void RoadNetwork::RefreshShipment(const Transportable& transportable)
+bool RoadNetwork::TryGetShipmentRecord(ShipmentId id, ResourceShipment& out) const
 {
-    if (transportable.shipmentId == 0)
-        return;
+    const auto it = activeShipments.find(id);
+    const auto* resource = it == activeShipments.end()
+        ? nullptr : dynamic_cast<const Resource*>(it->second);
+    if (resource == nullptr || resource->shipmentId != id ||
+        resource->type == ResourceType::Null || resource->sourceBuilding == nullptr ||
+        resource->targetBuilding == nullptr)
+        return false;
 
-    ResourceShipment* record = shipmentRecords.Find(transportable.shipmentId);
-    if (record == nullptr)
-        return;
-
-    const auto* resource = dynamic_cast<const Resource*>(&transportable);
-    if (resource == nullptr)
-        return;
-
-    record->currentPathStep = transportable.currentPathStep;
-    record->elapsedTime = transportable.elapsedTime;
-    record->transportTime = transportable.transportTime;
-    record->state = ResourceShipmentState::InTransit;
+    out = ResourceShipment{};
+    out.id = id;
+    out.type = resource->type;
+    out.quantity = 1;
+    out.sourceBuildingId = resource->sourceBuilding->id;
+    out.targetBuildingId = resource->targetBuilding->id;
+    out.pathTileIds = resource->transportPath;
+    out.currentPathStep = resource->currentPathStep;
+    out.elapsedTime = resource->elapsedTime;
+    out.transportTime = resource->transportTime;
+    out.state = ResourceShipmentState::InTransit;
+    return true;
 }
 
 bool RoadNetwork::IsTrackingShipment(const Transportable* transportable) const
@@ -444,8 +476,82 @@ void RoadNetwork::AppendShipmentRenderStates(std::vector<ShipmentRenderState>& o
         view.toTileId = toTileId;
         view.progress = static_cast<float>(std::clamp(rawProgress, 0.0, 1.0));
         view.waitingForCapacity = hasDuration && resource->elapsedTime >= resource->transportTime;
+        view.phase = resource->elapsedTime < resource->transportTime
+            ? TransportPhase::Loading
+            : TransportPhase::WaitingForRoad;
+        if (step > 0 && resource->elapsedTime < resource->transportTime)
+            view.phase = TransportPhase::InTransit;
         out.push_back(view);
     }
+}
+
+void RoadNetwork::AppendShipmentRecords(std::vector<ResourceShipment>& out) const
+{
+    for (const auto& [id, transportable] : activeShipments)
+    {
+        (void)transportable;
+        ResourceShipment record;
+        if (TryGetShipmentRecord(id, record))
+            out.push_back(std::move(record));
+    }
+}
+
+bool RoadNetwork::RestoreShipment(const ResourceShipment& shipment, Building* source,
+                                  Building* target)
+{
+    if (tilemap == nullptr || source == nullptr || target == nullptr || source == target ||
+        shipment.id == 0 || shipment.type == ResourceType::Null || shipment.quantity != 1 ||
+        shipment.sourceBuildingId != source->id || shipment.targetBuildingId != target->id ||
+        shipment.state != ResourceShipmentState::InTransit ||
+        shipment.currentPathStep < 0 ||
+        shipment.currentPathStep >= static_cast<int>(shipment.pathTileIds.size()) ||
+        shipment.pathTileIds.size() < 2 || !std::isfinite(shipment.elapsedTime) ||
+        !std::isfinite(shipment.transportTime) || shipment.elapsedTime < 0.0 ||
+        shipment.transportTime < 0.0 || activeShipments.contains(shipment.id) ||
+        source->owner == nullptr ||
+        source->owner != target->owner || source->provinceEconomy == nullptr ||
+        source->provinceEconomy != target->provinceEconomy ||
+        source->provinceEconomy->roadNetwork.get() != this)
+        return false;
+
+    for (int tileId : shipment.pathTileIds)
+        if (tileId < 0 || tileId >= static_cast<int>(tilemap->tilemap.size()))
+            return false;
+
+    Building* carrier = tilemap->GetBuilding(
+        shipment.pathTileIds[static_cast<std::size_t>(shipment.currentPathStep)]);
+    if (carrier == nullptr ||
+        !IsTileTraversableForOwner(tilemap, carrier->positionId, source->owner, source, target))
+        return false;
+
+    Resource* resource = Resource::CreateOwned(shipment.type);
+    if (resource == nullptr)
+        return false;
+
+    resource->sourceBuilding = source;
+    resource->targetBuilding = target;
+    resource->originatingOwner = source->owner;
+    resource->map = tilemap;
+    resource->transportPath = shipment.pathTileIds;
+    resource->currentPathStep = shipment.currentPathStep;
+    resource->elapsedTime = shipment.elapsedTime;
+    resource->transportTime = shipment.transportTime;
+    resource->shipmentId = shipment.id;
+    resource->shipmentNetwork = this;
+
+    activeShipments.emplace(shipment.id, resource);
+    carrier->transportables.push_back(resource);
+    return true;
+}
+
+bool RoadNetwork::RestoreNextShipmentId(ShipmentId value) noexcept
+{
+    if (value == 0)
+        return false;
+    if (!activeShipments.empty() && value <= activeShipments.rbegin()->first)
+        return false;
+    nextShipmentId = value;
+    return true;
 }
 
 // Initializes RoadNetwork::CalculateTransportTime.
@@ -460,9 +566,11 @@ void RoadNetwork::UpdateNavMap(int id, Building *bld)
     if (id < 0 || id >= navMap->map.size())
         return;
 
-    // Any topology change can change which paths are valid — drop every cached
-    // CalculatePath result rather than risk serving a stale route.
+    // Any topology change can change which paths are valid — advance the
+    // revision and drop every cached result rather than serving a stale route.
+    ++topologyRevision;
     pathCache.clear();
+    trafficSignature.clear();
 
     if (bld == nullptr)
     {
@@ -474,20 +582,107 @@ void RoadNetwork::UpdateNavMap(int id, Building *bld)
     navMap->map[id].node = bld;
 }
 
+void RoadNetwork::RefreshTrafficEpoch()
+{
+    std::map<int, std::pair<int, int>> currentSignature;
+    if (navMap != nullptr)
+    {
+        for (int tileId = 0; tileId < static_cast<int>(navMap->map.size()); ++tileId)
+        {
+            Building* building = navMap->map[tileId].node;
+            if (building == nullptr || !IsRoadLike(building->buildingType))
+                continue;
+
+            const auto* road = building->GetComponent<RoadComponent>();
+            if (road == nullptr)
+                continue;
+
+            const int capacity = std::max(1, road->GetModifiedMaxCapacity(*building));
+            const int occupied = static_cast<int>(building->transportables.size());
+            const int bucket = std::clamp((occupied * 4) / capacity, 0, 4);
+            currentSignature[tileId] = {
+                bucket,
+                static_cast<int>(road->GetPriorityResource())};
+        }
+    }
+
+    if (!trafficSignature.empty() && currentSignature != trafficSignature)
+    {
+        if (trafficEpoch == std::numeric_limits<std::uint64_t>::max())
+            trafficEpoch = 1;
+        else
+            ++trafficEpoch;
+    }
+    trafficSignature = std::move(currentSignature);
+}
+
+bool RoadNetwork::TryGetCachedPath(const PathCacheKey& key, std::vector<int>& path)
+{
+    const auto cached = pathCache.find(key);
+    if (cached == pathCache.end())
+        return false;
+    if (routingTick > cached->second.expiresAtTick)
+    {
+        pathCache.erase(cached);
+        return false;
+    }
+
+    path = cached->second.path;
+    return true;
+}
+
+void RoadNetwork::StoreCachedPath(const PathCacheKey& key, std::vector<int> path)
+{
+    const auto existing = pathCache.find(key);
+    if (existing != pathCache.end())
+    {
+        existing->second.path = std::move(path);
+        existing->second.createdAtTick = routingTick;
+        existing->second.expiresAtTick = routingTick + PathCacheTtlTicks;
+        return;
+    }
+
+    if (pathCache.size() >= PathCacheMaxEntries)
+    {
+        auto oldest = pathCache.begin();
+        for (auto candidate = std::next(pathCache.begin()); candidate != pathCache.end(); ++candidate)
+        {
+            if (candidate->second.createdAtTick < oldest->second.createdAtTick ||
+                (candidate->second.createdAtTick == oldest->second.createdAtTick &&
+                 candidate->first < oldest->first))
+                oldest = candidate;
+        }
+        pathCache.erase(oldest);
+    }
+
+    pathCache.emplace(key, PathCacheEntry{
+        std::move(path), routingTick + PathCacheTtlTicks, routingTick});
+}
+
 // Initializes RoadNetwork::CalculatePath.
 std::vector<int> RoadNetwork::CalculatePath(Building *src, Building *dest)
 {
-    if (src == nullptr || dest == nullptr || src->owner == nullptr)
+    if (src == nullptr || dest == nullptr || src->owner == nullptr || tilemap == nullptr)
         return {};
 
-    std::pair<int, int> cacheKey{src->id, dest->id};
-    auto cached = pathCache.find(cacheKey);
-    if (cached != pathCache.end())
-        return cached->second;
+    const int maxColumns = tilemap->params.sizeX;
+    const int maxRows = tilemap->params.sizeY;
+    const std::size_t expectedTileCount = maxColumns > 0 && maxRows > 0
+        ? static_cast<std::size_t>(maxColumns) * static_cast<std::size_t>(maxRows)
+        : 0u;
+    if (expectedTileCount == 0 || expectedTileCount != tilemap->tilemap.size() ||
+        navMap == nullptr || navMap->map.size() != expectedTileCount ||
+        tilemap->GetBuilding(src->positionId) != src ||
+        tilemap->GetBuilding(dest->positionId) != dest)
+        return {};
 
-    int maxColumns = tilemap->params.sizeX;
-    int maxRows = tilemap->params.sizeY;
-    int maxIndex = maxColumns * maxRows;
+    const PathCacheKey cacheKey{
+        src->id, dest->id, ResourceType::Null, topologyRevision, 0};
+    std::vector<int> cachedPath;
+    if (TryGetCachedPath(cacheKey, cachedPath))
+        return cachedPath;
+
+    const int maxIndex = static_cast<int>(expectedTileCount);
     auto startTiles = tilemap->GetBuildingTileIds(src);
     auto endTiles = tilemap->GetBuildingTileIds(dest);
 
@@ -557,11 +752,17 @@ std::vector<int> RoadNetwork::CalculatePath(Building *src, Building *dest)
                 continue;
 
             // Traversable when it's the destination itself, or a road owned by
-            // src's owner — resolved from the nav map's building, not
-            // Tile::owner (removed with the territory system, ETAP 1).
-            bool isDestinationTile = navMap->map[next].node == dest;
-            bool isOwnedRoad = navMap->map[next].IsRoad() &&
-                               navMap->map[next].node->owner == src->owner;
+            // src's owner. Resolve the occupant from TileMap, not only from
+            // NavigationMap: the tile map is authoritative while a building
+            // finishes construction and during the same tick in which a
+            // footprint is replaced. Relying solely on the mirror could make
+            // a physically adjacent road look disconnected until a later
+            // topology refresh.
+            Building* nextBuilding = tilemap->GetBuilding(next);
+            bool isDestinationTile = nextBuilding == dest;
+            bool isOwnedRoad = nextBuilding != nullptr &&
+                               nextBuilding->owner == src->owner &&
+                               IsRoadLike(nextBuilding->buildingType);
             if (!isDestinationTile && !isOwnedRoad)
                 continue;
 
@@ -573,7 +774,7 @@ std::vector<int> RoadNetwork::CalculatePath(Building *src, Building *dest)
 
     if (reachedEnd < 0)
     {
-        pathCache[cacheKey] = {};
+        StoreCachedPath(cacheKey, {});
         return {};
     }
 
@@ -583,7 +784,132 @@ std::vector<int> RoadNetwork::CalculatePath(Building *src, Building *dest)
 
     std::reverse(path.begin(), path.end());
 
-    pathCache[cacheKey] = path;
+    StoreCachedPath(cacheKey, path);
+    return path;
+}
+
+std::vector<int> RoadNetwork::CalculatePath(Building *src, Building *dest, ResourceType resourceType)
+{
+    if (src == nullptr || dest == nullptr || src->owner == nullptr || tilemap == nullptr)
+        return {};
+
+    const int maxColumns = tilemap->params.sizeX;
+    const int maxRows = tilemap->params.sizeY;
+    const std::size_t expectedTileCount = maxColumns > 0 && maxRows > 0
+        ? static_cast<std::size_t>(maxColumns) * static_cast<std::size_t>(maxRows)
+        : 0u;
+    if (expectedTileCount == 0 || expectedTileCount != tilemap->tilemap.size() ||
+        expectedTileCount > static_cast<std::size_t>(std::numeric_limits<int>::max()) ||
+        navMap == nullptr || navMap->map.size() != expectedTileCount ||
+        tilemap->GetBuilding(src->positionId) != src ||
+        tilemap->GetBuilding(dest->positionId) != dest)
+        return {};
+    const int maxIndex = static_cast<int>(expectedTileCount);
+
+    const PathCacheKey cacheKey{
+        src->id, dest->id, resourceType, topologyRevision, trafficEpoch};
+    std::vector<int> cachedPath;
+    if (TryGetCachedPath(cacheKey, cachedPath))
+        return cachedPath;
+
+    const std::vector<int> startTiles = tilemap->GetBuildingTileIds(src);
+    const std::vector<int> endTiles = tilemap->GetBuildingTileIds(dest);
+    if (startTiles.empty() || endTiles.empty())
+        return {};
+
+    std::vector<bool> isEnd(maxIndex, false);
+    for (int end : endTiles)
+        if (end >= 0 && end < maxIndex)
+            isEnd[end] = true;
+
+    const std::vector<int> directions{-maxColumns, maxColumns, -1, 1};
+    constexpr double Epsilon = 1e-9;
+    std::vector<double> distance(maxIndex, std::numeric_limits<double>::infinity());
+    std::vector<int> parent(maxIndex, -1);
+
+    struct QueueEntry
+    {
+        double cost;
+        int tileId;
+    };
+    auto compare = [=](const QueueEntry& lhs, const QueueEntry& rhs)
+    {
+        if (std::abs(lhs.cost - rhs.cost) > Epsilon)
+            return lhs.cost > rhs.cost;
+        return lhs.tileId > rhs.tileId;
+    };
+    std::priority_queue<QueueEntry, std::vector<QueueEntry>, decltype(compare)> queue(compare);
+
+    for (int start : startTiles)
+    {
+        if (start < 0 || start >= maxIndex)
+            continue;
+        if (distance[start] > 0.0)
+        {
+            distance[start] = 0.0;
+            queue.push({0.0, start});
+        }
+    }
+
+    int reachedEnd = -1;
+    while (!queue.empty())
+    {
+        const QueueEntry current = queue.top();
+        queue.pop();
+        if (current.cost > distance[current.tileId] + Epsilon)
+            continue;
+        if (isEnd[current.tileId])
+        {
+            reachedEnd = current.tileId;
+            break;
+        }
+
+        const int currentColumn = current.tileId % maxColumns;
+        const int currentRow = current.tileId / maxColumns;
+        for (int direction : directions)
+        {
+            const int next = current.tileId + direction;
+            if (next < 0 || next >= maxIndex)
+                continue;
+            const int nextColumn = next % maxColumns;
+            const int nextRow = next / maxColumns;
+            if (std::abs(nextColumn - currentColumn) + std::abs(nextRow - currentRow) != 1)
+                continue;
+
+            Building* nextBuilding = navMap->map[next].node;
+            const bool isDestinationTile = nextBuilding == dest;
+            const bool isOwnedRoad = nextBuilding != nullptr &&
+                nextBuilding->owner == src->owner && IsRoadLike(nextBuilding->buildingType);
+            if (!isDestinationTile && !isOwnedRoad)
+                continue;
+
+            const double edgeCost = isOwnedRoad
+                ? ComputeRoadTraversalCost(*nextBuilding, resourceType)
+                : 0.0;
+            const double candidate = current.cost + edgeCost;
+            const bool strictlyBetter = candidate + Epsilon < distance[next];
+            const bool equalWithBetterParent = std::abs(candidate - distance[next]) <= Epsilon &&
+                (parent[next] < 0 || current.tileId < parent[next]);
+            if (!strictlyBetter && !equalWithBetterParent)
+                continue;
+
+            distance[next] = candidate;
+            parent[next] = current.tileId;
+            queue.push({candidate, next});
+        }
+    }
+
+    if (reachedEnd < 0)
+    {
+        StoreCachedPath(cacheKey, {});
+        return {};
+    }
+
+    std::vector<int> path;
+    for (int at = reachedEnd; at != -1; at = parent[at])
+        path.push_back(at);
+    std::reverse(path.begin(), path.end());
+    StoreCachedPath(cacheKey, path);
     return path;
 }
 
@@ -620,7 +946,7 @@ bool RoadNetwork::CanReserveTransportPath(Building* dest, Transportable* res, co
 // Initializes RoadNetwork::CountIncomingToDestination.
 int RoadNetwork::CountIncomingToDestination(Building* dest, ResourceType type) const
 {
-    if (dest == nullptr || dest->owner == nullptr)
+    if (dest == nullptr || dest->provinceEconomy == nullptr)
         return 0;
 
     // Perf fix (2026-07-12): this ran a FULL tilemap scan (sizeX*sizeY tiles,
@@ -633,7 +959,7 @@ int RoadNetwork::CountIncomingToDestination(Building* dest, ResourceType type) c
     // building is in the owner's tracked-buildings registry — same query
     // shape as CountIncomingResources in src/economy/Building.cpp.
     int incoming = 0;
-    for (Building* carrier : dest->owner->GetTrackedBuildings())
+    for (Building* carrier : dest->provinceEconomy->dataTracker.buildings)
     {
         if (carrier == nullptr || carrier->transportables.empty())
             continue;

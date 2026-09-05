@@ -168,24 +168,24 @@ end
     EXPECT_TRUE(ContainsTag(definitions.front(), "logistics"));
 }
 
-TEST(TechnologyTests, ParsesTowerDefenseCombatStatsAndUnitFilter)
+TEST(TechnologyTests, ParsesProvinceDefenseStatsAndUnitFilter)
 {
     const auto path = WriteTechnologyFixture(R"DATA(
 technology veteran_swordsmen
     name "Veteran Swordsmen"
     category WARFARE
     research_time 10
-    modifier UnitRoadAttack multiplier 1.1 unit swordsman
-    modifier UnitSiegeAttack additive 1
+    modifier UnitFieldAttack multiplier 1.1 unit swordsman
+    modifier UnitSiegePower additive 1
     modifier UnitRecruitTime multiplier 0.9
     modifier UnitRecruitManpowerCost multiplier 0.95
-    modifier HqMaxHp additive 50
-    modifier HqDefense additive 2
-    modifier HqThorns additive 1
-    modifier TowerDamage multiplier 1.2
-    modifier TowerRange additive 1
-    modifier TowerAttackSpeed multiplier 1.15
-    modifier TowerAmmoEfficiency additive -1
+    modifier ProvinceFortification additive 50
+    modifier ProvinceDefense additive 2
+    modifier ProvinceCounterattack additive 1
+    modifier ProvinceDefensePower multiplier 1.2
+    modifier ProvinceDefenseCoverage additive 1
+    modifier ProvinceDefenseReadiness multiplier 1.15
+    modifier ProvinceDefenseSupplyUse additive -1
 end
 )DATA");
 
@@ -194,20 +194,20 @@ end
     const auto& modifiers = definitions.front().modifiers;
     ASSERT_EQ(modifiers.size(), 11u);
 
-    EXPECT_EQ(modifiers[0].stat, BalanceStat::UnitRoadAttack);
+    EXPECT_EQ(modifiers[0].stat, BalanceStat::UnitFieldAttack);
     ASSERT_TRUE(modifiers[0].unitDefId.has_value());
     EXPECT_EQ(modifiers[0].unitDefId.value(), "swordsman");
 
-    EXPECT_EQ(modifiers[1].stat, BalanceStat::UnitSiegeAttack);
+    EXPECT_EQ(modifiers[1].stat, BalanceStat::UnitSiegePower);
     EXPECT_EQ(modifiers[2].stat, BalanceStat::UnitRecruitTime);
     EXPECT_EQ(modifiers[3].stat, BalanceStat::UnitRecruitManpowerCost);
-    EXPECT_EQ(modifiers[4].stat, BalanceStat::HqMaxHp);
-    EXPECT_EQ(modifiers[5].stat, BalanceStat::HqDefense);
-    EXPECT_EQ(modifiers[6].stat, BalanceStat::HqThorns);
-    EXPECT_EQ(modifiers[7].stat, BalanceStat::TowerDamage);
-    EXPECT_EQ(modifiers[8].stat, BalanceStat::TowerRange);
-    EXPECT_EQ(modifiers[9].stat, BalanceStat::TowerAttackSpeed);
-    EXPECT_EQ(modifiers[10].stat, BalanceStat::TowerAmmoEfficiency);
+    EXPECT_EQ(modifiers[4].stat, BalanceStat::ProvinceFortification);
+    EXPECT_EQ(modifiers[5].stat, BalanceStat::ProvinceDefense);
+    EXPECT_EQ(modifiers[6].stat, BalanceStat::ProvinceCounterattack);
+    EXPECT_EQ(modifiers[7].stat, BalanceStat::ProvinceDefensePower);
+    EXPECT_EQ(modifiers[8].stat, BalanceStat::ProvinceDefenseCoverage);
+    EXPECT_EQ(modifiers[9].stat, BalanceStat::ProvinceDefenseReadiness);
+    EXPECT_EQ(modifiers[10].stat, BalanceStat::ProvinceDefenseSupplyUse);
 }
 
 // TEST(TechnologyTests, AssetTechnologyAndFocusDefinitionsDeclareExplicitTags)

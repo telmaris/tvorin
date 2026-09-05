@@ -8,6 +8,16 @@
 #include <cmath>
 #include <limits>
 
+namespace
+{
+    ProvinceEconomy* GetLocalEconomy(Building& building)
+    {
+        if (building.provinceEconomy != nullptr)
+            return building.provinceEconomy;
+        return building.owner != nullptr ? building.owner->GetProvinceEconomy() : nullptr;
+    }
+}
+
 void PopulationComponent::Update(Building& self, double dt)
 {
     if (self.owner == nullptr)
@@ -36,7 +46,8 @@ void PopulationComponent::Update(Building& self, double dt)
             for (int i = 0; i < needed; i++)
             {
                 buffer->FreeResource();
-                self.owner->economyTelemetry.RecordConsumption(type);
+                if (ProvinceEconomy* economy = GetLocalEconomy(self); economy != nullptr)
+                    economy->economyTelemetry.RecordConsumption(type);
             }
             supplyLevel = std::min(1.0, supplyLevel + 0.45);
         }

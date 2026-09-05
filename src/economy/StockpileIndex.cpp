@@ -2,6 +2,7 @@
 
 #include "economy/Building.h"
 #include "economy/Player.h"
+#include "world/ProvinceSimulation.h"
 
 #include <algorithm>
 
@@ -28,11 +29,17 @@ bool StockpileIndex::IsWarehouse(const Building* building)
 
 std::vector<Building*> StockpileIndex::Warehouses(const Player& owner)
 {
+    const ProvinceEconomy* economy = owner.GetProvinceEconomy();
+    return economy != nullptr ? Warehouses(*economy) : std::vector<Building*>{};
+}
+
+std::vector<Building*> StockpileIndex::Warehouses(const ProvinceEconomy& economy)
+{
     std::vector<Building*> result;
-    result.reserve(owner.storages.size());
-    for (Building* building : owner.storages)
+    result.reserve(economy.storages.size());
+    for (Building* building : economy.storages)
     {
-        if (!IsWarehouse(building) || building->owner != &owner || building->IsUnderConstruction())
+        if (!IsWarehouse(building) || building->IsUnderConstruction())
             continue;
         result.push_back(building);
     }
@@ -51,8 +58,14 @@ std::vector<Building*> StockpileIndex::Warehouses(const Player& owner)
 
 int StockpileIndex::GetTotal(const Player& owner, ResourceType type)
 {
+    const ProvinceEconomy* economy = owner.GetProvinceEconomy();
+    return economy != nullptr ? GetTotal(*economy, type) : 0;
+}
+
+int StockpileIndex::GetTotal(const ProvinceEconomy& economy, ResourceType type)
+{
     int total = 0;
-    for (const Building* building : Warehouses(owner))
+    for (const Building* building : Warehouses(economy))
     {
         const auto* storage = WarehouseStorage(building);
         if (storage == nullptr)
@@ -67,8 +80,14 @@ int StockpileIndex::GetTotal(const Player& owner, ResourceType type)
 
 int StockpileIndex::GetCapacity(const Player& owner, ResourceType type)
 {
+    const ProvinceEconomy* economy = owner.GetProvinceEconomy();
+    return economy != nullptr ? GetCapacity(*economy, type) : 0;
+}
+
+int StockpileIndex::GetCapacity(const ProvinceEconomy& economy, ResourceType type)
+{
     int capacity = 0;
-    for (const Building* building : Warehouses(owner))
+    for (const Building* building : Warehouses(economy))
     {
         const auto* storage = WarehouseStorage(building);
         if (storage == nullptr)
@@ -83,8 +102,14 @@ int StockpileIndex::GetCapacity(const Player& owner, ResourceType type)
 
 std::vector<StockpileHolding> StockpileIndex::GetHoldings(const Player& owner, ResourceType type)
 {
+    const ProvinceEconomy* economy = owner.GetProvinceEconomy();
+    return economy != nullptr ? GetHoldings(*economy, type) : std::vector<StockpileHolding>{};
+}
+
+std::vector<StockpileHolding> StockpileIndex::GetHoldings(const ProvinceEconomy& economy, ResourceType type)
+{
     std::vector<StockpileHolding> holdings;
-    for (Building* building : Warehouses(owner))
+    for (Building* building : Warehouses(economy))
     {
         const auto* storage = WarehouseStorage(building);
         if (storage == nullptr)
@@ -105,8 +130,14 @@ std::vector<StockpileHolding> StockpileIndex::GetHoldings(const Player& owner, R
 
 std::map<ResourceType, StockpileTotals> StockpileIndex::Snapshot(const Player& owner)
 {
+    const ProvinceEconomy* economy = owner.GetProvinceEconomy();
+    return economy != nullptr ? Snapshot(*economy) : std::map<ResourceType, StockpileTotals>{};
+}
+
+std::map<ResourceType, StockpileTotals> StockpileIndex::Snapshot(const ProvinceEconomy& economy)
+{
     std::map<ResourceType, StockpileTotals> snapshot;
-    for (Building* building : Warehouses(owner))
+    for (Building* building : Warehouses(economy))
     {
         const auto* storage = WarehouseStorage(building);
         if (storage == nullptr)
@@ -128,7 +159,8 @@ std::map<ResourceType, StockpileTotals> StockpileIndex::Snapshot(const Player& o
 std::vector<Building*> StockpileIndex::RankSourcesFor(ResourceType type, Building& requester)
 {
     Player* owner = requester.owner;
-    if (owner == nullptr || owner->roadNetwork == nullptr)
+    ProvinceEconomy* economy = requester.provinceEconomy;
+    if (owner == nullptr || economy == nullptr || economy->roadNetwork == nullptr)
         return {};
 
     struct Candidate
@@ -138,7 +170,7 @@ std::vector<Building*> StockpileIndex::RankSourcesFor(ResourceType type, Buildin
     };
 
     std::vector<Candidate> candidates;
-    for (const auto& holding : GetHoldings(*owner, type))
+    for (const auto& holding : GetHoldings(*economy, type))
     {
         if (holding.building == nullptr || holding.building == &requester)
             continue;
@@ -148,7 +180,7 @@ std::vector<Building*> StockpileIndex::RankSourcesFor(ResourceType type, Buildin
         // instead of ranking an unreachable neighbour ahead of a connected one.
         // CalculatePath memoizes per (src, dest) and drops the whole cache on
         // any road-topology change, so repeating this per tick is a map lookup.
-        std::vector<int> path = owner->roadNetwork->CalculatePath(holding.building, &requester);
+        std::vector<int> path = economy->roadNetwork->CalculatePath(holding.building, &requester);
         if (path.empty())
             continue;
 
@@ -171,8 +203,14 @@ std::vector<Building*> StockpileIndex::RankSourcesFor(ResourceType type, Buildin
 
 int StockpileIndex::Consume(Player& owner, ResourceType type, int amount)
 {
+    ProvinceEconomy* economy = owner.GetProvinceEconomy();
+    return economy != nullptr ? Consume(*economy, type, amount) : 0;
+}
+
+int StockpileIndex::Consume(ProvinceEconomy& economy, ResourceType type, int amount)
+{
     int remaining = amount;
-    for (Building* building : Warehouses(owner))
+    for (Building* building : Warehouses(economy))
     {
         if (remaining <= 0)
             break;
@@ -196,8 +234,14 @@ int StockpileIndex::Consume(Player& owner, ResourceType type, int amount)
 
 int StockpileIndex::Deposit(Player& owner, ResourceType type, int amount)
 {
+    ProvinceEconomy* economy = owner.GetProvinceEconomy();
+    return economy != nullptr ? Deposit(*economy, type, amount) : 0;
+}
+
+int StockpileIndex::Deposit(ProvinceEconomy& economy, ResourceType type, int amount)
+{
     int remaining = amount;
-    for (Building* building : Warehouses(owner))
+    for (Building* building : Warehouses(economy))
     {
         if (remaining <= 0)
             break;
@@ -213,7 +257,10 @@ int StockpileIndex::Deposit(Player& owner, ResourceType type, int amount)
         while (remaining > 0 &&
                static_cast<int>(it->second.buffer.size()) < it->second.bufferSize)
         {
+            const std::size_t sizeBefore = it->second.buffer.size();
             it->second.GenerateResource(type);
+            if (it->second.buffer.size() == sizeBefore)
+                break;
             remaining--;
         }
     }

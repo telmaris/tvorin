@@ -23,7 +23,11 @@ namespace UiControlIcons
         Decisions,
         Technology,
         Manpower,
-        Builders
+        Builders,
+        // The global map currently has no authored atlas cell. The icon
+        // system renders a neutral compass placeholder for this semantic
+        // slot until the final map glyph is available.
+        GlobalMap
     };
 
     // Icons authored specifically for unit-stat tooltips. Stats with a clear
@@ -86,7 +90,7 @@ namespace UiControlIcons
     // intentionally drawn separately by the caller on top of this pass.
     bool DrawPixelHudGlow(HudIcon icon, Rectangle destination, Color color,
                           float intensity = 1.0f);
-    // Draws one of the twelve portraits from the Barracks recruitment atlas.
+    // Draws one of the thirteen portraits from the Barracks recruitment atlas.
     bool DrawUnitPortrait(const std::string& unitDefId, Rectangle destination,
                           Color tint = WHITE);
     // Draws a stat which has no suitable equivalent in the resource atlas.

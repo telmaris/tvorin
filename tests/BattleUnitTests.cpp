@@ -58,8 +58,8 @@ TEST(BattleUnitTests, CatalogLoadsValidDefinitionsAndRejectsInvalidOnes)
 unit militia
     name "Militia"
     max_hp 20
-    road_attack 3
-    siege_attack 1
+    field_attack 3
+    siege_power 1
     recruit_building Barracks
     requires_tech militia_drill
     recruit_time 8
@@ -123,8 +123,6 @@ TEST(BattleUnitTests, RecruitmentEndToEndConsumesResourcesAndManpowerThenAddsToR
     const BattleUnit& unit = player.roster.units.begin()->second;
     EXPECT_EQ(unit.unitDefId, "militia");
     EXPECT_EQ(unit.ownerPlayerId, 0);
-    EXPECT_EQ(unit.state, BattleUnitState::InRoster);
-    EXPECT_DOUBLE_EQ(unit.currentHp, 26.0);
 }
 
 TEST(BattleUnitTests, RecruitTimeAndManpowerCostAreModifiableButFloored)
@@ -388,7 +386,7 @@ TEST(BattleUnitTests, SaveAndLoadPreservesRosterAndInstanceCounter)
     params.sizePreset = MapSizePreset::S;
     params.aiOpponentCount = 0;
     params.seed = 999;
-    world.InitWorld("test", nullptr, nullptr, params);
+    world.InitWorld("test", nullptr, params);
 
     Player* human = world.GetPlayerHandler().players.at(0).get();
     TileMap& map = world.GetTileMap();
@@ -409,13 +407,12 @@ TEST(BattleUnitTests, SaveAndLoadPreservesRosterAndInstanceCounter)
     ASSERT_TRUE(world.SaveToFile(path));
 
     GameWorld loaded;
-    ASSERT_TRUE(loaded.LoadFromFile(path, nullptr, nullptr));
+    ASSERT_TRUE(loaded.LoadFromFile(path, nullptr));
     Player* loadedHuman = loaded.GetPlayerHandler().players.at(0).get();
     ASSERT_EQ(loadedHuman->roster.units.size(), 1u);
     const BattleUnit& loadedUnit = loadedHuman->roster.units.begin()->second;
     EXPECT_EQ(loadedUnit.instanceId, originalInstanceId);
     EXPECT_EQ(loadedUnit.unitDefId, "militia");
-    EXPECT_DOUBLE_EQ(loadedUnit.currentHp, human->roster.units.begin()->second.currentHp);
     EXPECT_EQ(loadedHuman->nextUnitInstanceId, human->nextUnitInstanceId);
 
     std::filesystem::remove(path);

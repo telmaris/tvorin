@@ -187,7 +187,9 @@ void RecruitmentComponent::Update(Building& self, double dt)
 
     int instanceId = self.owner->id * 100000 + self.owner->nextUnitInstanceId++;
     BattleUnit unit(instanceId, self.owner->id, front.unitDefId);
-    unit.currentHp = unit.GetEffectiveMaxHp(*self.owner);
+    const ProvinceId provinceId = self.provinceId != InvalidProvinceId
+        ? self.provinceId : self.owner->homeProvinceId;
+    UnitAssignmentService::AssignReserve(unit, provinceId, self.id);
     self.owner->roster.AddUnit(std::move(unit));
 
     queue.pop_front();

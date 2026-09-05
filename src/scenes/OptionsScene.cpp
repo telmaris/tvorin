@@ -32,28 +32,24 @@ OptionsScene::OptionsScene()
     sfxVolume.ChangePositionAnchor(Vec2f{0.25f, 0.310f});
     sfxVolume.ChangeSizeAnchor(Vec2f{0.50f, 0.050f});
 
-    fogOfWarCheckBox.ChangeText("Fog of War (pilot)");
-    fogOfWarCheckBox.ChangePositionAnchor(Vec2f{0.25f, 0.395f});
-    fogOfWarCheckBox.ChangeSizeAnchor(Vec2f{0.50f, 0.048f});
-
     colorGradingCheckBox.ChangeText("World color grading");
-    colorGradingCheckBox.ChangePositionAnchor(Vec2f{0.25f, 0.445f});
+    colorGradingCheckBox.ChangePositionAnchor(Vec2f{0.25f, 0.395f});
     colorGradingCheckBox.ChangeSizeAnchor(Vec2f{0.50f, 0.048f});
 
     retroFilterCheckBox.ChangeText("Retro world filter");
-    retroFilterCheckBox.ChangePositionAnchor(Vec2f{0.25f, 0.495f});
+    retroFilterCheckBox.ChangePositionAnchor(Vec2f{0.25f, 0.445f});
     retroFilterCheckBox.ChangeSizeAnchor(Vec2f{0.50f, 0.048f});
 
     localLightBloomCheckBox.ChangeText("Local light bloom");
-    localLightBloomCheckBox.ChangePositionAnchor(Vec2f{0.25f, 0.545f});
+    localLightBloomCheckBox.ChangePositionAnchor(Vec2f{0.25f, 0.495f});
     localLightBloomCheckBox.ChangeSizeAnchor(Vec2f{0.50f, 0.048f});
 
     rainOverlayCheckBox.ChangeText("Rain overlay (visual pilot)");
-    rainOverlayCheckBox.ChangePositionAnchor(Vec2f{0.25f, 0.595f});
+    rainOverlayCheckBox.ChangePositionAnchor(Vec2f{0.25f, 0.545f});
     rainOverlayCheckBox.ChangeSizeAnchor(Vec2f{0.50f, 0.048f});
 
     logisticsOverlayCheckBox.ChangeText("Logistics load overlay (pilot)");
-    logisticsOverlayCheckBox.ChangePositionAnchor(Vec2f{0.25f, 0.645f});
+    logisticsOverlayCheckBox.ChangePositionAnchor(Vec2f{0.25f, 0.595f});
     logisticsOverlayCheckBox.ChangeSizeAnchor(Vec2f{0.50f, 0.048f});
 }
 
@@ -62,7 +58,7 @@ void OptionsScene::Update(double dt)
 {
     ProcessGuiInput(dt);
     render.Draw({&menuBackground, &menuPanel, &backButton, &fullScreenCheckBox, &masterVolume, &musicVolume, &sfxVolume,
-        &fogOfWarCheckBox, &colorGradingCheckBox, &retroFilterCheckBox,
+        &colorGradingCheckBox, &retroFilterCheckBox,
         &localLightBloomCheckBox, &rainOverlayCheckBox, &logisticsOverlayCheckBox}, dt);
 
     if (fullScreenCheckBox.HasChanged())
@@ -72,8 +68,6 @@ void OptionsScene::Update(double dt)
         broker->Broadcast(msg);
     }
 
-    if (fogOfWarCheckBox.HasChanged())
-        SetFogOfWarPreferenceEnabled(fogOfWarCheckBox.IsActive());
     if (colorGradingCheckBox.HasChanged())
         SetColorGradingPreferenceEnabled(colorGradingCheckBox.IsActive());
     if (retroFilterCheckBox.HasChanged())
@@ -117,8 +111,6 @@ void OptionsScene::Update(double dt)
 // Syncs the volume sliders to the current audio system state.
 void OptionsScene::OnActivated()
 {
-    fogOfWarCheckBox.currentState = IsFogOfWarPreferenceEnabled();
-    fogOfWarCheckBox.previousState = fogOfWarCheckBox.currentState;
     colorGradingCheckBox.currentState = IsColorGradingPreferenceEnabled();
     colorGradingCheckBox.previousState = colorGradingCheckBox.currentState;
     retroFilterCheckBox.currentState = IsRetroFilterPreferenceEnabled();
@@ -164,7 +156,6 @@ void OptionsScene::HandleEvent(std::shared_ptr<Event> e)
         masterVolume.UpdateSize(ptr->windowSize);
         musicVolume.UpdateSize(ptr->windowSize);
         sfxVolume.UpdateSize(ptr->windowSize);
-        fogOfWarCheckBox.UpdateSize(ptr->windowSize);
         colorGradingCheckBox.UpdateSize(ptr->windowSize);
         retroFilterCheckBox.UpdateSize(ptr->windowSize);
         localLightBloomCheckBox.UpdateSize(ptr->windowSize);

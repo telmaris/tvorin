@@ -73,3 +73,23 @@ TEST(SceneUtilsTests, SaveButtonFallsBackToFileStemForMalformedHeader)
     button->OnClick();
     EXPECT_EQ(selectedSave, "recoverable_slot");
 }
+
+TEST(SceneUtilsTests, DebugPresetChangesOnlyLocalMapParameters)
+{
+    MapParameters params;
+    params.sizePreset = MapSizePreset::XL;
+    params.sizeX = 501;
+    params.sizeY = 501;
+    params.resourceDensity = 0.2f;
+    params.resourceFieldSize = 0.9f;
+    params.resourceRichness = 40;
+
+    ApplyDebugLocalMapPreset(params);
+
+    EXPECT_EQ(params.sizePreset, MapSizePreset::S);
+    EXPECT_EQ(params.sizeX, MapGenerator::SizeFromPreset(MapSizePreset::S));
+    EXPECT_EQ(params.sizeY, params.sizeX);
+    EXPECT_FLOAT_EQ(params.resourceDensity, 0.65f);
+    EXPECT_FLOAT_EQ(params.resourceFieldSize, 0.45f);
+    EXPECT_EQ(params.resourceRichness, 120);
+}

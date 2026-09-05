@@ -91,9 +91,10 @@ void LogisticsComponent::SetReceiver(ResourceType type, Building* receiver, Buil
     if (prev != nullptr && prev != receiver)
     {
         prev->RemoveSupplier(type, &self);
-        if (prev->owner != nullptr && prev->CanAcceptResource(type) && !prev->HasSupplier(type))
+        if (prev->owner != nullptr && prev->provinceEconomy != nullptr &&
+            prev->CanAcceptResource(type) && !prev->HasSupplier(type))
         {
-            Building* storage = prev->owner->tilemap->FindDefaultStorage(prev, prev->owner);
+            Building* storage = prev->provinceEconomy->tilemap->FindDefaultStorage(prev, prev->owner);
             if (storage != nullptr && storage != prev)
                 prev->SetSupplier(type, storage);
         }
@@ -241,9 +242,9 @@ void LogisticsComponent::DispatchOutputs(Building& self, ProductionComponent& pr
     {
         auto recvIt = receivers.find(res);
         Building* recv = recvIt != receivers.end() ? recvIt->second : nullptr;
-        if (recv == nullptr && self.owner != nullptr)
+        if (recv == nullptr && self.owner != nullptr && self.provinceEconomy != nullptr)
         {
-    Building* storage = self.owner->tilemap->FindDefaultStorage(&self, self.owner);
+            Building* storage = self.provinceEconomy->tilemap->FindDefaultStorage(&self, self.owner);
             if (storage != nullptr && storage->CanAcceptResource(res))
             {
                 receivers[res] = storage;
@@ -268,9 +269,9 @@ void LogisticsComponent::DispatchOutputs(Building& self, ProductionComponent& pr
             targets.push_back(alt->second);
         if (recv != nullptr && isStorageHub(recv))
             targets.push_back(recv);
-        if (self.owner != nullptr)
+        if (self.owner != nullptr && self.provinceEconomy != nullptr)
         {
-    Building* storage = self.owner->tilemap->FindDefaultStorage(&self, self.owner);
+            Building* storage = self.provinceEconomy->tilemap->FindDefaultStorage(&self, self.owner);
             if (storage != nullptr && storage != recv && storage->CanAcceptResource(res) &&
                 std::find(targets.begin(), targets.end(), storage) == targets.end())
                 targets.push_back(storage);
@@ -327,14 +328,15 @@ int LogisticsComponent::HandleTransportFrom(ResourceType type, int amount, Build
 
 bool LogisticsComponent::IsConnectedToRoadNetwork(Building& self) const
 {
-    if (self.owner == nullptr || self.owner->roadNetwork == nullptr)
+    if (self.owner == nullptr || self.provinceEconomy == nullptr ||
+        self.provinceEconomy->roadNetwork == nullptr)
         return false;
 
-    for (Building* storage : self.owner->storages)
+    for (Building* storage : self.provinceEconomy->storages)
     {
         if (storage == nullptr || storage == &self)
             continue;
-        if (!self.owner->roadNetwork->CalculatePath(&self, storage).empty())
+        if (!self.provinceEconomy->roadNetwork->CalculatePath(&self, storage).empty())
             return true;
     }
     return false;

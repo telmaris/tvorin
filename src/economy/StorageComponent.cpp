@@ -96,7 +96,7 @@ int StorageComponent::HandleTransport(ResourceType type, int amount, Building* r
 // recorded in docs/tech_debt.md. The scan was also redundant: every consumer
 // already pulls what it needs (ProductionComponent via
 // LogisticsComponent::MaintainRequests, Village via
-// PopulationComponent::RequestFoodSupply, DefenseTower/Barracks via their own
+// PopulationComponent::RequestFoodSupply and Barracks via its own
 // components' RequestResource), and those pulls now reach the whole warehouse
 // network through StockpileIndex::RankSourcesFor, so nothing is stranded by
 // dropping the push.

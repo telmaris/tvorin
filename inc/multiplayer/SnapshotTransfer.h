@@ -1,6 +1,8 @@
 #ifndef SNAPSHOT_TRANSFER_H
 #define SNAPSHOT_TRANSFER_H
 
+#include "core/PersistenceLimits.h"
+
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -14,9 +16,11 @@ struct SnapshotTransferLimits
     static constexpr std::size_t SnapshotChunkEnvelopeBytes = 12; // transferId + chunk index
     static constexpr std::size_t DefaultChunkDataBytes = 32 * 1024 - SnapshotChunkEnvelopeBytes;
 
-    std::size_t maxTotalBytes{64 * 1024 * 1024};
+    std::size_t maxTotalBytes{PersistenceLimits::MaxSerializedStateBytes};
     std::size_t maxChunkDataBytes{DefaultChunkDataBytes};
-    std::size_t maxChunkCount{4096};
+    std::size_t maxChunkCount{
+        (PersistenceLimits::MaxSerializedStateBytes + DefaultChunkDataBytes - 1) /
+        DefaultChunkDataBytes};
 };
 
 struct SnapshotTransferManifest

@@ -18,6 +18,23 @@
 
 constexpr int RENDER_WIDTH = 1920;
 constexpr int RENDER_HEIGHT = 1080;
+inline constexpr float CameraZoomWheelStep = 0.12f;
+inline constexpr float CameraMaxZoom = 2.5f;
+
+struct CameraVisibleWorldRect
+{
+    float minX{0.0f};
+    float maxX{0.0f};
+    float minY{0.0f};
+    float maxY{0.0f};
+};
+
+// Returns the world-space rectangle visible between the top HUD padding and
+// the bottom of the fixed render surface. `topRenderPadding` is expressed in
+// fixed render pixels, making this helper independent of the OS window size.
+CameraVisibleWorldRect ComputeCameraVisibleWorldRect(const Camera2D& camera,
+                                                     float topRenderPadding);
+
 class Building;
 enum class BuildingType : int;
 
@@ -27,7 +44,6 @@ enum class WorldRenderLayer : std::size_t
 {
     Terrain,
     ResourceOverlays,
-    MilitaryRoads,
     WorldEffects,
     StaticObjects,
     DynamicObjects,
@@ -56,7 +72,9 @@ struct RenderSettings
     bool dayNightCycle{true};
     bool dynamicLights{true};
     bool contactShadows{true};
-    bool fogOfWar{true};
+    // Local province fog was removed; global-map fog is rendered by the
+    // strategic map panel from the campaign presentation view.
+    bool fogOfWar{false};
     bool colorGrading{true};
     bool retroFilter{true};
     // A low-cost second, wider additive emitter pass. It never touches UI or
@@ -176,7 +194,11 @@ class Renderer
     bool HasWorldLayers() const { return worldLayersInitialized; }
     // The render clock is derived from the deterministic simulation tick, not
     // from wall-clock time. Both direct and snapshot render paths set it.
-    void SetSimulationTick(std::uint64_t tick) { simulationTick = tick; }
+    void SetSimulationTick(std::uint64_t tick)
+    {
+        simulationTick = tick;
+        snapshotTick = std::numeric_limits<std::uint64_t>::max();
+    }
     void SetRenderSettings(const RenderSettings& settings) { renderSettings = settings; }
     const RenderSettings& GetRenderSettings() const { return renderSettings; }
     void SetDayNightCycleEnabled(bool enabled) { renderSettings.dayNightCycle = enabled; }
@@ -225,11 +247,20 @@ class Renderer
     void Draw(std::vector<UiWidget*> ui = {}, double dt = 0);
     // Begins the frame and issues all draw calls (layers + widgets) but does NOT
     // present. Lets a caller draw under a lock and release it before the
-    // vsync-blocking present. Must be paired with PresentFrame().
-    void DrawContent(std::vector<UiWidget*> ui = {}, double dt = 0);
-    // Presents the frame (EndDrawing). This is where vsync / frame-cap blocking
-    // happens, so callers holding a lock should release it before calling this.
-    void PresentFrame();
+    // frame-cap-blocking present. Must be paired with PresentFrame().
+    void DrawContent(std::vector<UiWidget*> ui = {}, double dt = 0,
+                     bool drawWorld = true);
+    // Presents the frame (EndDrawing). This is where frame-cap blocking happens,
+    // so callers holding a lock should release it before calling this.
+    void PresentFrame(bool drawTransitionOverlay = true);
+    // Window-wide cursor presentation drawn after UI and transition overlays.
+    static void InitializeCustomCursor();
+    static void ShutdownCustomCursor();
+    static void SetCustomCursorVisible(bool visible);
+    static bool IsCustomCursorVisible();
+    // Requests a one-shot capture of the completed backbuffer. The request is
+    // fulfilled in PresentFrame(), after UI, transition overlay and cursor.
+    static void RequestFinalFrameCapture();
     // Draws a full texture on a render layer at tile coordinates.
     void DrawOnLayer(WorldRenderLayer, Texture2D, Vec2i);
     // Draws one atlas tile on a render layer at tile coordinates.
@@ -275,15 +306,11 @@ class Renderer
     void DrawBuildingTexture(BuildingType type, Vec2i footprint, Vec2f pos, Color tint = WHITE,
                              Color ownerColor = WHITE, bool applyTeamColor = false);
     // Draws one road-like tile using the four-neighbour connection mask.
-    // Mask bits are West=1, East=2, North=4 and South=8. The road half of
-    // atlas 19 occupies cells 0..15; the bridge half occupies cells 16..31.
+    // Mask bits are West=1, East=2, North=4 and South=8. Road cells occupy
+    // the first sixteen entries of atlas 19.
     // Road-only cells can use atlas 145, which contains three 16-cell variants
     // stacked in rows; the selected variant is derived from the tile position.
     void DrawRoadTexture(BuildingType type, Vec2f pos, int connectionMask, Color tint = WHITE);
-    // Draws the broad military unit track from atlas 144, or one of three
-    // position-stable material variants in atlas 146. It uses the same
-    // West=1, East=2, North=4, South=8 canonical mask order as resource roads.
-    void DrawMilitaryRoadTexture(Vec2f pos, int connectionMask, Color tint = WHITE);
     // Draws pointer-free in-flight resource views on the currently active
     // dynamic layer. The caller owns BeginLayer/EndLayer.
     void DrawShipments(const std::vector<ShipmentRenderState>& shipments, Vec2i mapSize);
@@ -306,8 +333,6 @@ class Renderer
     Vec2f WorldToScreen(Vec2f);
     // Keeps camera view within map bounds when possible.
     void ClampCameraToMap(Vec2i mapSize);
-    // Reserves screen-space pixels at the top when clamping the camera.
-    void SetTopScreenPadding(float padding);
     // Centers the camera on a world-space point and clamps it to map bounds.
     void CenterCameraOnWorld(Vec2f worldPoint, Vec2i mapSize);
     // Applies cursor-centered zoom and clamps camera afterwards.
@@ -334,16 +359,19 @@ class Renderer
     ShaderLibrary shaderLibrary;
 
     Camera2D camera;
-    float topScreenPadding{0.0f};
     bool worldLayersInitialized{false};
     bool layerActive{false};
     RenderSettings renderSettings{};
     std::uint64_t simulationTick{0};
+    std::uint64_t snapshotTick{std::numeric_limits<std::uint64_t>::max()};
+    std::uint64_t worldCompositeTick{0};
+    std::uint64_t uiDrawTick{0};
     DayNightConfig dayNightConfig{};
     bool nightPreviewEnabled{false};
     std::vector<LightEmitterView> dynamicLights;
     std::vector<FogRevealView> fogReveals;
     std::uint64_t cachedSnapshotTick{std::numeric_limits<std::uint64_t>::max()};
+    ProvinceId cachedSnapshotProvinceId{InvalidProvinceId};
     Vec2f cachedSnapshotCameraTarget{std::numeric_limits<float>::max(), std::numeric_limits<float>::max()};
     float cachedSnapshotCameraZoom{-1.0f};
 

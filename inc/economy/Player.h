@@ -12,48 +12,88 @@
 #include "economy/PlayerDataTracker.h"
 #include "economy/PlayerEconomy.h"
 #include "economy/ConstructionQueue.h"
-#include "economy/ConqueredEconomy.h"
 #include "warfare/BattleUnit.h"
+#include "warfare/TaskGroup.h"
+#include "world/WorldIds.h"
+#include "world/PlayerState.h"
+#include "world/ProvinceSimulation.h"
 #include "raylib.h"
 
 #include <optional>
+#include <map>
 #include <set>
 
 class TileMap;
 class Player;
 
-enum class PlayerControllerType
-{
-    LocalHuman,
-    AI,
-    Remote
-};
-
-// Player-owned state: buildings, logistics network and strategic resources.
-class Player
+// Global player state. Local buildings, registries, roads and telemetry are
+// owned by ProvinceSimulation::ProvinceEconomy; this object only keeps the
+// campaign-wide identity, modifiers, research and roster.
+class Player : public PlayerState
 {
 public:
     Player() = default;
-    Player(int i, TileMap& tmap) : tilemap(&tmap), id(i), build(this, tmap, id)
-    {
-        roadNetwork = std::make_unique<RoadNetwork>(tmap);
-        RefreshTechnologyModifiers();
-    }
+    explicit Player(int i);
+    Player(int i, TileMap& tmap);
+    Player(int i, ProvinceSimulation& province);
+    ~Player() = default;
 
-    void RebindTileMap(TileMap& map)
+    void BindProvince(ProvinceSimulation& province);
+    void BindProvince(ProvinceId provinceId, ProvinceSimulation& province);
+    ProvinceSimulation* GetProvinceSimulation(ProvinceId provinceId) const
     {
-        tilemap = &map;
-        build.RebindTileMap(map);
+        const auto it = boundProvinces.find(provinceId);
+        return it == boundProvinces.end() ? nullptr : it->second;
     }
+    ProvinceSimulation* GetProvinceSimulation() const { return boundProvince; }
+    ProvinceId GetActiveProvinceId() const { return activeProvinceId; }
+    TaskGroupRegistry& GetTaskGroups() { return taskGroups; }
+    const TaskGroupRegistry& GetTaskGroups() const { return taskGroups; }
+    bool SetActiveProvince(ProvinceId provinceId)
+    {
+        if (GetProvinceSimulation(provinceId) == nullptr)
+            return false;
+        activeProvinceId = provinceId;
+        boundProvince = boundProvinces.at(provinceId);
+        return true;
+    }
+    bool UnbindProvince(ProvinceId provinceId)
+    {
+        const auto it = boundProvinces.find(provinceId);
+        if (it == boundProvinces.end())
+            return false;
+        boundProvinces.erase(it);
+        if (activeProvinceId == provinceId)
+        {
+            activeProvinceId = InvalidProvinceId;
+            boundProvince = nullptr;
+            if (!boundProvinces.empty())
+            {
+                const auto fallback = boundProvinces.begin();
+                activeProvinceId = fallback->first;
+                boundProvince = fallback->second;
+            }
+        }
+        return true;
+    }
+    ProvinceEconomy* GetProvinceEconomy(ProvinceId provinceId) const
+    {
+        auto* simulation = GetProvinceSimulation(provinceId);
+        return simulation != nullptr ? &simulation->GetEconomy() : nullptr;
+    }
+    ProvinceEconomy* GetProvinceEconomy() const
+    {
+        return boundProvince != nullptr ? &boundProvince->GetEconomy() : nullptr;
+    }
+    TileMap* GetTileMap() const;
+    TileMap* GetTileMap(ProvinceId provinceId) const;
+    void RebindTileMap(ProvinceId provinceId, TileMap& map);
+    void RebindTileMap(TileMap& map);
 
     void UpdateFocus(double dt);
     void UpdateResearch(double dt);
 
-    void UpdateEconomyTelemetry(double dt) { economyTelemetry.Update(*this, dt); }
-    // TD(etap-6.3): advances productivity ramps on buildings captured from an
-    // eliminated player (no-op once nothing is ramping).
-    void UpdateConqueredEconomy(double dt) { conqueredEconomy.Tick(*this, dt); }
-
+    void UpdateEconomyTelemetry(double dt);
     bool IsTechnologyInProgress(const std::string& id) const;
 
     // Registers a newly placed building in player data indexes.
@@ -63,43 +103,61 @@ public:
     void UnregisterBuilding(Building* building);
 
     // Records a gameplay command accepted for this player.
-    void TrackAcceptedCommand(GameCommandType type) { dataTracker.TrackCommand(type); }
+    void TrackAcceptedCommand(GameCommandType type);
+    void TrackAcceptedCommand(GameCommandType type, ProvinceId provinceId);
 
     // Returns tracked player buildings without scanning the map.
-    const std::set<Building*>& GetTrackedBuildings() const { return dataTracker.buildings; }
+    const std::set<Building*>& GetTrackedBuildings() const;
 
     template<typename T>
     const std::set<Building*>& GetTrackedBuildingsWithComponent() const
     {
-        return dataTracker.BuildingsWithComponent<T>();
+        const auto* economy = GetProvinceEconomy();
+        if (economy == nullptr)
+        {
+            static const std::set<Building*> empty;
+            return empty;
+        }
+        return economy->dataTracker.BuildingsWithComponent<T>();
     }
 
     // Returns whether the player has a tracked building of this type.
     bool HasTrackedBuilding(BuildingType type, bool completedOnly = false) const
     {
-        return dataTracker.HasBuilding(type, completedOnly);
+        const auto* economy = GetProvinceEconomy();
+        return economy != nullptr && economy->dataTracker.HasBuilding(type, completedOnly);
     }
 
     // Returns the number of tracked buildings of this type.
     int GetTrackedBuildingCount(BuildingType type, bool completedOnly = false) const
     {
-        return dataTracker.CountBuildings(type, completedOnly);
+        const auto* economy = GetProvinceEconomy();
+        return economy != nullptr ? economy->dataTracker.CountBuildings(type, completedOnly) : 0;
     }
 
     std::size_t GetLiveShipmentCount() const
     {
-        return roadNetwork != nullptr ? roadNetwork->GetLiveShipmentCount() : 0;
+        const auto* economy = GetProvinceEconomy();
+        return economy != nullptr && economy->roadNetwork != nullptr
+            ? economy->roadNetwork->GetLiveShipmentCount() : 0;
     }
 
     // Read-only access for routing diagnostics and tutorial milestones. The
     // graph is still mutated only by simulation-side building commands.
-    RoadNetwork* GetRoadNetwork() const { return roadNetwork.get(); }
+    RoadNetwork* GetRoadNetwork() const
+    {
+        const auto* economy = GetProvinceEconomy();
+        return economy != nullptr ? economy->roadNetwork.get() : nullptr;
+    }
 
     // Returns how many accepted commands of a given type were processed.
     int GetAcceptedCommandCount(GameCommandType type) const
     {
-        auto it = dataTracker.processedCommands.find(type);
-        return it != dataTracker.processedCommands.end() ? it->second : 0;
+        const auto* economy = GetProvinceEconomy();
+        if (economy == nullptr)
+            return 0;
+        auto it = economy->dataTracker.processedCommands.find(type);
+        return it != economy->dataTracker.processedCommands.end() ? it->second : 0;
     }
 
     // Builds a building type on a tile id and registers it in logistics.
@@ -107,9 +165,13 @@ public:
     Building* Build(int tilePos, bool chargeCost = true)
     {
         static_assert(std::is_base_of<Building, T>::value);
+        ProvinceEconomy* economy = GetProvinceEconomy();
+        if (economy == nullptr || economy->tilemap == nullptr)
+            return nullptr;
+        TileMap& tilemap = *economy->tilemap;
         T preview{0};
-        Vec2i anchor = tilemap->GetCoordsFromId(tilePos);
-        if (!tilemap->CanPlaceBuilding(preview.buildingType, anchor, preview.GetFootprint(), this))
+        Vec2i anchor = tilemap.GetCoordsFromId(tilePos);
+        if (!tilemap.CanPlaceBuilding(preview.buildingType, anchor, preview.GetFootprint(), this))
             return nullptr;
 
         const auto& definition = GetBuildingDefinition(preview.buildingType);
@@ -120,8 +182,8 @@ public:
             return nullptr;
         }
 
-        build.Build<T>(tilePos);
-        auto bld = tilemap->GetBuilding(tilePos);
+        economy->build.Build<T>(tilePos);
+        auto bld = tilemap.GetBuilding(tilePos);
         if (bld != nullptr)
         {
             double buildTime = ModifyBalanceAt(BalanceStat::BuildTime, definition.buildTime, preview.buildingType, anchor);
@@ -133,9 +195,10 @@ public:
             bld->paidBuildCosts = chargeCost ? effectiveCosts : std::vector<ResourceAmountDefinition>{};
             if (!bld->IsUnderConstruction())
             {
-                for (int occupiedTileId : tilemap->GetBuildingTileIds(bld))
-                    roadNetwork->UpdateNavMap(occupiedTileId, bld);
-                tilemap->AutoConnectBuilding(bld);
+                if (economy->roadNetwork != nullptr)
+                    for (int occupiedTileId : tilemap.GetBuildingTileIds(bld))
+                        economy->roadNetwork->UpdateNavMap(occupiedTileId, bld);
+                tilemap.AutoConnectBuilding(bld);
             }
         }
         return bld;
@@ -145,12 +208,23 @@ public:
     template <typename T>
     Building* Build(Vec2i pos, bool chargeCost = true)
     {
-        return Build<T>(tilemap->GetIdFromCoords(pos), chargeCost);
+        ProvinceEconomy* economy = GetProvinceEconomy();
+        return economy != nullptr && economy->tilemap != nullptr
+            ? Build<T>(economy->tilemap->GetIdFromCoords(pos), chargeCost) : nullptr;
     }
 
     bool HasBuildResources(const std::vector<ResourceAmountDefinition>& costs) const;
+    bool HasBuildResources(const ProvinceEconomy& economy,
+                           const std::vector<ResourceAmountDefinition>& costs) const;
     void ReportBuildCostFailure(const std::string& buildingName) const;
+    // Returns only technology/focus gates, without checking the building's
+    // material cost. Upgrade commands reuse this for their own next-level
+    // cost so UI and authority agree on unlock requirements.
+    std::vector<std::string> GetBuildUnlockRequirementFailures(const BuildingDefinition& definition) const;
     std::vector<std::string> GetBuildRequirementFailures(const BuildingDefinition& definition, bool ignoreDebugFreeBuild = true) const;
+    std::vector<std::string> GetBuildRequirementFailures(
+        const BuildingDefinition& definition, const ProvinceEconomy& economy,
+        bool ignoreDebugFreeBuild = true) const;
 
     // Applies BalanceStat::BuildCost modifiers (tech/focus/state) to a building's base resource costs.
     std::vector<ResourceAmountDefinition> GetEffectiveBuildCosts(const BuildingDefinition& definition) const
@@ -186,15 +260,11 @@ public:
     }
 
     double GetFoodProductivity() const;
+    double GetFoodProductivity(const ProvinceEconomy& economy) const;
     // Raw food supply ratio (0-1) averaged across villages — see Player.cpp
     // for why this must not be confused with GetFoodProductivity().
     double GetFoodSupplyRatio() const;
-    // How well the defence towers are stocked: ammo held / ammo capacity
-    // averaged over every completed tower (1.0 when the player has none, so
-    // "no towers" never reads as an emergency). Tower ammo lives in each
-    // tower's own local buffer, deliberately outside the warehouse network
-    // StockpileIndex reports — this is the one number that summarises it.
-    double GetAmmunitionSupplyRatio() const;
+    double GetFoodSupplyRatio(const ProvinceEconomy& economy) const;
 
     double ModifyBalance(BalanceStat stat, double base, BuildingType buildingType = BuildingType::Building,
                          ResourceType resourceType = ResourceType::Null) const
@@ -235,6 +305,26 @@ public:
         return balanceModifiers.ModifyInt(base, MakeBalanceContext(stat, building, resourceType), minimum);
     }
 
+    double ModifyBalanceAt(BalanceStat stat, double base, ProvinceId provinceId,
+                           BuildingType buildingType, Vec2i position,
+                           ResourceType resourceType = ResourceType::Null) const
+    {
+        return balanceModifiers.ModifyDouble(
+            base, MakeBalanceContext(stat, buildingType, resourceType, position, provinceId));
+    }
+
+    // Resolves a unit-scoped stat while retaining the province/building
+    // context. Used by garrison upkeep and future unit-specific province
+    // effects; the unit definition ID is never stored in a building component.
+    double ModifyBalanceForUnit(BalanceStat stat, double base, const Building* building,
+                                const std::string& unitDefId,
+                                ResourceType resourceType = ResourceType::Null) const
+    {
+        BalanceModifierContext context = MakeBalanceContext(stat, building, resourceType);
+        context.unitDefId = unitDefId;
+        return balanceModifiers.ModifyDouble(base, context);
+    }
+
     // Resolves a floating-point stat for a concrete building context.
     double ResolveStat(const Stat<double>& stat, const Building* building,
                        ResourceType resourceType = ResourceType::Null) const
@@ -266,6 +356,8 @@ public:
     }
 
     bool CanResearchTechnology(const std::string& id) const;
+    bool CanResearchTechnology(const std::string& id,
+                               const ProvinceEconomy& economy) const;
 
     bool CanUnlockFocus(const std::string& id) const
     {
@@ -279,6 +371,8 @@ public:
 
     bool UnlockTechnology(const std::string& id);
     bool StartTechnologyResearch(const std::string& id, Building* university);
+    bool StartTechnologyResearch(const std::string& id, Building* university,
+                                 ProvinceEconomy& economy);
 
     // Rebuilds the modifier set entries emitted by unlocked technologies.
     void RefreshTechnologyModifiers();
@@ -300,12 +394,16 @@ public:
 
     BalanceModifierContext MakeBalanceContext(BalanceStat stat, BuildingType buildingType,
                                               ResourceType resourceType = ResourceType::Null,
-                                              std::optional<Vec2i> position = std::nullopt) const
+                                              std::optional<Vec2i> position = std::nullopt,
+                                              ProvinceId provinceId = InvalidProvinceId) const
     {
         BalanceModifierContext context{stat, buildingType, resourceType};
         context.position = position;
-        if (position.has_value() && tilemap->IsInside(position.value()))
-            context.positionId = tilemap->GetIdFromCoords(position.value());
+        context.provinceId = provinceId;
+        const TileMap* map = provinceId != InvalidProvinceId
+            ? GetTileMap(provinceId) : GetTileMap();
+        if (position.has_value() && map != nullptr && map->IsInside(position.value()))
+            context.positionId = map->GetIdFromCoords(position.value());
         return context;
     }
 
@@ -322,8 +420,11 @@ public:
 
         context.buildingId = building->id;
         context.positionId = building->positionId;
-        if (building->positionId >= 0)
-            context.position = tilemap->GetCoordsFromId(building->positionId);
+        context.provinceId = building->provinceId;
+        const TileMap* map = building->GetProvinceEconomy() != nullptr
+            ? building->GetProvinceEconomy()->tilemap : GetTileMap();
+        if (building->positionId >= 0 && map != nullptr)
+            context.position = map->GetCoordsFromId(building->positionId);
         return context;
     }
 
@@ -340,54 +441,28 @@ public:
     double AddManpower(double amount);
     int AutoAssignWorkers(Building* building);
     bool TryPayBuildCost(const std::vector<ResourceAmountDefinition>& costs);
+    bool TryPayBuildCost(ProvinceEconomy& economy,
+                         const std::vector<ResourceAmountDefinition>& costs);
     // Returns resources to owned storage (cancelling an in-progress build).
     // Overflow beyond available storage capacity is dropped.
     void RefundBuildCost(const std::vector<ResourceAmountDefinition>& costs);
+    void RefundBuildCost(ProvinceEconomy& economy,
+                         const std::vector<ResourceAmountDefinition>& costs);
 
     // Starts resource transport through this player's road network.
-    bool BeginTransport(Building* src, Building* dest, Resource* res)
-    {
-        return roadNetwork->BeginTransport(src, dest, res);
-    }
+    bool BeginTransport(Building* src, Building* dest, Resource* res);
 
-    int id;
-    std::string name{"Player"};
-    Color color{66, 154, 255, 255};
-    PlayerControllerType controllerType{PlayerControllerType::LocalHuman};
-    bool debugMode{false};
-    // Set true when this player's Headquarters is captured — the player is
-    // eliminated (all remaining assets pass to the conqueror). Deterministic:
-    // written only inside the simulation tick. The scene reads it for win/lose UI.
-    bool defeated{false};
-
-    std::unique_ptr<RoadNetwork> roadNetwork;
-    TileMap* tilemap{nullptr};
-    BFactory build;
-
-    // ETAP 10: Strategic building registries — indexed direct access without map scans.
-    // Updated event-driven (onBuildingCreated/Destroyed). Deterministic vector order.
-    std::vector<Building*> storages;          // StorageComponent — resource warehouses (includes HQ)
-    std::vector<Building*> villages;          // PopulationComponent — civilian settlements
-    uint32_t registryGeneration{0};           // bumped on any registry change — used for cache invalidation
-
-    StrategicResourcePool strategicResources;
-    TechnologyState technologies;
-    FocusState focuses;
-    BalanceModifierSet balanceModifiers;
-    PlayerDataTracker dataTracker;
-    ConstructionQueue construction;
-    PlayerEconomyTelemetry economyTelemetry;
-    // TD(etap-6.3): productivity ramps on buildings captured from eliminated
-    // players. Empty for a player who has never conquered anything.
-    ConqueredEconomy conqueredEconomy;
-
-    // TD(etap-3): recruited-but-not-yet-deployed BattleUnit pool (replaces the
-    // old war system's ArmyRegistry).
-    UnitRoster roster;
-    // Per-player instance-id counter, prefixed with this player's id (same
-    // pattern as build.buildingId) so ids stay unique across the whole world
-    // without needing a GameWorld back-reference from deep inside a component.
-    int nextUnitInstanceId{1};
+private:
+    ProvinceEconomy* GetCampaignEconomy() const;
+    ProvinceSimulation* boundProvince{nullptr};
+    // Runtime-only index. Province ownership and active-view selection are
+    // serialized as IDs elsewhere; these pointers are rebuilt after load.
+    std::map<ProvinceId, ProvinceSimulation*> boundProvinces;
+    ProvinceId activeProvinceId{InvalidProvinceId};
+    // Standalone economy used only by direct domain tests and tools that
+    // construct a Player with a raw TileMap. GameWorld players bind to a
+    // GlobalMap-owned ProvinceSimulation instead.
+    std::unique_ptr<ProvinceSimulation> compatibilityProvince;
 };
 
 // Local human-controlled player type.

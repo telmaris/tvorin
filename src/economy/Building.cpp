@@ -4,6 +4,9 @@
 #include "economy/Player.h"
 #include "core/Log.h"
 #include "simulation/MapGenerator.h"
+#include "simulation/RoadNetwork.h"
+#include "world/ProvinceSimulation.h"
+#include "warfare/GarrisonService.h"
 
 #include <algorithm>
 #include <cmath>
@@ -13,13 +16,13 @@ namespace
 {
     int CountIncomingResources(Building* target, ResourceType type)
     {
-        if (target == nullptr || target->owner == nullptr)
+        if (target == nullptr || target->provinceEconomy == nullptr)
             return 0;
 
         // OPTIMIZATION: Iterate only tracked buildings (much smaller set than full tilemap),
         // then check if they have transportables. Avoids 1M tile scans per call.
         int incoming = 0;
-        for (Building* carrier : target->owner->GetTrackedBuildings())
+        for (Building* carrier : target->provinceEconomy->dataTracker.buildings)
         {
             if (carrier == nullptr || carrier->transportables.empty())
                 continue;
@@ -55,6 +58,16 @@ namespace
 } // namespace
 
 // ─── Building (base) ─────────────────────────────────────────────────────────
+
+Building::Building()
+{
+    RegisterComponent(&safety);
+}
+
+Building::Building(int i) : id(i)
+{
+    RegisterComponent(&safety);
+}
 
 Building::~Building()
 {
@@ -332,7 +345,7 @@ std::vector<ResourceBufferView> Building::GetInputBufferViews() const
         }
         return views;
     }
-    // Tower-ammo and Barracks unit-cost buffers are private local entries that
+    // Barracks unit-cost buffers are private local entries that
     // this building needs delivered TO it, unlike a plain warehouse/HQ where
     // StorageComponent is only ever offered FROM (GetOutputBufferViews) —
     // without exposing them as inputs too, AutoConnectBuilding has no input
@@ -551,7 +564,8 @@ void Building::UpdateTransportables(double dt)
         const bool isDelayedSourceDispatch =
             transportable->sourceBuilding == this &&
             transportable->currentPathStep == 0 &&
-            transportable->transportTime > 0.0;
+            transportable->transportTime > 0.0 &&
+            transportable->elapsedTime < transportable->transportTime;
         if (isDelayedSourceDispatch && advancedDelayedDispatch)
         {
             ++it;
@@ -651,34 +665,12 @@ void UpgradeComponent::Update(Building& self, double dt)
     if (auto* population = self.GetComponent<PopulationComponent>())
         population->SetSettlementLevel(level);
     if (self.owner != nullptr)
+    {
         self.owner->ApplyUpgradeLevelModifiers(self);
-}
-
-// ─── Bridge ──────────────────────────────────────────────────────────────────
-
-Bridge::Bridge(int i)
-{
-    id = i;
-    const auto& def = GetBuildingDefinition(BuildingType::Bridge);
-    ApplyBuildingDefinition(*this, def);
-    road.upgradeLevel  = def.road.upgradeLevel;
-    road.maxCapacity   = def.road.maxCapacity;
-    road.speedModifier = def.road.speedModifier;
-    RegisterComponent(&road);
-
-    for (const auto& levelDef : def.upgradeLevels)
-        upgrade.maxLevel = std::max(upgrade.maxLevel, levelDef.level);
-    RegisterComponent(&upgrade);
-}
-
-int Bridge::GetModifiedMaxCapacity() const
-{
-    return road.GetModifiedMaxCapacity(*this);
-}
-
-double Bridge::GetModifiedSpeedModifier() const
-{
-    return road.GetModifiedSpeedModifier(*this);
+        if (IsRoadLike(self.buildingType) && self.provinceEconomy != nullptr &&
+            self.provinceEconomy->roadNetwork != nullptr)
+            self.provinceEconomy->roadNetwork->InvalidateRoutingCosts();
+    }
 }
 
 // ─── StorageBuilding ─────────────────────────────────────────────────────────
@@ -698,11 +690,9 @@ Headquarters::Headquarters(int actualId)
 {
     id = actualId;
     RegisterComponent(&storage);
-    RegisterComponent(&hq);
     const auto& def = GetBuildingDefinition(BuildingType::Headquarters);
     ApplyBuildingDefinition(*this, def);
     ApplyStorageDefinition(*this, def);
-    ApplyHqDefinition(*this, def);
 }
 
 // ─── Village ─────────────────────────────────────────────────────────────────
@@ -762,19 +752,54 @@ Barracks::Barracks(int actualId)
     ApplyStorageDefinition(*this, def);
 }
 
-// ─── DefenseTower ────────────────────────────────────────────────────────────
+// ─── Off-screen defense building ────────────────────────────────────────────
 
-DefenseTower::DefenseTower(int actualId)
+DefenseBuilding::DefenseBuilding(int actualId, BuildingType type)
 {
     id = actualId;
     RegisterComponent(&storage);
     RegisterComponent(&logistics);
-    RegisterComponent(&workers);
-    RegisterComponent(&combat);
-    const auto& def = GetBuildingDefinition(BuildingType::DefenseTower);
+    RegisterComponent(&coverage);
+    RegisterComponent(&garrison);
+    RegisterComponent(&upkeep);
+    const auto& def = GetBuildingDefinition(type);
     ApplyBuildingDefinition(*this, def);
     ApplyStorageDefinition(*this, def);
-    ApplyTowerDefinition(*this, def);
+    ApplyDefenseDefinition(*this, def);
+}
+
+double DefenseCoverageComponent::GetEffectiveRadius(const Building& self) const
+{
+    return self.owner != nullptr
+        ? self.owner->ResolveStat(radius, &self)
+        : radius.GetBase();
+}
+
+double DefenseCoverageComponent::GetEffectiveProtection(const Building& self) const
+{
+    return self.owner != nullptr
+        ? self.owner->ResolveStat(baseProtection, &self)
+        : baseProtection.GetBase();
+}
+
+int GarrisonComponent::GetEffectiveCapacity(const Building& self) const
+{
+    return self.owner != nullptr
+        ? self.owner->ResolveStat(capacity, &self, ResourceType::Null, 0)
+        : std::max(0, capacity.GetBase());
+}
+
+void GarrisonUpkeepComponent::Update(Building& self, double dt)
+{
+    GarrisonService::UpdateBuilding(self, dt);
+}
+
+double GarrisonUpkeepComponent::GetDebtInPackages() const
+{
+    return packageSize > 0.0
+        ? static_cast<double>(debtMicros) /
+              (packageSize * static_cast<double>(DebtScale))
+        : 0.0;
 }
 
 // ─── Concrete ProductionBuilding subclasses ───────────────────────────────────

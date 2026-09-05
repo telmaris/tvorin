@@ -1,0 +1,8 @@
+# Pilot colonization operation. Duration is measured in fixed simulation ticks.
+
+colonization frontier_settlement
+duration 600
+cost WOOD 20
+cost STONE 10
+cost PLANKS 10
+end

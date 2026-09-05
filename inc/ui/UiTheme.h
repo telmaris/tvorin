@@ -23,6 +23,9 @@ namespace UiTheme
     constexpr Color SurfaceHover {44, 48, 55, 250};
     constexpr Color Inset        {9, 10, 12, 238};
     constexpr Color InsetHover   {23, 25, 29, 245};
+    constexpr Color PanelBackdrop {12, 14, 18, 245};
+    constexpr Color TooltipBackdrop {10, 13, 18, 248};
+    constexpr Color TreeCanvasBackdrop {7, 10, 14, 245};
 
     // Metal accents.
     constexpr Color Bronze {180, 181, 178, 255}; // steel borders, dividers

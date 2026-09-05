@@ -36,23 +36,37 @@ namespace
         if (value == "PopulationCap") return BalanceStat::PopulationCap;
         if (value == "VillageSupplyConsumption") return BalanceStat::VillageSupplyConsumption;
         if (value == "BuilderAmount") return BalanceStat::BuilderAmount;
-        // TD(etap-9): tower-defense combat stats — see BalanceStats.h.
         if (value == "UnitHp") return BalanceStat::UnitHp;
-        if (value == "UnitRoadAttack") return BalanceStat::UnitRoadAttack;
-        if (value == "UnitSiegeAttack") return BalanceStat::UnitSiegeAttack;
+        if (value == "UnitFieldAttack") return BalanceStat::UnitFieldAttack;
+        if (value == "UnitSiegePower") return BalanceStat::UnitSiegePower;
         if (value == "UnitArmor") return BalanceStat::UnitArmor;
         if (value == "UnitMoveSpeed") return BalanceStat::UnitMoveSpeed;
         if (value == "UnitAttackSpeed") return BalanceStat::UnitAttackSpeed;
         if (value == "UnitRecruitTime") return BalanceStat::UnitRecruitTime;
         if (value == "UnitRecruitManpowerCost") return BalanceStat::UnitRecruitManpowerCost;
-        if (value == "HqMaxHp") return BalanceStat::HqMaxHp;
-        if (value == "HqDefense") return BalanceStat::HqDefense;
-        if (value == "HqThorns") return BalanceStat::HqThorns;
+        if (value == "ProvinceFortification") return BalanceStat::ProvinceFortification;
+        if (value == "ProvinceDefense") return BalanceStat::ProvinceDefense;
+        if (value == "ProvinceCounterattack") return BalanceStat::ProvinceCounterattack;
         if (value == "ConquestSpoilsFraction") return BalanceStat::ConquestSpoilsFraction;
-        if (value == "TowerDamage") return BalanceStat::TowerDamage;
-        if (value == "TowerRange") return BalanceStat::TowerRange;
-        if (value == "TowerAttackSpeed") return BalanceStat::TowerAttackSpeed;
-        if (value == "TowerAmmoEfficiency") return BalanceStat::TowerAmmoEfficiency;
+        if (value == "ProvinceDefensePower") return BalanceStat::ProvinceDefensePower;
+        if (value == "ProvinceDefenseCoverage") return BalanceStat::ProvinceDefenseCoverage;
+        if (value == "ProvinceDefenseReadiness") return BalanceStat::ProvinceDefenseReadiness;
+        if (value == "ProvinceDefenseSupplyUse") return BalanceStat::ProvinceDefenseSupplyUse;
+        if (value == "RouteTravelSpeed") return BalanceStat::RouteTravelSpeed;
+        if (value == "RouteIncidentChance") return BalanceStat::RouteIncidentChance;
+        if (value == "TradeExchangeRate") return BalanceStat::TradeExchangeRate;
+        if (value == "TradeScoreGain") return BalanceStat::TradeScoreGain;
+        if (value == "BattleAttack") return BalanceStat::BattleAttack;
+        if (value == "BattleCasualtyRate") return BalanceStat::BattleCasualtyRate;
+        if (value == "BattleDuration") return BalanceStat::BattleDuration;
+        if (value == "GarrisonCapacity") return BalanceStat::GarrisonCapacity;
+        if (value == "GarrisonFoodUpkeep") return BalanceStat::GarrisonFoodUpkeep;
+        if (value == "RaidBuildingDestructionChance") return BalanceStat::RaidBuildingDestructionChance;
+        if (value == "RaidStockLossFraction") return BalanceStat::RaidStockLossFraction;
+        if (value == "ProvinceEventChance") return BalanceStat::ProvinceEventChance;
+        if (value == "ProvinceEventWeight") return BalanceStat::ProvinceEventWeight;
+        if (value == "ProvinceEventDuration") return BalanceStat::ProvinceEventDuration;
+        if (value == "ColonizationDuration") return BalanceStat::ColonizationDuration;
         return BalanceStat::BuildTime;
     }
 
@@ -183,6 +197,29 @@ namespace
                     AddTag(definition.tags, "manpower");
                     AddTag(definition.tags, "logistics");
                     break;
+                case BalanceStat::RouteTravelSpeed:
+                case BalanceStat::RouteIncidentChance:
+                    AddTag(definition.tags, "logistics");
+                    break;
+                case BalanceStat::TradeExchangeRate:
+                case BalanceStat::TradeScoreGain:
+                    AddTag(definition.tags, "expansion");
+                    break;
+                case BalanceStat::BattleAttack:
+                case BalanceStat::BattleCasualtyRate:
+                case BalanceStat::BattleDuration:
+                case BalanceStat::GarrisonCapacity:
+                case BalanceStat::GarrisonFoodUpkeep:
+                case BalanceStat::RaidBuildingDestructionChance:
+                case BalanceStat::RaidStockLossFraction:
+                    AddTag(definition.tags, "military");
+                    break;
+                case BalanceStat::ProvinceEventChance:
+                case BalanceStat::ProvinceEventWeight:
+                case BalanceStat::ProvinceEventDuration:
+                case BalanceStat::ColonizationDuration:
+                    AddTag(definition.tags, "expansion");
+                    break;
             }
             if (modifier.buildingType.has_value())
                 AddBuildingTags(definition.tags, modifier.buildingType.value());
@@ -212,15 +249,10 @@ namespace
         if (value == "University") return BuildingType::University;
         if (value == "Barracks") return BuildingType::Barracks;
         if (value == "Road") return BuildingType::Road;
-        // These five existed in BuildingType but were missing here, so a data
-        // file saying `building DefenseTower` silently produced
-        // BuildingType::Building and the modifier targeted nothing. Found while
-        // building tools/tech-tree-editor (2026-07-25).
+        // These extra configured building types are parsed here as well.
         if (value == "Mint") return BuildingType::Mint;
         if (value == "Glassworks") return BuildingType::Glassworks;
         if (value == "Powderworks") return BuildingType::Powderworks;
-        if (value == "DefenseTower") return BuildingType::DefenseTower;
-        if (value == "Bridge") return BuildingType::Bridge;
         if (value == "AnimalFarm") return BuildingType::AnimalFarm;
         if (value == "Butcher") return BuildingType::Butcher;
         if (value == "Tannery") return BuildingType::Tannery;

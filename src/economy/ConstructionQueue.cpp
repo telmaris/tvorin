@@ -2,6 +2,7 @@
 
 #include "economy/Building.h"
 #include "economy/Player.h"
+#include "world/ProvinceSimulation.h"
 
 #include <algorithm>
 
@@ -14,6 +15,18 @@ int ConstructionQueue::EffectiveBuilders(const Player& player) const
 
 void ConstructionQueue::Refresh(Player& player)
 {
+    ProvinceEconomy* economy = player.GetProvinceEconomy();
+    if (economy != nullptr)
+        Refresh(player, *economy);
+    else
+    {
+        order.clear();
+        activeCount = 0;
+    }
+}
+
+void ConstructionQueue::Refresh(Player& player, ProvinceEconomy& economy)
+{
     // Upgrading buildings share this same builder-limited queue (user
     // request, 2026-07-20: "ulepszenie drogi trafi do kolejki budowy") — but
     // an upgrading building is NOT "under construction" (IsUnderConstruction()
@@ -21,7 +34,7 @@ void ConstructionQueue::Refresh(Player& player)
     // transporting/operating normally), so it's gated by its own
     // UpgradeComponent::upgradeActive flag instead of constructionActive.
     std::vector<Building*> pending;
-    for (Building* building : player.dataTracker.buildings)
+    for (Building* building : economy.dataTracker.buildings)
     {
         if (building == nullptr)
             continue;

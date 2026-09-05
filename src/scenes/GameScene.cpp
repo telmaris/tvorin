@@ -2,13 +2,14 @@
 #include "scenes/SceneUtils.h"
 #include "core/Log.h"
 #include "data/TextureConfig.h"
-#include "multiplayer/TcpGameTransport.h"
 #include "ui/GuiController.h"
 #include "ui/Renderer.h"
 #include "ui/UiText.h"
 
 #include <algorithm>
-#include <set>
+#include <cmath>
+#include <mutex>
+#include <utility>
 
 namespace
 {
@@ -19,7 +20,6 @@ namespace
         int localPlayerId{-1};
         std::size_t unlockedTechnologyCount{0};
         std::size_t unlockedFocusCount{0};
-        std::set<int> incomingUnitIds;
     };
 
     void LoadWorldAtlases(Renderer& renderer)
@@ -171,11 +171,13 @@ GameScene::GameScene()
     controller->AddSystem<BuildGuiSystem>("build");
     controller->AddSystem<RoadBuildSystem>("road_build");
     controller->AddSystem<DestroyGuiSystem>("destroy");
+    controller->AddSystem<UpgradeGuiSystem>("upgrade");
     controller->AddSystem<StatsGuiSystem>("stats");
     controller->AddSystem<FocusGuiSystem>("focus");
     controller->AddSystem<TechGuiSystem>("tech");
     controller->AddSystem<RosterGuiSystem>("roster");
     controller->AddSystem<StockpileGuiSystem>("stockpile");
+    controller->AddSystem<GlobalMapGuiSystem>("global_map");
     controller->ChangeSystem("default");
 
     inputs.Init(controller.get());
@@ -185,10 +187,46 @@ GameScene::GameScene()
     networkStatusLabel.fontSize = 18;
     networkStatusLabel.color = Color{188, 226, 255, 255};
     UpdateNetworkStatusWidget({GetScreenWidth(), GetScreenHeight()});
+    ownedProvinceList.scene = this;
+    ownedProvinceList.journal = &campaignStatus;
+    ownedProvinceList.UpdateSize({GetScreenWidth(), GetScreenHeight()});
+    campaignStatus.scene = this;
+    campaignStatus.UpdateSize({GetScreenWidth(), GetScreenHeight()});
+    campaignSidebar.provinces = &ownedProvinceList;
+    campaignSidebar.journal = &campaignStatus;
+    campaignSidebar.UpdateSize({GetScreenWidth(), GetScreenHeight()});
+}
+
+void GameScene::AppendGameplayWidgets(std::vector<UiWidget*>& widgets)
+{
+    ownedProvinceList.scene = this;
+    ownedProvinceList.journal = &campaignStatus;
+    campaignStatus.scene = this;
+    campaignSidebar.provinces = &ownedProvinceList;
+    campaignSidebar.journal = &campaignStatus;
+    widgets.push_back(&campaignSidebar);
+}
+
+GameScene::~GameScene()
+{
+    runtimeLoop.reset();
+    game = nullptr;
 }
 
 void GameScene::OnActivated()
 {
+    if (auto* window = dynamic_cast<GameWindow*>(broker))
+    {
+        bool multiplayerClient = false;
+        bool usedFallback = false;
+        if (auto prepared = window->TakePreparedGameSession(
+                name, multiplayerClient, usedFallback))
+        {
+            AdoptPreparedSession(std::move(prepared), multiplayerClient,
+                                 usedFallback);
+        }
+    }
+
     // A modal tutorial may have disabled the process-wide input query gate;
     // entering a regular gameplay scene always restores normal controls.
     InputManager::SetInputEnabled(true);
@@ -203,15 +241,18 @@ void GameScene::OnDeactivated()
         runtimeLoop->SetPaused(true);
 }
 
-bool GameScene::IsSceneTransitionOpaque() const
+void GameScene::OnWindowFocusChanged(bool focused)
 {
-    auto* window = dynamic_cast<GameWindow*>(broker);
-    return window != nullptr && window->IsSceneTransitionOpaque();
+    // Losing native-window focus is not a gameplay pause. GameWindow gates
+    // local input, while fixed-tick simulation and networking keep advancing.
+    // Explicit pause sources (blocking popup/game menu) remain authoritative.
+    (void)focused;
 }
 
 namespace
 {
-    void DrawRuntimeLoadingScreen(const std::string& message)
+
+    void DrawRuntimeLoadingScreen(Renderer& renderer, const std::string& message)
     {
         BeginDrawing();
         ClearBackground(Color{20, 14, 10, 255});
@@ -222,8 +263,10 @@ namespace
                      GetScreenHeight() * 0.5f,
                      fontSize,
                      Color{210, 224, 242, 255});
-        DrawSceneTransitionOverlay();
-        EndDrawing();
+        // Loading frames use the same application-wide present path as every
+        // scene so cursor, transition, telemetry and Ctrl+F9 capture stay in
+        // the final backbuffer in the same order.
+        renderer.PresentFrame();
     }
 
     class GameRuntimeLoopBase : public IGameRuntimeLoop
@@ -307,10 +350,14 @@ namespace
             {
                 scene.ProcessGuiInput(dt);
                 scene.HandleRenderDebugInput();
-                scene.AppendGameplayWidgets(widgets);
                 scene.controller->Update(dt);
                 const auto controllerWidgets = scene.controller->GetUiWidgets();
                 widgets.insert(widgets.end(), controllerWidgets.begin(), controllerWidgets.end());
+                // Persistent campaign overlays belong above full-screen
+                // controller panels (especially the global map), otherwise
+                // its opaque parchment/fog layer hides the province list and
+                // event journal completely.
+                scene.AppendGameplayWidgets(widgets);
                 AppendDiagnostics(scene, widgets);
             }
             else
@@ -319,10 +366,10 @@ namespace
                 // modal. InputManager is disabled by the popup callback, so
                 // these widgets remain display-only while the action button is
                 // temporarily enabled by PopupWindowWidget::Update().
-                scene.AppendGameplayWidgets(widgets);
                 scene.controller->Update(dt);
                 const auto controllerWidgets = scene.controller->GetUiWidgets();
                 widgets.insert(widgets.end(), controllerWidgets.begin(), controllerWidgets.end());
+                scene.AppendGameplayWidgets(widgets);
                 AppendDiagnostics(scene, widgets);
                 if (UiWidget* popup = scene.GetBlockingPopupWidget())
                     widgets.push_back(popup);
@@ -334,58 +381,32 @@ namespace
             // composited an old-camera world with a new-camera light map. That
             // made building lights drift or disappear while panning/zooming,
             // especially near the left edge of the render target.
-            if (renderWorld != nullptr)
-                renderWorld->DrawMap();
-            else if (scene.latestSnapshot.IsValid())
-                scene.render.DrawSnapshot(scene.latestSnapshot);
-            scene.PrepareGameplayRender();
+            const bool globalMapActive = scene.controller != nullptr &&
+                                         scene.controller->IsSystemActive("global_map");
+            if (!globalMapActive)
+            {
+                if (renderWorld != nullptr)
+                    renderWorld->DrawMap();
+                else if (scene.latestSnapshot.IsValid())
+                    scene.render.DrawSnapshot(scene.latestSnapshot);
+                scene.PrepareGameplayRender();
+            }
 
             // Keep the world lock held through widget rendering: every widget's
-            // Update() (called from render.DrawContent) reads live simulation state —
-            // garrison divisions, battle markers, order arrows — so releasing the
-            // lock before drawing races the sim thread mutating those vectors (with
-            // unique_ptr storage a torn read dereferences a freed pointer → garbage
-            // colours, vanishing markers, flickering arrows).
+            // Update() (called from render.DrawContent) reads live simulation state,
+            // so releasing the lock before drawing races the simulation thread
+            // mutating those objects.
             //
             // But we must NOT hold it across the present: EndDrawing() blocks on
-            // vsync / the frame cap (FLAG_VSYNC_HINT + SetTargetFPS), and holding
+            // the frame cap (SetTargetFPS), and holding
             // worldMutex across that ~frame-long wait starves the 100 Hz background
             // sim thread — the whole simulation crawls (build/production/transport
             // stall). So issue all draw calls under the lock via DrawContent(),
             // then release the lock, then PresentFrame() unlocked.
-            scene.render.DrawContent(widgets, dt);
-
-            // Win/lose banner — driven by the deterministic sim state (a player is
-            // defeated when its HQ is captured). Read from the live world (host/SP);
-            // MP clients rendering from a snapshot show nothing here yet. Drawn under
-            // the lock and before the present so it lands in this frame.
-            GameWorld* stateWorld = renderWorld != nullptr ? renderWorld : scene.game.get();
-            if (stateWorld != nullptr)
-            {
-                const int localId = stateWorld->GetLocalPlayerId();
-                const int victor = stateWorld->GetVictorPlayerId();
-                const char* banner = nullptr;
-                Color col{};
-                if (stateWorld->IsPlayerDefeated(localId)) { banner = "DEFEAT"; col = Color{224, 92, 92, 255}; }
-                else if (victor == localId) { banner = "VICTORY"; col = Color{130, 224, 156, 255}; }
-                if (banner != nullptr)
-                {
-                    int sw = GetScreenWidth(), sh = GetScreenHeight();
-                    DrawRectangle(0, sh / 2 - 70, sw, 140, Color{0, 0, 0, 190});
-                    int fs = 72;
-                    int tw = UiText::Measure(banner, fs);
-                    UiText::Draw(banner, static_cast<float>(sw / 2 - tw / 2),
-                                 static_cast<float>(sh / 2 - fs / 2), fs, col);
-                    const char* hint = "Press Esc for the menu";
-                    int hw = UiText::Measure(hint, 22);
-                    UiText::Draw(hint, static_cast<float>(sw / 2 - hw / 2),
-                                 static_cast<float>(sh / 2 + 44), 22,
-                                 Color{210, 214, 220, 235});
-                }
-            }
+            scene.render.DrawContent(widgets, dt, !globalMapActive);
 
             // Release the world lock BEFORE presenting so the sim thread runs
-            // freely during the vsync / frame-cap wait inside EndDrawing().
+            // freely during the frame-cap wait inside EndDrawing().
             if (worldLock.owns_lock())
                 worldLock.unlock();
 
@@ -427,7 +448,7 @@ namespace
             if (session != nullptr && !session->IsReadyForGameplay())
             {
                 std::string status = session->GetConnectionStatus();
-                DrawRuntimeLoadingScreen(status.empty() ? "Waiting for client map sync" : status);
+                DrawRuntimeLoadingScreen(scene.render, status.empty() ? "Waiting for client map sync" : status);
                 return;
             }
 
@@ -446,7 +467,7 @@ namespace
             if (session != nullptr && !session->IsReadyForGameplay())
             {
                 std::string status = session->GetConnectionStatus();
-                DrawRuntimeLoadingScreen(status.empty() ? "Syncing map" : status);
+                DrawRuntimeLoadingScreen(scene.render, status.empty() ? "Syncing map" : status);
                 return;
             }
 
@@ -457,27 +478,34 @@ namespace
 
 void GameScene::HandleRenderDebugInput()
 {
-    if (InputManager::IsKeyPressed(KEY_F5))
+    const KeyBindingMap& bindings = GetDefaultKeyBindings();
+    auto pressed = [&](GameAction action)
+    {
+        const int key = bindings.GetKeyForAction(action);
+        return key != 0 && InputManager::IsKeyPressed(key);
+    };
+
+    if (pressed(GameAction::ToggleNightPreview))
     {
         render.ToggleNightPreview();
         Log::Msg("[Renderer] Night preview: ", render.IsNightPreviewEnabled() ? "on" : "off");
     }
-    if (InputManager::IsKeyPressed(KEY_F6))
+    if (pressed(GameAction::ToggleDayNightCycle))
     {
         render.SetDayNightCycleEnabled(!render.IsDayNightCycleEnabled());
         Log::Msg("[Renderer] Day/night cycle: ", render.IsDayNightCycleEnabled() ? "on" : "off");
     }
-    if (InputManager::IsKeyPressed(KEY_F7))
+    if (pressed(GameAction::ToggleDynamicLights))
     {
         render.SetDynamicLightsEnabled(!render.AreDynamicLightsEnabled());
         Log::Msg("[Renderer] Dynamic lights: ", render.AreDynamicLightsEnabled() ? "on" : "off");
     }
-    if (InputManager::IsKeyPressed(KEY_F8))
+    if (pressed(GameAction::CycleRendererDebugView))
     {
         render.CycleDebugView();
         Log::Msg("[Renderer] Debug view changed.");
     }
-    if (InputManager::IsKeyPressed(KEY_L))
+    if (pressed(GameAction::ToggleLogisticsOverlay))
     {
         const bool enabled = !IsLogisticsOverlayPreferenceEnabled();
         SetLogisticsOverlayPreferenceEnabled(enabled);
@@ -489,13 +517,6 @@ void GameScene::HandleRenderDebugInput()
 // Advances this object's state for one frame.
 void GameScene::Update(double dt)
 {
-    if (pendingNewGame.has_value() && IsSceneTransitionOpaque())
-    {
-        PendingNewGame pending = std::move(*pendingNewGame);
-        pendingNewGame.reset();
-        StartNewGame(std::move(pending.name), pending.params);
-    }
-
     if (game == nullptr || runtimeLoop == nullptr)
         return;
 
@@ -539,14 +560,6 @@ void GameScene::Update(double dt)
             notificationSnapshot.unlockedFocusCount = player->focuses.GetUnlocked().size();
         }
 
-        for (const auto& [instanceId, unit] : game->GetDeployedUnits())
-        {
-            if (unit.ownerPlayerId != notificationSnapshot.localPlayerId &&
-                unit.routeToPlayerId == notificationSnapshot.localPlayerId &&
-                unit.state != BattleUnitState::Dying)
-                notificationSnapshot.incomingUnitIds.insert(instanceId);
-        }
-
         // Do not touch the live world after this point. Audio playback and UI
         // bookkeeping may run without the simulation mutex.
         if (worldLock.owns_lock())
@@ -558,7 +571,29 @@ void GameScene::Update(double dt)
             if (result.playerId != localId)
                 continue;
             if (!result.accepted)
+            {
                 audioSystem->PlaySound("error");
+                continue;
+            }
+
+            switch (result.type)
+            {
+                case GameCommandType::BuildBuilding:
+                    audioSystem->PlaySound("build");
+                    break;
+                case GameCommandType::DestroyBuilding:
+                    audioSystem->PlaySound("destroy");
+                    break;
+                case GameCommandType::StartFocus:
+                case GameCommandType::StartTechnologyResearch:
+                    audioSystem->PlaySound("research");
+                    break;
+                case GameCommandType::RecruitUnit:
+                    audioSystem->PlaySound("recruit");
+                    break;
+                default:
+                    break;
+            }
         }
 
         if (notificationSnapshot.unlockedTechnologyCount > prevUnlockedTechCount ||
@@ -567,19 +602,11 @@ void GameScene::Update(double dt)
         prevUnlockedTechCount = notificationSnapshot.unlockedTechnologyCount;
         prevUnlockedFocusCount = notificationSnapshot.unlockedFocusCount;
 
-        for (int instanceId : notificationSnapshot.incomingUnitIds)
-        {
-            if (!knownIncomingUnitIds.contains(instanceId))
-            {
-                audioSystem->PlaySound("notification");
-                break;
-            }
-        }
-        knownIncomingUnitIds = std::move(notificationSnapshot.incomingUnitIds);
     }
 
     commandResults.clear();
 }
+
 
 // Handles the requested event or transfer.
 void GameScene::HandleEvent(std::shared_ptr<Event> e)
@@ -592,20 +619,12 @@ void GameScene::HandleEvent(std::shared_ptr<Event> e)
             system->UpdateUiWidgets(ptr->windowSize);
         }
         UpdateNetworkStatusWidget(ptr->windowSize);
+        campaignSidebar.UpdateSize(ptr->windowSize);
     }
 
     auto sceneChange = std::dynamic_pointer_cast<ChangeSceneEvent>(e);
     if (sceneChange != nullptr && sceneChange->sceneName == "MainScene" && runtimeLoop != nullptr)
         ShutdownActiveGame();
-
-    auto ptr2 = std::dynamic_pointer_cast<NewGameEvent>(e);
-    if (ptr2 != nullptr)
-    {
-        // GameWindow starts the fade immediately. Defer the potentially
-        // expensive map generation until the transition is fully opaque.
-        pendingNewGame = PendingNewGame{ptr2->name, ptr2->params};
-        return;
-    }
 
     auto ptr3 = std::dynamic_pointer_cast<LoadGameEvent>(e);
     if (ptr3 != nullptr)
@@ -631,124 +650,51 @@ void GameScene::HandleEvent(std::shared_ptr<Event> e)
         }
     }
 
-    auto hostEvent = std::dynamic_pointer_cast<HostMultiplayerGameEvent>(e);
-    if (hostEvent != nullptr)
-    {
-        StartMultiplayerHost(hostEvent->name, hostEvent->params, hostEvent->port, hostEvent->transport);
-
-        auto msg = std::make_shared<ChangeSceneEvent>();
-        msg->sender = this;
-        msg->sceneName = "GameScene";
-        msg->previousSceneName = name;
-        broker->Broadcast(msg);
-    }
-
-    auto joinEvent = std::dynamic_pointer_cast<JoinMultiplayerGameEvent>(e);
-    if (joinEvent != nullptr)
-    {
-        StartMultiplayerClient(joinEvent->name, joinEvent->params, joinEvent->address, joinEvent->port, joinEvent->transport);
-
-        auto msg = std::make_shared<ChangeSceneEvent>();
-        msg->sender = this;
-        msg->sceneName = "GameScene";
-        msg->previousSceneName = name;
-        broker->Broadcast(msg);
-    }
 }
 
-// Initializes GameScene::StartNewGame.
-void GameScene::StartNewGame(std::string name, MapParameters params)
+void GameScene::AdoptPreparedSession(std::unique_ptr<IGameSession> session,
+                                     bool multiplayerClient,
+                                     bool usedFallback)
 {
+    if (session == nullptr || !session->IsReadyForGameplay())
+        return;
+
+    runtimeLoop.reset();
+    game = nullptr;
     render.ClearLayers();
-    game = std::make_unique<GameWorld>();
-    std::string worldName = SanitizeSaveName(name);
-    if (!game->InitWorld(worldName, &render, audioSystem, params))
+
+    std::unique_lock<std::recursive_mutex> worldLock;
+    if (auto* mutex = session->GetWorldMutex())
+        worldLock = std::unique_lock<std::recursive_mutex>(*mutex);
+    game = session->GetWorld();
+    if (game == nullptr || !game->IsInitialized())
     {
-        const std::string error = game->GetInitializationError();
-        Log::Msg("GameScene", "Could not start single-player world: ", error);
-        game.reset();
-        auto statusEvent = std::make_shared<NetworkStatusEvent>();
-        statusEvent->sender = this;
-        statusEvent->message = "Could not create world: " + error;
-        broker->Broadcast(statusEvent);
-        auto sceneEvent = std::make_shared<ChangeSceneEvent>();
-        sceneEvent->sender = this;
-        sceneEvent->sceneName = "MainScene";
-        sceneEvent->previousSceneName = name;
-        broker->Broadcast(sceneEvent);
+        game = nullptr;
         return;
     }
-    runtimeLoop = std::make_unique<HostRuntimeLoop>(std::make_unique<HostSession>(*game));
-    prevUnlockedTechCount  = 0;
+    game->AttachPresentation(&render);
+    if (worldLock.owns_lock())
+        worldLock.unlock();
+
+    session->ActivateGameplay();
+    if (multiplayerClient)
+        runtimeLoop = std::make_unique<MultiplayerClientRuntimeLoop>(
+            std::move(session));
+    else
+        runtimeLoop = std::make_unique<HostRuntimeLoop>(std::move(session));
+
+    prevUnlockedTechCount = 0;
     prevUnlockedFocusCount = 0;
-    knownIncomingUnitIds.clear();
-    if (audioSystem != nullptr)
-        audioSystem->PlayMusicRotation("gameplay_rotation", "gameplay",
-                                       DefaultMusicCrossfadeSeconds);
-}
+    latestSnapshot = GameSnapshot{};
+    commandResults.clear();
 
-// Creates and hosts a LAN multiplayer world.
-void GameScene::StartMultiplayerHost(std::string name, MapParameters params, unsigned short port, std::shared_ptr<IGameTransport> transport)
-{
-    render.ClearLayers();
-    game = std::make_unique<GameWorld>();
-    std::string worldName = SanitizeSaveName(name);
-    if (!game->InitMultiplayerWorld(worldName, &render, audioSystem, params, 0, true))
+    if (usedFallback && broker != nullptr)
     {
-        const std::string error = game->GetInitializationError();
-        Log::Msg("GameScene", "Could not start multiplayer host world: ", error);
-        game.reset();
-        auto statusEvent = std::make_shared<NetworkStatusEvent>();
-        statusEvent->sender = this;
-        statusEvent->message = "Could not create world: " + error;
-        broker->Broadcast(statusEvent);
-        auto sceneEvent = std::make_shared<ChangeSceneEvent>();
-        sceneEvent->sender = this;
-        sceneEvent->sceneName = "MainScene";
-        sceneEvent->previousSceneName = name;
-        broker->Broadcast(sceneEvent);
-        return;
+        auto status = std::make_shared<NetworkStatusEvent>();
+        status->sender = this;
+        status->message = "World created using a safe fallback layout";
+        broker->Broadcast(status);
     }
-    knownIncomingUnitIds.clear();
-    if (transport == nullptr)
-        transport = TcpGameTransport::CreateHost(port);
-    bool requireRemoteSync = transport != nullptr && transport->IsConnected();
-    Log::Msg("GameScene", "Starting multiplayer host world '", worldName, "' on port ", port);
-    runtimeLoop = std::make_unique<HostRuntimeLoop>(
-        std::make_unique<HostSession>(*game, transport, 1, requireRemoteSync));
-    if (audioSystem != nullptr)
-        audioSystem->PlayMusicRotation("gameplay_rotation", "gameplay",
-                                       DefaultMusicCrossfadeSeconds);
-}
-
-// Joins a LAN multiplayer world with a local mirror.
-void GameScene::StartMultiplayerClient(std::string name, MapParameters params, const std::string& address, unsigned short port, std::shared_ptr<IGameTransport> transport)
-{
-    render.ClearLayers();
-    game = std::make_unique<GameWorld>();
-    std::string worldName = SanitizeSaveName(name);
-    if (!game->InitMultiplayerWorld(worldName, &render, audioSystem, params, 1, false))
-    {
-        const std::string error = game->GetInitializationError();
-        Log::Msg("GameScene", "Could not start multiplayer client world: ", error);
-        game.reset();
-        auto statusEvent = std::make_shared<NetworkStatusEvent>();
-        statusEvent->sender = this;
-        statusEvent->message = "Could not create world: " + error;
-        broker->Broadcast(statusEvent);
-        auto sceneEvent = std::make_shared<ChangeSceneEvent>();
-        sceneEvent->sender = this;
-        sceneEvent->sceneName = "MainScene";
-        sceneEvent->previousSceneName = name;
-        broker->Broadcast(sceneEvent);
-        return;
-    }
-    knownIncomingUnitIds.clear();
-    if (transport == nullptr)
-        transport = TcpGameTransport::CreateClient(address, port);
-    Log::Msg("GameScene", "Starting multiplayer client world '", worldName, "' connecting to ", address, ":", port);
-    runtimeLoop = std::make_unique<MultiplayerClientRuntimeLoop>(
-        std::make_unique<ClientSession>(game.get(), transport, 1));
     if (audioSystem != nullptr)
         audioSystem->PlayMusicRotation("gameplay_rotation", "gameplay",
                                        DefaultMusicCrossfadeSeconds);
@@ -760,17 +706,15 @@ bool GameScene::LoadGame(std::string name)
     std::string saveName = SanitizeSaveName(name);
     std::string filename{"saves/" + saveName + ".save"};
     auto loadedGame = std::make_unique<GameWorld>();
-    if (loadedGame->LoadFromFile(filename, &render, audioSystem))
+    if (loadedGame->LoadFromFile(filename, &render))
     {
-        // HostRuntimeLoop owns a background HostSession which keeps a raw
-        // pointer to `game`. Stop and join that worker before replacing the
-        // world it references. Loading into a temporary world also preserves
-        // the active game when the selected save is invalid or incompatible.
         runtimeLoop.reset();
+        game = nullptr;
         render.ClearLayers();
-        game = std::move(loadedGame);
-        knownIncomingUnitIds.clear();
-        runtimeLoop = std::make_unique<HostRuntimeLoop>(std::make_unique<HostSession>(*game));
+        auto hostSession = std::make_unique<HostSession>(std::move(loadedGame));
+        game = hostSession->GetWorld();
+        hostSession->ActivateGameplay();
+        runtimeLoop = std::make_unique<HostRuntimeLoop>(std::move(hostSession));
         {
             auto pit = game->GetPlayerHandler().players.find(game->GetLocalPlayerId());
             if (pit != game->GetPlayerHandler().players.end())
@@ -841,10 +785,9 @@ std::vector<GameCommandResult> GameScene::ConsumeCommandResults()
 void GameScene::ShutdownActiveGame()
 {
     runtimeLoop.reset();
-    game.reset();
+    game = nullptr;
     latestSnapshot = GameSnapshot{};
     commandResults.clear();
-    knownIncomingUnitIds.clear();
     render.ClearLayers();
     Log::Msg("GameScene", "Active game session shut down");
 }

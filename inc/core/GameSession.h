@@ -2,6 +2,9 @@
 #define GAME_SESSION_H
 
 #include "core/GameWorld.h"
+#include "core/CampaignGeneration.h"
+#include "core/PersistenceLimits.h"
+#include "multiplayer/SnapshotTransfer.h"
 
 #include <cstdint>
 #include <deque>
@@ -62,6 +65,40 @@ private:
     std::deque<std::string> hostSnapshots;
 };
 
+enum class GameSessionStartupPhase
+{
+    Starting,
+    GeneratingWorld,
+    WaitingForPeer,
+    SynchronizingWorld,
+    Ready,
+    Recovering,
+    Failed,
+    Stopped
+};
+
+struct GameSessionStartupStatus
+{
+    GameSessionStartupPhase phase{GameSessionStartupPhase::Starting};
+    float progress{0.0f};
+    std::string message{"Starting session"};
+    std::string error;
+    bool usedFallback{false};
+};
+
+enum class HostWorldMode
+{
+    SinglePlayer,
+    MultiplayerHost
+};
+
+struct HostSessionStartRequest
+{
+    std::string worldName;
+    CampaignGenerationParameters params;
+    HostWorldMode mode{HostWorldMode::SinglePlayer};
+};
+
 // Abstracts the authority that advances a game world.
 class IGameSession
 {
@@ -76,6 +113,13 @@ public:
     virtual std::string GetConnectionStatus() const { return {}; }
     virtual int GetPingMs() const { return -1; }
     virtual bool IsReadyForGameplay() const { return true; }
+    virtual GameSessionStartupStatus GetStartupStatus() const
+    {
+        return {GameSessionStartupPhase::Ready, 1.0f, "Ready", {}, false};
+    }
+    // Releases the startup gate after the main thread has attached presentation
+    // services and switched from LoadingScene to the gameplay scene.
+    virtual void ActivateGameplay() {}
     virtual std::recursive_mutex* GetWorldMutex() { return nullptr; }
     // Single-player sessions stop advancing while their gameplay scene is inactive.
     // Network sessions must keep running so remote peers are never stalled by a local menu.
@@ -119,6 +163,18 @@ public:
     // Multiplayer constructor: with transport for remote players
     HostSession(GameWorld& world, std::shared_ptr<IGameTransport> transport, int remotePlayerId = 0, bool requireRemoteSync = true);
 
+    // Owns an already initialized world (for save loading) while preserving
+    // the same lifetime rules as generated sessions.
+    explicit HostSession(std::unique_ptr<GameWorld> world);
+
+    // Creates and initializes the authoritative world at the beginning of the
+    // existing HostSession worker. No additional async worker is involved.
+    explicit HostSession(HostSessionStartRequest request);
+    HostSession(HostSessionStartRequest request,
+                std::shared_ptr<IGameTransport> transport,
+                int remotePlayerId = 0,
+                bool requireRemoteSync = true);
+
     ~HostSession() override;
 
     std::uint64_t SubmitCommand(const GameCommand& command) override;
@@ -130,6 +186,8 @@ public:
     std::string GetConnectionStatus() const override;
     int GetPingMs() const override;
     bool IsReadyForGameplay() const override;
+    GameSessionStartupStatus GetStartupStatus() const override;
+    void ActivateGameplay() override;
     std::recursive_mutex* GetWorldMutex() override;
     bool ShouldPauseWhenSceneInactive() const override;
     void SetPaused(bool paused) override;
@@ -140,6 +198,11 @@ private:
     void SendCorrectionSnapshot();
     void RememberRemoteCommandResult(const GameCommandResult& result);
     void Stop();
+    void StartWorker();
+    bool InitializeGeneratedWorld();
+    void PublishStartupStatus(GameSessionStartupPhase phase, float progress,
+                              std::string message, std::string error = {},
+                              bool usedFallback = false);
     void RunSimulation();
     // One locked iteration of the simulation loop: transport commands, remote-sync
     // gate, fixed-tick update. Returns early (no goto) once nothing more to do this
@@ -147,7 +210,9 @@ private:
     void RunSimulationTick();
 
     // Simulation state
+    std::unique_ptr<GameWorld> ownedWorld;
     GameWorld* world{nullptr};
+    std::optional<HostSessionStartRequest> startRequest;
     FixedSimulationClock clock;
     std::uint64_t inputDelayTicks{1};
     std::vector<GameCommandResult> commandResults;
@@ -156,9 +221,12 @@ private:
     std::shared_ptr<IGameTransport> transport;
     int remotePlayerId{0};
     bool requireRemoteSync{true};
-    bool hadConnection{false};
+    std::atomic<bool> hadConnection{false};
     bool initialSnapshotSent{false};
+    int initialSnapshotFailureCount{0};
     bool remoteInitialSnapshotReady{false};
+    bool remoteStartAcknowledged{false};
+    std::chrono::steady_clock::time_point remoteSyncStartedAt{};
     bool hasLastSentSnapshot{false};
     GameSnapshot lastSentSnapshot;
     double checksumTimer{0.0};
@@ -172,12 +240,15 @@ private:
     mutable std::recursive_mutex worldMutex;
     std::atomic<bool> running{false};
     std::atomic<bool> paused{false};
+    std::atomic<bool> gameplayActivated{false};
     std::thread worker;
     std::mutex sleepMutex;
     std::condition_variable cv;
     std::mutex snapshotMutex;
     GameSnapshot latestSnapshot;
     bool hasSnapshot{false};
+    mutable std::mutex startupMutex;
+    GameSessionStartupStatus startupStatus;
 };
 
 // Single player - uses HostSession without transport
@@ -186,11 +257,20 @@ using SinglePlayerSession = HostSession;
 // Multiplayer - alias for HostSession with transport (for backward compatibility if needed)
 using MultiplayerHostSession = HostSession;
 
-// Prototype local client. It sends serialized commands and observes a local world mirror.
+// Multiplayer client. Runtime instances own their world mirror and synchronize
+// it on a session worker; the raw-pointer constructor remains for focused tests.
 class ClientSession : public IGameSession
 {
 public:
+    // Compatibility path used by focused tests and externally owned mirrors.
+    // It remains foreground-driven by Update().
     ClientSession(GameWorld* observedWorld, std::shared_ptr<IGameTransport> transport, int assignedPlayerId = 0);
+    // Runtime path: the session owns an empty mirror and performs network
+    // receive, snapshot restore and catch-up on its own session worker.
+    ClientSession(std::unique_ptr<GameWorld> observedWorld,
+                  std::shared_ptr<IGameTransport> transport,
+                  int assignedPlayerId = 0);
+    ~ClientSession() override;
 
     std::uint64_t SubmitCommand(const GameCommand& command) override;
     void Update(double dt) override;
@@ -200,21 +280,34 @@ public:
     int GetPingMs() const override;
     std::string GetConnectionStatus() const override;
     bool IsReadyForGameplay() const override;
+    GameSessionStartupStatus GetStartupStatus() const override;
+    void ActivateGameplay() override;
+    std::recursive_mutex* GetWorldMutex() override;
     std::vector<GameCommandResult> ConsumeCommandResults() override;
 
 private:
-    static constexpr size_t MaxInitialSnapshotBytes = 64u * 1024u * 1024u;
-    static constexpr size_t MaxInitialSnapshotChunks = 6000u;
+    static constexpr size_t MaxInitialSnapshotBytes =
+        PersistenceLimits::MaxSerializedStateBytes;
+    static constexpr size_t MaxInitialSnapshotChunks =
+        (MaxInitialSnapshotBytes + SnapshotTransferLimits::DefaultChunkDataBytes - 1) /
+        SnapshotTransferLimits::DefaultChunkDataBytes;
     void HandleSnapshotPayload(const std::string& payload);
     void HandleAuthoritativeResult(const GameCommandResult& result);
+    void RunNetworkTick(double dt);
+    void RunNetwork();
+    void Stop();
+    void ResetInitialSnapshotTransfer();
+    void RetryOrFailInitialSync();
+    void PublishStartupStatus(GameSessionStartupPhase phase, float progress,
+                              std::string message, std::string error = {});
 
+    std::unique_ptr<GameWorld> ownedObservedWorld;
     GameWorld* observedWorld{nullptr};
     std::shared_ptr<IGameTransport> transport;
     std::uint64_t nextClientCommandId{1};
     int assignedPlayerId{0};
-    bool hadConnection{false};
+    std::atomic<bool> hadConnection{false};
     bool wasConnected{false};
-    FixedSimulationClock clock;
     GameSnapshot latestNetworkSnapshot;
     bool hasNetworkSnapshot{false};
     bool initialSnapshotReceived{false};
@@ -225,6 +318,7 @@ private:
     size_t receivedInitialSnapshotBytes{0};
     std::uint64_t expectedInitialSnapshotTick{0};
     bool initialSnapshotFailed{false};
+    int initialSnapshotRetryCount{0};
     std::string initialSnapshotBuffer;
     std::vector<std::string> initialSnapshotChunks;
     std::vector<bool> initialSnapshotChunkReceived;
@@ -234,6 +328,20 @@ private:
     std::set<std::pair<int, std::uint64_t>> observedCommandResults;
     std::deque<std::pair<int, std::uint64_t>> observedCommandResultOrder;
     std::map<std::uint64_t, std::string> pendingClientCommandPayloads;
+    bool backgroundWorker{false};
+    std::atomic<bool> running{false};
+    std::thread worker;
+    mutable std::recursive_mutex worldMutex;
+    std::mutex sleepMutex;
+    std::condition_variable cv;
+    std::chrono::steady_clock::time_point startupStartedAt{};
+    mutable std::mutex startupMutex;
+    GameSessionStartupStatus startupStatus{
+        GameSessionStartupPhase::SynchronizingWorld,
+        0.02f,
+        "Waiting for host map data",
+        {},
+        false};
 };
 
 // Backward compatibility alias

@@ -216,7 +216,7 @@ technology gunpowder_compounding
     cost COAL 50
     modifier ProductionCycleTime multiplier 0.8 building Powderworks
     modifier ProductionOutputAmount category Chemical multiplier 1.10
-    modifier TowerDamage multiplier 1.10
+    modifier ProvinceDefensePower multiplier 1.10
 end
 
 technology pneumatic_chymistry
@@ -305,7 +305,7 @@ technology trigonometry
     requires euclidean_geometry
     cost PAPER 260
     cost PLANKS 80
-    modifier TowerRange multiplier 1.1
+    modifier ProvinceDefenseCoverage multiplier 1.1
     modifier BuildTime multiplier 0.952381
 end
 
@@ -394,7 +394,7 @@ technology mechanics_of_motion
     cost PAPER 520
     cost IRON 30
     modifier UnitMoveSpeed multiplier 1.05
-    modifier UnitSiegeAttack multiplier 1.05
+    modifier UnitSiegePower multiplier 1.05
 end
 
 technology torsion_engines
@@ -409,7 +409,7 @@ technology torsion_engines
     cost PAPER 700
     cost PLANKS 100
     cost IRON 30
-    modifier UnitSiegeAttack multiplier 1.05 unit ram
+    modifier UnitSiegePower multiplier 1.05 unit ram
 end
 
 technology catapult_construction
@@ -424,7 +424,7 @@ technology catapult_construction
     cost PAPER 900
     cost PLANKS 140
     cost IRON 45
-    modifier UnitSiegeAttack multiplier 1.1 unit catapult
+    modifier UnitSiegePower multiplier 1.1 unit catapult
 end
 
 technology ballista_construction
@@ -439,7 +439,7 @@ technology ballista_construction
     cost PAPER 1100
     cost PLANKS 100
     cost IRON 70
-    modifier UnitRoadAttack multiplier 1.1 unit ballista
+    modifier UnitFieldAttack multiplier 1.1 unit ballista
 end
 
 technology incendiary_projectors
@@ -454,7 +454,7 @@ technology incendiary_projectors
     cost PAPER 1300
     cost PLANKS 120
     cost IRON 100
-    modifier UnitSiegeAttack multiplier 1.15 unit fire_projector
+    modifier UnitSiegePower multiplier 1.15 unit fire_projector
 end
 
 technology geometrical_optics
@@ -468,7 +468,7 @@ technology geometrical_optics
     requires euclidean_geometry
     cost PAPER 360
     cost GLASS 12
-    modifier TowerRange multiplier 1.05
+    modifier ProvinceDefenseCoverage multiplier 1.05
 end
 
 technology thermometry_and_heat
@@ -513,7 +513,7 @@ technology electrostatic_machines
     cost PAPER 900
     cost GLASS 30
     cost COPPER 30
-    modifier TowerAttackSpeed multiplier 1.05
+    modifier ProvinceDefenseReadiness multiplier 1.05
 end
 
 technology leyden_batteries
@@ -528,7 +528,7 @@ technology leyden_batteries
     cost PAPER 1100
     cost GLASS 40
     cost COPPER 50
-    modifier TowerAttackSpeed multiplier 1.05
+    modifier ProvinceDefenseReadiness multiplier 1.05
 end
 
 technology land_surveying
@@ -667,7 +667,7 @@ technology codified_law
     requires writing_and_recordkeeping
     cost PAPER 150
     modifier BuildCost multiplier 0.952381
-    modifier HqDefense additive 1
+    modifier ProvinceDefense additive 1
 end
 
 technology rhetoric_and_logic
@@ -904,7 +904,7 @@ technology linear_perspective
     requires monumental_arts
     cost PAPER 380
     cost PLANKS 40
-    modifier TowerRange multiplier 1.05
+    modifier ProvinceDefenseCoverage multiplier 1.05
     modifier BuildTime multiplier 0.952381 building University
 end
 
@@ -978,8 +978,8 @@ technology fortification_geometry
     requires land_surveying
     cost PAPER 700
     cost STONE 120
-    modifier TowerRange multiplier 1.1
-    modifier HqDefense additive 2
+    modifier ProvinceDefenseCoverage multiplier 1.1
+    modifier ProvinceDefense additive 2
 end
 
 technology ballistics
@@ -993,8 +993,8 @@ technology ballistics
     requires cannon_founding
     cost PAPER 900
     cost MECHANICAL_PARTS 40
-    modifier UnitSiegeAttack multiplier 1.15
-    modifier TowerDamage multiplier 1.1
+    modifier UnitSiegePower multiplier 1.15
+    modifier ProvinceDefensePower multiplier 1.1
 end
 
 technology steam_mine_drainage
@@ -1059,8 +1059,8 @@ technology cannon_founding
     cost PAPER 1100
     cost COPPER 80
     cost MECHANICAL_PARTS 60
-    modifier UnitSiegeAttack multiplier 1.1
-    modifier HqDefense additive 1
+    modifier UnitSiegePower multiplier 1.1
+    modifier ProvinceDefense additive 1
 end
 
 technology rotary_steamworks
@@ -1081,4 +1081,16 @@ technology rotary_steamworks
     modifier ProductionCycleTime multiplier 0.833333 building UrbanWorkshop
     modifier ProductionOutputAmount category CraftedGood multiplier 1.10
     modifier BuildTime multiplier 0.909091
+end
+
+technology route_survey_protocol
+    name "Route Survey Protocol"
+    description "Measured routes reduce travel incidents across the frontier."
+    category SCIENCE
+    layout_lane "Expansion"
+    layout_order 9000
+    tags logistics expansion
+    research_time 180
+    modifier RouteTravelSpeed multiplier 1.10
+    modifier RouteIncidentChance multiplier 0.85
 end

@@ -7,6 +7,7 @@
 
 class Player;
 class Building;
+struct ProvinceEconomy;
 
 // Per-player construction manager. A limited pool of builders (held as a
 // Stat<int> so tech / focus / national buffs can raise it through
@@ -30,6 +31,7 @@ public:
     // Rebuilds queue order and flags which buildings may progress this tick.
     // Call once per simulation tick, before ticking the buildings.
     void Refresh(Player& player);
+    void Refresh(Player& player, ProvinceEconomy& economy);
 
     // 1-based queue position of a building, or 0 when it is not queued.
     int QueuePosition(int buildingId) const;

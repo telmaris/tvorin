@@ -62,7 +62,7 @@ TEST(ResourceBufferTests, GetResourceReturnsStoredResourcesLastInFirstOut)
     EXPECT_EQ(nonePtr, nullptr);
 }
 
-TEST(ResourceBufferTests, SetStoredAmountAllocatesLazilyAndClampsToCapacity)
+TEST(ResourceBufferTests, SetStoredAmountUsesStaticPoolAndClampsToCapacity)
 {
     ResourceBuffer buffer{ResourceType::STONE, 3};
 
@@ -76,6 +76,19 @@ TEST(ResourceBufferTests, SetStoredAmountAllocatesLazilyAndClampsToCapacity)
 
     buffer.Clear();
     EXPECT_TRUE(buffer.buffer.empty());
+}
+
+TEST(ResourceBufferTests, GameplayResourcesReturnToSharedFixedPool)
+{
+    ResourcePool pool;
+    const std::size_t before = pool.Available();
+    Resource* resource = Resource::CreateOwned(ResourceType::WOOD);
+    ASSERT_NE(resource, nullptr);
+    EXPECT_EQ(pool.Available(), before - 1);
+    EXPECT_TRUE(resource->ownedAllocation);
+
+    Resource::DestroyOwned(resource);
+    EXPECT_EQ(pool.Available(), before);
 }
 
 TEST(ResourceBufferTests, RepeatedShortLivedBuffersReleaseOwnedResources)

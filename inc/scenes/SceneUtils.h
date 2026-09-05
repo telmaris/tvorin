@@ -28,10 +28,11 @@ void PopulateSaveButtons(VBox& saveButtons, const std::function<void(std::string
 // Human-readable label for a map size preset.
 std::string MapSizeName(MapSizePreset preset);
 
-// Human-readable label for an AI difficulty index.
-std::string DifficultyName(int difficulty);
-
 // Maps a normalized [0,1] slider value onto an integer range.
 int SliderToInt(float value, int minValue, int maxValue);
+
+// Applies only the local-map shortcuts used by debug sessions. Campaign-wide
+// global-map parameters remain owned by the corresponding setup screen.
+void ApplyDebugLocalMapPreset(MapParameters& params);
 
 #endif

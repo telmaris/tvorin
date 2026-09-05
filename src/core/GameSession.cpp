@@ -1,6 +1,10 @@
 #include "core/GameSession.h"
 #include "core/Log.h"
 
+#include <array>
+#include <exception>
+#include <stdexcept>
+
 // ============================================================================
 // LocalhostGameTransport Implementation
 // ============================================================================
@@ -72,13 +76,63 @@ std::vector<std::string> LocalhostGameTransport::ReceiveClientSnapshots()
 HostSession::HostSession(GameWorld& world)
     : world(&world), transport(nullptr), requireRemoteSync(false)
 {
-    running = true;
-    worker = std::thread(&HostSession::RunSimulation, this);
+    gameplayActivated = true;
+    PublishStartupStatus(GameSessionStartupPhase::Ready, 1.0f, "Ready");
+    StartWorker();
 }
 
 // Multiplayer constructor
 HostSession::HostSession(GameWorld& world, std::shared_ptr<IGameTransport> transport, int remotePlayerId, bool requireRemoteSync)
     : world(&world), transport(std::move(transport)), remotePlayerId(remotePlayerId), requireRemoteSync(requireRemoteSync)
+{
+    gameplayActivated = true;
+    remoteSyncStartedAt = std::chrono::steady_clock::now();
+    PublishStartupStatus(
+        this->transport != nullptr && this->requireRemoteSync
+            ? GameSessionStartupPhase::WaitingForPeer
+            : GameSessionStartupPhase::Ready,
+        this->transport != nullptr && this->requireRemoteSync ? 0.96f : 1.0f,
+        this->transport != nullptr && this->requireRemoteSync
+            ? "Preparing map sync"
+            : "Ready");
+    StartWorker();
+}
+
+HostSession::HostSession(std::unique_ptr<GameWorld> loadedWorld)
+    : ownedWorld(std::move(loadedWorld)), world(ownedWorld.get()),
+      transport(nullptr), requireRemoteSync(false)
+{
+    PublishStartupStatus(
+        world != nullptr && world->IsInitialized()
+            ? GameSessionStartupPhase::Ready
+            : GameSessionStartupPhase::Failed,
+        world != nullptr && world->IsInitialized() ? 1.0f : 0.0f,
+        world != nullptr && world->IsInitialized() ? "Ready" : "Loaded world is invalid",
+        world != nullptr && world->IsInitialized() ? std::string{} : "Loaded world is invalid");
+    StartWorker();
+}
+
+HostSession::HostSession(HostSessionStartRequest request)
+    : startRequest(std::move(request)), transport(nullptr), requireRemoteSync(false)
+{
+    PublishStartupStatus(GameSessionStartupPhase::Starting, 0.01f,
+                         "Starting world generator");
+    StartWorker();
+}
+
+HostSession::HostSession(HostSessionStartRequest request,
+                         std::shared_ptr<IGameTransport> transport,
+                         int remotePlayerId,
+                         bool requireRemoteSync)
+    : startRequest(std::move(request)), transport(std::move(transport)),
+      remotePlayerId(remotePlayerId), requireRemoteSync(requireRemoteSync)
+{
+    PublishStartupStatus(GameSessionStartupPhase::Starting, 0.01f,
+                         "Starting host session");
+    StartWorker();
+}
+
+void HostSession::StartWorker()
 {
     running = true;
     worker = std::thread(&HostSession::RunSimulation, this);
@@ -107,8 +161,9 @@ void HostSession::Update(double dt)
 
 GameWorld* HostSession::GetWorld()
 {
-    // No lock needed: world pointer is const after construction. Removing lock fixes GUI freeze
-    // caused by main thread (GameScene) waiting for background thread (RunSimulation) to release mutex.
+    // Generated sessions publish this pointer before publishing Ready through
+    // startupMutex. Callers must observe IsReadyForGameplay first; afterwards
+    // the pointer remains stable for the entire session lifetime.
     return world;
 }
 
@@ -133,12 +188,18 @@ bool HostSession::ConsumeLatestSnapshot(GameSnapshot& snapshot)
 bool HostSession::IsConnectionClosed() const
 {
     std::lock_guard<std::recursive_mutex> lock(worldMutex);
-    return transport != nullptr && hadConnection && (!transport->IsConnected() || transport->HasFailed());
+    const GameSessionStartupStatus status = GetStartupStatus();
+    return status.phase == GameSessionStartupPhase::Failed ||
+           (transport != nullptr && hadConnection &&
+            (!transport->IsConnected() || transport->HasFailed()));
 }
 
 std::string HostSession::GetConnectionStatus() const
 {
     std::lock_guard<std::recursive_mutex> lock(worldMutex);
+    const GameSessionStartupStatus startup = GetStartupStatus();
+    if (startup.phase != GameSessionStartupPhase::Ready && !startup.message.empty())
+        return startup.message;
     if (transport == nullptr)
         return "Single player";
     if (transport != nullptr && requireRemoteSync && !remoteInitialSnapshotReady)
@@ -154,8 +215,21 @@ int HostSession::GetPingMs() const
 
 bool HostSession::IsReadyForGameplay() const
 {
-    std::lock_guard<std::recursive_mutex> lock(worldMutex);
-    return transport == nullptr || !requireRemoteSync || remoteInitialSnapshotReady;
+    return GetStartupStatus().phase == GameSessionStartupPhase::Ready;
+}
+
+GameSessionStartupStatus HostSession::GetStartupStatus() const
+{
+    std::lock_guard<std::mutex> lock(startupMutex);
+    return startupStatus;
+}
+
+void HostSession::ActivateGameplay()
+{
+    if (!IsReadyForGameplay())
+        return;
+    gameplayActivated = true;
+    cv.notify_all();
 }
 
 std::recursive_mutex* HostSession::GetWorldMutex()
@@ -194,6 +268,180 @@ void HostSession::Stop()
     cv.notify_all();
     if (worker.joinable())
         worker.join();
+    const GameSessionStartupStatus status = GetStartupStatus();
+    if (status.phase != GameSessionStartupPhase::Failed)
+        PublishStartupStatus(GameSessionStartupPhase::Stopped, status.progress,
+                             "Session stopped", status.error,
+                             status.usedFallback);
+}
+
+void HostSession::PublishStartupStatus(GameSessionStartupPhase phase,
+                                       float progress,
+                                       std::string message,
+                                       std::string error,
+                                       bool usedFallback)
+{
+    std::lock_guard<std::mutex> lock(startupMutex);
+    startupStatus.phase = phase;
+    startupStatus.progress = std::clamp(progress, 0.0f, 1.0f);
+    startupStatus.message = std::move(message);
+    startupStatus.error = std::move(error);
+    startupStatus.usedFallback = usedFallback;
+}
+
+bool HostSession::InitializeGeneratedWorld()
+{
+    if (!startRequest.has_value())
+        return world != nullptr;
+
+    const HostSessionStartRequest request = *startRequest;
+    auto normalize = [](CampaignGenerationParameters campaign)
+    {
+        MapParameters& params = campaign.localMap;
+        const int safeMinimum = MapGenerator::SizeFromPreset(MapSizePreset::S);
+        if (params.sizeX < safeMinimum || params.sizeY < safeMinimum)
+        {
+            params.sizePreset = MapSizePreset::S;
+            params.sizeX = std::max(params.sizeX, safeMinimum);
+            params.sizeY = std::max(params.sizeY, safeMinimum);
+        }
+        params.aiOpponentCount = std::clamp(params.aiOpponentCount, 0, 5);
+        params.aiDifficulty = std::clamp(params.aiDifficulty, 0, 3);
+        params.resourceDensity = std::clamp(params.resourceDensity, 0.05f, 1.0f);
+        params.resourceFieldSize = std::clamp(params.resourceFieldSize, 0.05f, 1.0f);
+        params.resourceRichness = std::clamp(params.resourceRichness, 1, 10000);
+        if (campaign.globalMap.seed == 0)
+            campaign.globalMap.seed = params.seed;
+        campaign.globalMap.provinceCount = std::clamp(campaign.globalMap.provinceCount,
+                                                      1,
+                                                      static_cast<int>(PersistenceLimits::MaxGlobalProvinces));
+        campaign.globalMap.extraEdgeCount = std::clamp(campaign.globalMap.extraEdgeCount,
+                                                        0,
+                                                        static_cast<int>(PersistenceLimits::MaxGlobalEdges));
+        return campaign;
+    };
+    auto makeFallback = [&](const CampaignGenerationParameters& requested, int tier)
+    {
+        // Fallbacks may simplify layout policy, but never change the map or
+        // participant contract selected by the user/server.
+        CampaignGenerationParameters fallback = normalize(requested);
+        fallback.localMap.seed = requested.localMap.seed ^
+            (0xD1B54A35u * static_cast<unsigned int>(tier));
+        fallback.globalMap.seed = requested.globalMap.seed ^
+            (0x9E3779B9u * static_cast<unsigned int>(tier));
+        return fallback;
+    };
+
+    struct Attempt
+    {
+        CampaignGenerationParameters params;
+        float progressBegin;
+        float progressSpan;
+        const char* label;
+        bool fallback;
+    };
+
+    const CampaignGenerationParameters requested = normalize(request.params);
+    const std::array<Attempt, 3> attempts{{
+        {requested, 0.02f, 0.60f, "Generating requested world", false},
+        {makeFallback(requested, 1), 0.63f, 0.22f,
+         "Retrying deterministic local layout", true},
+        {makeFallback(requested, 2), 0.86f, 0.12f,
+         "Retrying deterministic layout", true}}};
+
+    std::string errors;
+    for (const Attempt& attempt : attempts)
+    {
+        if (!running.load())
+            return false;
+
+        PublishStartupStatus(
+            attempt.fallback ? GameSessionStartupPhase::Recovering
+                             : GameSessionStartupPhase::GeneratingWorld,
+            attempt.progressBegin, attempt.label, {}, attempt.fallback);
+        auto candidate = std::make_unique<GameWorld>();
+        bool initialized = false;
+        try
+        {
+            const auto report = [&](float value, const std::string& message)
+            {
+                if (!running.load())
+                    throw std::runtime_error("world generation cancelled");
+                PublishStartupStatus(
+                    attempt.fallback ? GameSessionStartupPhase::Recovering
+                                     : GameSessionStartupPhase::GeneratingWorld,
+                    attempt.progressBegin + attempt.progressSpan *
+                        std::clamp(value, 0.0f, 1.0f),
+                    attempt.fallback
+                        ? std::string(attempt.label) + ": " + message
+                        : message,
+                    {}, attempt.fallback);
+            };
+            initialized = request.mode == HostWorldMode::SinglePlayer
+                ? candidate->InitWorld(request.worldName, nullptr,
+                                       attempt.params, report)
+                : candidate->InitMultiplayerWorld(
+                      request.worldName, nullptr, attempt.params,
+                      0, true, report);
+        }
+        catch (const std::exception& exception)
+        {
+            if (!running.load())
+                return false;
+            errors += std::string(attempt.label) + " threw: " +
+                      exception.what() + "; ";
+            Log::Error("[Session]", attempt.label,
+                       " raised an exception: ", exception.what());
+        }
+        catch (...)
+        {
+            errors += std::string(attempt.label) +
+                      " threw an unknown exception; ";
+            Log::Error("[Session]", attempt.label,
+                       " raised an unknown exception");
+        }
+
+        if (initialized && candidate->IsInitialized())
+        {
+            {
+                std::lock_guard<std::recursive_mutex> lock(worldMutex);
+                ownedWorld = std::move(candidate);
+                world = ownedWorld.get();
+            }
+            startRequest.reset();
+            if (transport != nullptr && requireRemoteSync)
+            {
+                remoteSyncStartedAt = std::chrono::steady_clock::now();
+                PublishStartupStatus(GameSessionStartupPhase::WaitingForPeer,
+                                     0.96f,
+                                     "Waiting for client map sync", {},
+                                     attempt.fallback);
+            }
+            else
+            {
+                PublishStartupStatus(GameSessionStartupPhase::Ready, 1.0f,
+                                     attempt.fallback
+                                         ? "Safe fallback world ready"
+                                         : "World ready",
+                                     {}, attempt.fallback);
+            }
+            return true;
+        }
+
+        const std::string attemptError = candidate->GetInitializationError();
+        if (!attemptError.empty())
+        {
+            errors += std::string(attempt.label) + ": " + attemptError + "; ";
+            Log::Msg("[Session]", attempt.label,
+                     " unavailable, continuing with fallback: ", attemptError);
+        }
+    }
+
+    if (errors.empty())
+        errors = "all safe generation tiers were exhausted";
+    PublishStartupStatus(GameSessionStartupPhase::Failed, 1.0f,
+                         "Could not create a safe world", errors, true);
+    return false;
 }
 
 void HostSession::SendInitialSnapshot()
@@ -204,7 +452,18 @@ void HostSession::SendInitialSnapshot()
     std::string payload = world->SerializeSimulationState();
     if (payload.empty())
     {
+        ++initialSnapshotFailureCount;
         Log::Msg("[Session]", "Initial simulation-state serialization failed");
+        if (initialSnapshotFailureCount >= 3)
+        {
+            const GameSessionStartupStatus status = GetStartupStatus();
+            PublishStartupStatus(GameSessionStartupPhase::Failed, 1.0f,
+                                 "Could not prepare host map data",
+                                 "Simulation-state serialization failed three times",
+                                 status.usedFallback);
+            running = false;
+            cv.notify_all();
+        }
         return;
     }
     constexpr size_t ChunkSize = 12000;
@@ -218,6 +477,7 @@ void HostSession::SendInitialSnapshot()
     }
     transport->SendHostSnapshot("INIT_END");
     initialSnapshotSent = true;
+    initialSnapshotFailureCount = 0;
     Log::Msg("[Session]", "Initial snapshot queued: bytes=", payload.size(), " chunks=", totalChunks);
 }
 
@@ -275,6 +535,35 @@ void HostSession::RunSimulationTick()
     // Handle transport commands
     if (transport != nullptr)
     {
+        if (transport->HasFailed() ||
+            (hadConnection && !transport->IsConnected()))
+        {
+            const std::string detail = transport->GetStatus();
+            PublishStartupStatus(
+                GameSessionStartupPhase::Failed,
+                GetStartupStatus().progress,
+                "Host connection failed",
+                detail.empty() ? "Remote connection closed" : detail,
+                GetStartupStatus().usedFallback);
+            running = false;
+            cv.notify_all();
+            return;
+        }
+        if (requireRemoteSync && !remoteStartAcknowledged &&
+            remoteSyncStartedAt != std::chrono::steady_clock::time_point{} &&
+            std::chrono::steady_clock::now() - remoteSyncStartedAt >
+                std::chrono::seconds(90))
+        {
+            const GameSessionStartupStatus status = GetStartupStatus();
+            PublishStartupStatus(
+                GameSessionStartupPhase::Failed, 1.0f,
+                "Client startup synchronization timed out",
+                "Remote client did not complete the startup handshake within 90 seconds",
+                status.usedFallback);
+            running = false;
+            cv.notify_all();
+            return;
+        }
         hadConnection = hadConnection || transport->IsConnected();
         if (requireRemoteSync && !initialSnapshotSent && transport->IsConnected())
             SendInitialSnapshot();
@@ -300,7 +589,24 @@ void HostSession::RunSimulationTick()
                 remoteInitialSnapshotReady = true;
                 lastSentSnapshot = GameSnapshot{};
                 hasLastSentSnapshot = false;
-                Log::Msg("[Session]", "Remote client confirmed initial map sync");
+                transport->SendHostSnapshot("START_READY");
+                const GameSessionStartupStatus status = GetStartupStatus();
+                PublishStartupStatus(GameSessionStartupPhase::WaitingForPeer,
+                                     0.99f,
+                                     "Waiting for client start acknowledgment", {},
+                                     status.usedFallback);
+                Log::Msg("[Session]", "Remote client confirmed map sync; start confirmation sent");
+                continue;
+            }
+
+            if (payload == "START_ACK")
+            {
+                remoteStartAcknowledged = true;
+                const GameSessionStartupStatus status = GetStartupStatus();
+                PublishStartupStatus(GameSessionStartupPhase::Ready, 1.0f,
+                                     "Map and start synchronized", {},
+                                     status.usedFallback);
+                Log::Msg("[Session]", "Remote client acknowledged synchronized start");
                 continue;
             }
 
@@ -357,9 +663,12 @@ void HostSession::RunSimulationTick()
             }
         }
 
-        if (requireRemoteSync && !remoteInitialSnapshotReady)
+        if (requireRemoteSync && !remoteStartAcknowledged)
             return;
     }
+
+    if (!gameplayActivated.load())
+        return;
 
     // Update simulation
     int ticks = clock.AddFrameTime(FixedSimulationClock::FixedDt);
@@ -400,6 +709,39 @@ void HostSession::RunSimulationTick()
 
 void HostSession::RunSimulation()
 {
+    try
+    {
+        if (startRequest.has_value() && !InitializeGeneratedWorld())
+        {
+            running = false;
+            return;
+        }
+    }
+    catch (const std::exception& exception)
+    {
+        PublishStartupStatus(GameSessionStartupPhase::Failed, 1.0f,
+                             "Session initialization failed",
+                             exception.what());
+        Log::Error("[Session]", "Host startup failed: ", exception.what());
+        running = false;
+        return;
+    }
+    catch (...)
+    {
+        PublishStartupStatus(GameSessionStartupPhase::Failed, 1.0f,
+                             "Session initialization failed",
+                             "Unknown host startup exception");
+        Log::Error("[Session]", "Host startup failed with unknown exception");
+        running = false;
+        return;
+    }
+
+    if (GetStartupStatus().phase == GameSessionStartupPhase::Failed)
+    {
+        running = false;
+        return;
+    }
+
     auto nextTick = std::chrono::steady_clock::now();
     while (running)
     {
@@ -414,7 +756,29 @@ void HostSession::RunSimulation()
         nextTick += std::chrono::duration_cast<std::chrono::steady_clock::duration>(
             std::chrono::duration<double>(FixedSimulationClock::FixedDt));
 
-        RunSimulationTick();
+        try
+        {
+            RunSimulationTick();
+        }
+        catch (const std::exception& exception)
+        {
+            PublishStartupStatus(GameSessionStartupPhase::Failed, 1.0f,
+                                 "Host simulation failed", exception.what());
+            Log::Error("[Session]", "Host worker tick failed: ", exception.what());
+            running = false;
+            cv.notify_all();
+            break;
+        }
+        catch (...)
+        {
+            PublishStartupStatus(GameSessionStartupPhase::Failed, 1.0f,
+                                 "Host simulation failed",
+                                 "Unknown host worker tick exception");
+            Log::Error("[Session]", "Host worker tick failed with unknown exception");
+            running = false;
+            cv.notify_all();
+            break;
+        }
 
         std::unique_lock<std::mutex> sleepLock(sleepMutex);
         cv.wait_until(sleepLock, nextTick, [&]() { return !running.load() || paused.load(); });
@@ -432,6 +796,34 @@ void HostSession::RunSimulation()
 ClientSession::ClientSession(GameWorld* observedWorld, std::shared_ptr<IGameTransport> transport, int assignedPlayerId)
     : observedWorld(observedWorld), transport(std::move(transport)), assignedPlayerId(assignedPlayerId)
 {
+    startupStartedAt = std::chrono::steady_clock::now();
+    PublishStartupStatus(GameSessionStartupPhase::SynchronizingWorld, 0.02f,
+                         "Waiting for host map data");
+}
+
+ClientSession::ClientSession(std::unique_ptr<GameWorld> observedWorld,
+                             std::shared_ptr<IGameTransport> transport,
+                             int assignedPlayerId)
+    : ownedObservedWorld(std::move(observedWorld)),
+      observedWorld(ownedObservedWorld.get()),
+      transport(std::move(transport)), assignedPlayerId(assignedPlayerId),
+      backgroundWorker(true)
+{
+    if (this->ownedObservedWorld == nullptr)
+    {
+        this->ownedObservedWorld = std::make_unique<GameWorld>();
+        this->observedWorld = this->ownedObservedWorld.get();
+    }
+    startupStartedAt = std::chrono::steady_clock::now();
+    PublishStartupStatus(GameSessionStartupPhase::SynchronizingWorld, 0.02f,
+                         "Waiting for host map data");
+    running = true;
+    worker = std::thread(&ClientSession::RunNetwork, this);
+}
+
+ClientSession::~ClientSession()
+{
+    Stop();
 }
 
 void ClientSession::HandleAuthoritativeResult(const GameCommandResult& result)
@@ -464,6 +856,7 @@ void ClientSession::HandleAuthoritativeResult(const GameCommandResult& result)
 
 std::uint64_t ClientSession::SubmitCommand(const GameCommand& command)
 {
+    std::lock_guard<std::recursive_mutex> lock(worldMutex);
     GameCommand outbound = command;
     outbound.playerId = assignedPlayerId;
     if (outbound.commandId == 0)
@@ -480,14 +873,61 @@ std::uint64_t ClientSession::SubmitCommand(const GameCommand& command)
 
 void ClientSession::Update(double dt)
 {
-    if (transport == nullptr)
+    if (backgroundWorker)
         return;
+    std::lock_guard<std::recursive_mutex> lock(worldMutex);
+    RunNetworkTick(dt);
+}
+
+void ClientSession::RunNetworkTick(double dt)
+{
+    if (transport == nullptr)
+    {
+        PublishStartupStatus(GameSessionStartupPhase::Failed, 1.0f,
+                             "Client session has no transport",
+                             "Missing multiplayer transport");
+        return;
+    }
 
     if (resyncRequestCooldown > 0.0)
         resyncRequestCooldown = std::max(0.0, resyncRequestCooldown - dt);
 
     const bool connectedNow = transport->IsConnected();
     hadConnection = hadConnection || connectedNow;
+    if (transport->HasFailed() || (hadConnection && !connectedNow))
+    {
+        const std::string detail = transport->GetStatus();
+        PublishStartupStatus(GameSessionStartupPhase::Failed, 1.0f,
+                             "Connection to host failed",
+                             detail.empty() ? "Host connection closed" : detail);
+        running = false;
+        cv.notify_all();
+        return;
+    }
+    if (!initialSnapshotReceived &&
+        std::chrono::steady_clock::now() - startupStartedAt >
+            std::chrono::seconds(45))
+    {
+        PublishStartupStatus(GameSessionStartupPhase::Failed, 1.0f,
+                             "Map synchronization timed out",
+                             "Host did not provide a usable map within 45 seconds");
+        running = false;
+        cv.notify_all();
+        return;
+    }
+    const GameSessionStartupStatus startup = GetStartupStatus();
+    if (backgroundWorker && initialSnapshotReceived &&
+        startup.phase == GameSessionStartupPhase::WaitingForPeer &&
+        std::chrono::steady_clock::now() - startupStartedAt >
+            std::chrono::seconds(90))
+    {
+        PublishStartupStatus(GameSessionStartupPhase::Failed, 1.0f,
+                             "Synchronized start timed out",
+                             "Host did not confirm the synchronized start within 90 seconds");
+        running = false;
+        cv.notify_all();
+        return;
+    }
     if (connectedNow && !wasConnected)
     {
         for (const auto& [commandId, payload] : pendingClientCommandPayloads)
@@ -503,6 +943,21 @@ void ClientSession::Update(double dt)
     // stale mirror that existed before correction.
     for (const auto& payload : transport->ReceiveClientSnapshots())
         HandleSnapshotPayload(payload);
+
+    if (initialSnapshotFailed)
+    {
+        if (backgroundWorker)
+        {
+            RetryOrFailInitialSync();
+            if (initialSnapshotFailed ||
+                GetStartupStatus().phase == GameSessionStartupPhase::Failed)
+                return;
+        }
+        else
+        {
+            return;
+        }
+    }
 
     for (const auto& payload : transport->ReceiveClientFrames())
     {
@@ -538,6 +993,12 @@ void ClientSession::Update(double dt)
                         Log::Msg("[Session]", "Checksum mismatch during resync cooldown: local=", localChecksum, " host=", frame.checksum);
                     }
                 }
+
+                // The UI snapshot follows the deterministically replayed
+                // client mirror. Before this refresh it stayed frozen at the
+                // initial/correction snapshot despite a current live world.
+                latestNetworkSnapshot = observedWorld->BuildSnapshot();
+                hasNetworkSnapshot = latestNetworkSnapshot.IsValid();
             }
         }
     }
@@ -559,6 +1020,7 @@ GameWorld* ClientSession::GetWorld()
 
 bool ClientSession::ConsumeLatestSnapshot(GameSnapshot& snapshot)
 {
+    std::lock_guard<std::recursive_mutex> lock(worldMutex);
     if (!hasNetworkSnapshot)
         return false;
     snapshot = latestNetworkSnapshot;
@@ -568,7 +1030,10 @@ bool ClientSession::ConsumeLatestSnapshot(GameSnapshot& snapshot)
 
 bool ClientSession::IsConnectionClosed() const
 {
-    return transport != nullptr && hadConnection && (!transport->IsConnected() || transport->HasFailed());
+    const GameSessionStartupStatus status = GetStartupStatus();
+    return status.phase == GameSessionStartupPhase::Failed ||
+           (transport != nullptr && hadConnection &&
+            (!transport->IsConnected() || transport->HasFailed()));
 }
 
 int ClientSession::GetPingMs() const
@@ -578,6 +1043,11 @@ int ClientSession::GetPingMs() const
 
 std::string ClientSession::GetConnectionStatus() const
 {
+    if (!backgroundWorker && !initialSnapshotReceived)
+        return syncStatus;
+    const GameSessionStartupStatus status = GetStartupStatus();
+    if (status.phase != GameSessionStartupPhase::Ready)
+        return status.message;
     if (!initialSnapshotReceived)
         return syncStatus;
     return transport != nullptr ? transport->GetStatus() : std::string{};
@@ -585,11 +1055,42 @@ std::string ClientSession::GetConnectionStatus() const
 
 bool ClientSession::IsReadyForGameplay() const
 {
-    return initialSnapshotReceived;
+    return GetStartupStatus().phase == GameSessionStartupPhase::Ready;
+}
+
+GameSessionStartupStatus ClientSession::GetStartupStatus() const
+{
+    std::lock_guard<std::mutex> lock(startupMutex);
+    return startupStatus;
+}
+
+void ClientSession::PublishStartupStatus(GameSessionStartupPhase phase,
+                                         float progress,
+                                         std::string message,
+                                         std::string error)
+{
+    std::lock_guard<std::mutex> lock(startupMutex);
+    startupStatus.phase = phase;
+    startupStatus.progress = std::clamp(progress, 0.0f, 1.0f);
+    startupStatus.message = std::move(message);
+    startupStatus.error = std::move(error);
+}
+
+void ClientSession::ActivateGameplay()
+{
+    // Network receive already runs throughout LoadingScene so frames cannot
+    // accumulate while the main thread fades into gameplay. Unlike the
+    // authoritative host, the client has no simulation tick to release here.
+}
+
+std::recursive_mutex* ClientSession::GetWorldMutex()
+{
+    return &worldMutex;
 }
 
 std::vector<GameCommandResult> ClientSession::ConsumeCommandResults()
 {
+    std::lock_guard<std::recursive_mutex> lock(worldMutex);
     std::vector<GameCommandResult> results = std::move(commandResults);
     commandResults.clear();
     return results;
@@ -599,6 +1100,7 @@ void ClientSession::HandleSnapshotPayload(const std::string& payload)
 {
     if (payload.rfind("INIT_BEGIN ", 0) == 0)
     {
+        startupStartedAt = std::chrono::steady_clock::now();
         std::istringstream in(payload.substr(11));
         std::uint64_t tick = 0;
         size_t totalBytes = 0;
@@ -627,6 +1129,8 @@ void ClientSession::HandleSnapshotPayload(const std::string& payload)
             initialSnapshotReceived = false;
             initialSnapshotFailed = false;
             syncStatus = "Syncing map 0/" + std::to_string(totalChunks);
+            PublishStartupStatus(GameSessionStartupPhase::SynchronizingWorld,
+                                 0.08f, syncStatus);
             Log::Msg("[Session]", "Receiving initial snapshot: bytes=", totalBytes, " chunks=", totalChunks);
         }
         else
@@ -683,6 +1187,12 @@ void ClientSession::HandleSnapshotPayload(const std::string& payload)
         receivedInitialSnapshotBytes += chunk.size();
         initialSnapshotChunks[index] = std::move(chunk);
         syncStatus = "Syncing map " + std::to_string(receivedInitialSnapshotChunks) + "/" + std::to_string(expectedInitialSnapshotChunks);
+        const float chunkRatio = expectedInitialSnapshotChunks > 0
+            ? static_cast<float>(receivedInitialSnapshotChunks) /
+                  static_cast<float>(expectedInitialSnapshotChunks)
+            : 1.0f;
+        PublishStartupStatus(GameSessionStartupPhase::SynchronizingWorld,
+                             0.10f + 0.72f * chunkRatio, syncStatus);
         return;
     }
 
@@ -701,6 +1211,9 @@ void ClientSession::HandleSnapshotPayload(const std::string& payload)
         for (const auto& chunk : initialSnapshotChunks)
             initialSnapshotBuffer += chunk;
 
+        PublishStartupStatus(GameSessionStartupPhase::SynchronizingWorld,
+                             0.88f, "Restoring synchronized world");
+
         if (initialSnapshotBuffer.size() == expectedInitialSnapshotBytes && observedWorld != nullptr &&
             observedWorld->RestoreSimulationState(initialSnapshotBuffer, assignedPlayerId) &&
             observedWorld->GetSimulationTick() == expectedInitialSnapshotTick)
@@ -708,7 +1221,20 @@ void ClientSession::HandleSnapshotPayload(const std::string& payload)
             latestNetworkSnapshot = observedWorld->BuildSnapshot();
             hasNetworkSnapshot = true;
             initialSnapshotReceived = true;
-            syncStatus = "Map synchronized";
+            initialSnapshotRetryCount = 0;
+            startupStartedAt = std::chrono::steady_clock::now();
+            if (backgroundWorker)
+            {
+                syncStatus = "Waiting for host start confirmation";
+                PublishStartupStatus(GameSessionStartupPhase::WaitingForPeer,
+                                     0.98f, syncStatus);
+            }
+            else
+            {
+                syncStatus = "Map synchronized";
+                PublishStartupStatus(GameSessionStartupPhase::Ready, 1.0f,
+                                     syncStatus);
+            }
             if (transport != nullptr)
                 transport->SendClientCommand("SYNC_READY");
             Log::Msg("[Session]", "Initial snapshot received");
@@ -723,7 +1249,22 @@ void ClientSession::HandleSnapshotPayload(const std::string& payload)
         else
         {
             syncStatus = "Map sync failed";
+            initialSnapshotFailed = true;
             Log::Msg("[Session]", "Initial snapshot parse failed");
+        }
+        return;
+    }
+
+    if (payload == "START_READY")
+    {
+        if (initialSnapshotReceived)
+        {
+            syncStatus = "Map and start synchronized";
+            if (transport != nullptr)
+                transport->SendClientCommand("START_ACK");
+            PublishStartupStatus(GameSessionStartupPhase::Ready, 1.0f,
+                                 syncStatus);
+            Log::Msg("[Session]", "Host confirmed synchronized start");
         }
         return;
     }
@@ -747,6 +1288,102 @@ void ClientSession::HandleSnapshotPayload(const std::string& payload)
         latestNetworkSnapshot = std::move(snapshot);
         hasNetworkSnapshot = true;
     }
+}
+
+void ClientSession::ResetInitialSnapshotTransfer()
+{
+    initialSnapshotReceived = false;
+    initialSnapshotFailed = false;
+    expectedInitialSnapshotBytes = 0;
+    expectedInitialSnapshotChunks = 0;
+    receivedInitialSnapshotChunks = 0;
+    receivedInitialSnapshotBytes = 0;
+    expectedInitialSnapshotTick = 0;
+    initialSnapshotBuffer.clear();
+    initialSnapshotChunks.clear();
+    initialSnapshotChunkReceived.clear();
+}
+
+void ClientSession::RetryOrFailInitialSync()
+{
+    if (!initialSnapshotFailed)
+        return;
+
+    constexpr int MaxInitialSyncRetries = 3;
+    if (initialSnapshotRetryCount >= MaxInitialSyncRetries || transport == nullptr)
+    {
+        PublishStartupStatus(
+            GameSessionStartupPhase::Failed, 1.0f,
+            "Map synchronization failed",
+            "Host map data remained invalid after " +
+                std::to_string(initialSnapshotRetryCount) + " retries");
+        running = false;
+        cv.notify_all();
+        return;
+    }
+
+    ++initialSnapshotRetryCount;
+    ResetInitialSnapshotTransfer();
+    syncStatus = "Retrying map sync " +
+                 std::to_string(initialSnapshotRetryCount) + "/" +
+                 std::to_string(MaxInitialSyncRetries);
+    PublishStartupStatus(GameSessionStartupPhase::Recovering, 0.05f,
+                         syncStatus);
+    transport->SendClientCommand("RESYNC_REQUEST");
+    Log::Msg("[Session]", syncStatus);
+}
+
+void ClientSession::RunNetwork()
+{
+    auto previous = std::chrono::steady_clock::now();
+    try
+    {
+        while (running.load())
+        {
+            const auto now = std::chrono::steady_clock::now();
+            const double dt = std::chrono::duration<double>(now - previous).count();
+            previous = now;
+            {
+                std::lock_guard<std::recursive_mutex> lock(worldMutex);
+                RunNetworkTick(std::clamp(dt, 0.0, 0.25));
+            }
+
+            std::unique_lock<std::mutex> sleepLock(sleepMutex);
+            cv.wait_for(sleepLock, std::chrono::milliseconds(5),
+                        [&]() { return !running.load(); });
+        }
+    }
+    catch (const std::exception& exception)
+    {
+        PublishStartupStatus(GameSessionStartupPhase::Failed, 1.0f,
+                             "Client session failed", exception.what());
+        Log::Error("[Session]", "Client worker failed: ", exception.what());
+        running = false;
+    }
+    catch (...)
+    {
+        PublishStartupStatus(GameSessionStartupPhase::Failed, 1.0f,
+                             "Client session failed",
+                             "Unknown client worker exception");
+        Log::Error("[Session]", "Client worker failed with unknown exception");
+        running = false;
+    }
+}
+
+void ClientSession::Stop()
+{
+    if (backgroundWorker)
+    {
+        running = false;
+        cv.notify_all();
+        if (worker.joinable())
+            worker.join();
+    }
+    const GameSessionStartupStatus status = GetStartupStatus();
+    if (status.phase != GameSessionStartupPhase::Failed)
+        PublishStartupStatus(GameSessionStartupPhase::Stopped,
+                             status.progress, "Session stopped",
+                             status.error);
 }
 
 // LocalhostMultiplayerSession is now deprecated - use HostSession instead

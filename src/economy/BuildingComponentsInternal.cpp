@@ -5,13 +5,13 @@
 
 int CountIncomingResources(Building* target, ResourceType type)
 {
-    if (target == nullptr || target->owner == nullptr)
+    if (target == nullptr || target->provinceEconomy == nullptr)
         return 0;
 
     // OPTIMIZATION: Iterate only tracked buildings (much smaller set than full tilemap),
     // then check if they have transportables. Avoids 1M tile scans per call.
     int incoming = 0;
-    for (Building* carrier : target->owner->GetTrackedBuildings())
+    for (Building* carrier : target->provinceEconomy->dataTracker.buildings)
     {
         if (carrier == nullptr || carrier->transportables.empty())
             continue;

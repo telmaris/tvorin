@@ -1,15 +1,87 @@
 #include "core/GameWorldInternal.h"
 #include "core/Log.h"
-#include "economy/BuildingSalvage.h"
-#include "ui/AudioSystem.h"
+#include "economy/StockpileIndex.h"
+#include "world/ColonizationService.h"
+#include "warfare/UnitDefinition.h"
+#include "warfare/GarrisonService.h"
+#include "warfare/TaskGroup.h"
 
 #include <algorithm>
+#include <cmath>
+#include <limits>
 
 using namespace GameWorldInternal;
 
-BuildPaymentPolicy ResolveBuildPaymentPolicy(const GameWorld& world, const Player& player)
+namespace
 {
-    return world.GetTileMap().params.debugMode &&
+    bool HasLegalProvinceRoute(const GlobalMap& map, ProvinceId source, ProvinceId target)
+    {
+        return map.HasPath(source, target);
+    }
+
+    WorldJourneyRules ResolveJourneyRules(const Player& player,
+                                          std::uint64_t baseLegDurationTicks)
+    {
+        WorldJourneyRules rules;
+        rules.baseLegDurationTicks = baseLegDurationTicks;
+        rules.routeTravelSpeedMultiplier =
+            player.ModifyBalance(BalanceStat::RouteTravelSpeed, 1.0);
+        return rules;
+    }
+
+    bool ExpandReadyTaskGroups(const Player& player, ProvinceId sourceProvinceId,
+                               const std::vector<TaskGroupId>& taskGroupIds,
+                               std::vector<int>& unitIds, std::string& failureReason)
+    {
+        if (taskGroupIds.empty() || taskGroupIds.size() > GameCommand::MaxTaskGroupIds ||
+            !std::is_sorted(taskGroupIds.begin(), taskGroupIds.end()) ||
+            std::adjacent_find(taskGroupIds.begin(), taskGroupIds.end()) != taskGroupIds.end())
+        {
+            failureReason = "task group IDs must be sorted and unique";
+            return false;
+        }
+
+        unitIds.clear();
+        for (const TaskGroupId taskGroupId : taskGroupIds)
+        {
+            const TaskGroup* group = player.taskGroups.Find(taskGroupId);
+            if (group == nullptr || group->stationProvinceId != sourceProvinceId ||
+                TaskGroupService::ResolveStatus(*group, player.roster) != TaskGroupStatus::Reserve)
+            {
+                failureReason = "task group is missing, deployed, empty or stationed elsewhere";
+                return false;
+            }
+            for (const auto& [unitId, unit] : player.roster.units)
+            {
+                if (unit.taskGroupId != taskGroupId)
+                    continue;
+                if (!UnitAssignmentService::IsInReserve(unit, sourceProvinceId) ||
+                    unit.assignment.buildingId != group->homeBarracksBuildingId)
+                {
+                    failureReason = "task group contains a unit outside its home Barracks reserve";
+                    return false;
+                }
+                unitIds.push_back(unitId);
+            }
+        }
+        if (unitIds.empty() || unitIds.size() > GameCommand::MaxUnitInstanceIds)
+        {
+            failureReason = "task group deployment has no units or exceeds the unit limit";
+            return false;
+        }
+        std::sort(unitIds.begin(), unitIds.end());
+        if (std::adjacent_find(unitIds.begin(), unitIds.end()) != unitIds.end())
+        {
+            failureReason = "task group deployment contains duplicate units";
+            return false;
+        }
+        return true;
+    }
+}
+
+BuildPaymentPolicy ResolveBuildPaymentPolicy(const TileMap& map, const Player& player)
+{
+    return map.params.debugMode &&
                    player.controllerType == PlayerControllerType::LocalHuman
                ? BuildPaymentPolicy::FreeDebugHuman
                : BuildPaymentPolicy::ChargeAuthoritativeCost;
@@ -107,6 +179,474 @@ void GameWorld::ProcessCommands()
     pendingCommands = std::move(deferredCommands);
 }
 
+void GameWorld::UpdateColonizationOperations()
+{
+    std::vector<ProvinceId> toRemove;
+    for (auto& [targetProvinceId, operation] : pendingColonizations)
+    {
+        bool shouldRefund = false;
+        bool shouldComplete = false;
+        if (operation.phase == ColonizationPhase::Traveling)
+        {
+            const auto journeyIt = armyJourneySystem.GetJourneys().find(operation.journeyId);
+            if (journeyIt == armyJourneySystem.GetJourneys().end())
+                shouldRefund = true;
+            else if (journeyIt->second.status == WorldJourneyStatus::Failed ||
+                     journeyIt->second.status == WorldJourneyStatus::Cancelled)
+                shouldRefund = true;
+            else if (journeyIt->second.status == WorldJourneyStatus::Succeeded)
+            {
+                if (operation.settlementDurationTicks == 0 ||
+                    simulationTick > std::numeric_limits<std::uint64_t>::max() -
+                        operation.settlementDurationTicks)
+                    shouldRefund = true;
+                else
+                {
+                    operation.phase = ColonizationPhase::Establishing;
+                    operation.phaseCompletionTick = simulationTick +
+                        operation.settlementDurationTicks;
+                }
+            }
+        }
+        else if (operation.phase == ColonizationPhase::Establishing &&
+                 operation.phaseCompletionTick <= simulationTick)
+            shouldComplete = true;
+        else if (operation.phase == ColonizationPhase::Failed ||
+                 operation.phase == ColonizationPhase::Completed)
+            shouldRefund = operation.phase == ColonizationPhase::Failed;
+
+        if (shouldRefund || shouldComplete)
+            toRemove.push_back(targetProvinceId);
+    }
+
+    for (const ProvinceId targetProvinceId : toRemove)
+    {
+        const auto it = pendingColonizations.find(targetProvinceId);
+        if (it == pendingColonizations.end())
+            continue;
+        const ColonizationOperation operation = it->second;
+        pendingColonizations.erase(it);
+        if (operation.phase == ColonizationPhase::Establishing &&
+            CompleteColonization(operation))
+            continue;
+
+        // Generation is prepared on a side object. If it fails, the target
+        // remains neutral and the already charged resources are returned to
+        // the originating province without touching any other province.
+        const auto playerIt = playerHandler.players.find(
+            static_cast<int>(operation.playerId));
+        auto* source = globalMap.FindBuildableProvince(operation.sourceProvinceId);
+        if (playerIt != playerHandler.players.end() && playerIt->second != nullptr &&
+            source != nullptr && source->GetSimulation() != nullptr)
+        {
+            for (const auto& cost : operation.cost)
+                StockpileIndex::Deposit(source->GetSimulation()->GetEconomy(),
+                                        cost.type, cost.amount);
+        }
+    }
+}
+
+std::optional<ColonizationProgressView> GameWorld::GetColonizationProgress(
+    ProvinceId targetProvinceId) const
+{
+    const auto operationIt = pendingColonizations.find(targetProvinceId);
+    if (operationIt == pendingColonizations.end())
+        return std::nullopt;
+
+    const ColonizationOperation& operation = operationIt->second;
+    ColonizationProgressView view;
+    view.phase = operation.phase;
+    if (operation.phase == ColonizationPhase::Traveling)
+    {
+        const auto journeyIt = armyJourneySystem.GetJourneys().find(operation.journeyId);
+        if (journeyIt == armyJourneySystem.GetJourneys().end())
+            return view;
+        const JourneyStatusView journey = BuildJourneyStatusView(journeyIt->second,
+                                                                  simulationTick);
+        const std::uint64_t totalTicks = journey.etaTick > journey.startTick
+            ? journey.etaTick - journey.startTick : 0;
+        view.remainingTicks = journey.remainingTicks;
+        view.progress = totalTicks == 0 ? 0.0f : std::clamp(
+            static_cast<float>(totalTicks - std::min(totalTicks, view.remainingTicks)) /
+                static_cast<float>(totalTicks), 0.0f, 1.0f);
+    }
+    else if (operation.phase == ColonizationPhase::Establishing)
+    {
+        view.remainingTicks = operation.phaseCompletionTick > simulationTick
+            ? operation.phaseCompletionTick - simulationTick : 0;
+        view.progress = operation.settlementDurationTicks == 0 ? 1.0f : std::clamp(
+            static_cast<float>(operation.settlementDurationTicks -
+                std::min(operation.settlementDurationTicks, view.remainingTicks)) /
+                static_cast<float>(operation.settlementDurationTicks), 0.0f, 1.0f);
+    }
+    else
+        view.progress = operation.phase == ColonizationPhase::Completed ? 1.0f : 0.0f;
+    return view;
+}
+
+namespace
+{
+    bool DepositCargo(ProvinceEconomy& economy, std::vector<ResourceAmount>& cargo)
+    {
+        for (auto it = cargo.begin(); it != cargo.end();)
+        {
+            const int deposited = StockpileIndex::Deposit(economy, it->type, it->amount);
+            if (deposited <= 0)
+                return false;
+            if (deposited >= it->amount)
+                it = cargo.erase(it);
+            else
+            {
+                it->amount -= deposited;
+                return false;
+            }
+        }
+        return true;
+    }
+
+    Building* FindProvinceBuilding(ProvinceEconomy& economy, int buildingId)
+    {
+        for (Building* building : economy.dataTracker.buildings)
+            if (building != nullptr && building->id == buildingId)
+                return building;
+        return nullptr;
+    }
+}
+
+void GameWorld::ProcessResourceTransfers()
+{
+    auto& journeys = armyJourneySystem.GetJourneysForAuthority();
+    for (auto& [journeyId, journey] : journeys)
+    {
+        auto* convoy = std::get_if<ResourceConvoy>(&journey.payload);
+        if (convoy == nullptr || convoy->cargo.empty() ||
+            (journey.status != WorldJourneyStatus::Succeeded &&
+             journey.status != WorldJourneyStatus::AwaitingUnload &&
+             journey.status != WorldJourneyStatus::Failed &&
+             journey.status != WorldJourneyStatus::Cancelled))
+            continue;
+
+        const auto playerIt = playerHandler.players.find(static_cast<int>(journey.ownerId));
+        auto* source = globalMap.FindBuildableProvince(journey.sourceProvinceId);
+        auto* target = globalMap.FindBuildableProvince(journey.targetProvinceId);
+        if (playerIt == playerHandler.players.end() || playerIt->second == nullptr ||
+            source == nullptr || source->GetSimulation() == nullptr ||
+            source->GetOwnerId() != journey.ownerId)
+            continue;
+
+        ProvinceEconomy* destination = nullptr;
+        if (journey.status == WorldJourneyStatus::Succeeded ||
+            journey.status == WorldJourneyStatus::AwaitingUnload)
+        {
+            if (target != nullptr && target->GetSimulation() != nullptr &&
+                target->GetOwnerId() == journey.ownerId)
+                destination = &target->GetSimulation()->GetEconomy();
+            if (destination == nullptr)
+                journey.status = WorldJourneyStatus::Failed;
+        }
+        if (journey.status == WorldJourneyStatus::Failed ||
+            journey.status == WorldJourneyStatus::Cancelled)
+        {
+            DepositCargo(source->GetSimulation()->GetEconomy(), convoy->cargo);
+            continue;
+        }
+        if (destination != nullptr && DepositCargo(*destination, convoy->cargo) == false)
+            journey.status = WorldJourneyStatus::AwaitingUnload;
+    }
+}
+
+void GameWorld::ProcessArmyTransfers()
+{
+    auto& journeys = armyJourneySystem.GetJourneysForAuthority();
+    for (auto& [journeyId, journey] : journeys)
+    {
+        auto* transfer = std::get_if<ArmyTransferParty>(&journey.payload);
+        if (transfer == nullptr || transfer->unitInstanceIds.empty() ||
+            (journey.status != WorldJourneyStatus::Succeeded &&
+             journey.status != WorldJourneyStatus::Failed &&
+             journey.status != WorldJourneyStatus::Cancelled))
+            continue;
+        const auto playerIt = playerHandler.players.find(static_cast<int>(journey.ownerId));
+        auto* source = globalMap.FindBuildableProvince(journey.sourceProvinceId);
+        auto* target = globalMap.FindBuildableProvince(journey.targetProvinceId);
+        if (playerIt == playerHandler.players.end() || playerIt->second == nullptr ||
+            source == nullptr || target == nullptr)
+            continue;
+        Player& player = *playerIt->second;
+        if (journey.status == WorldJourneyStatus::Failed ||
+            journey.status == WorldJourneyStatus::Cancelled)
+        {
+            bool restored = true;
+            for (const int unitId : transfer->unitInstanceIds)
+            {
+                BattleUnit* unit = player.roster.FindUnit(unitId);
+                const TaskGroup* group = unit == nullptr
+                    ? nullptr : player.taskGroups.Find(unit->taskGroupId);
+                if (unit == nullptr || group == nullptr)
+                    continue;
+                if (UnitAssignmentService::IsOnJourney(*unit, journeyId) &&
+                    !UnitAssignmentService::AssignReserve(
+                        *unit, journey.sourceProvinceId, group->homeBarracksBuildingId))
+                    restored = false;
+            }
+            if (restored)
+                transfer->unitInstanceIds.clear();
+            continue;
+        }
+
+        if (target->GetSimulation() == nullptr || target->GetOwnerId() != player.id)
+            continue;
+        ProvinceEconomy& targetEconomy = target->GetSimulation()->GetEconomy();
+        Building* barracks = FindProvinceBuilding(targetEconomy,
+                                                  transfer->destinationBarracksBuildingId);
+        if (barracks == nullptr || barracks->owner != &player ||
+            barracks->buildingType != BuildingType::Barracks || barracks->IsUnderConstruction())
+            continue;
+
+        std::set<TaskGroupId> groups;
+        bool valid = true;
+        for (const int unitId : transfer->unitInstanceIds)
+        {
+            BattleUnit* unit = player.roster.FindUnit(unitId);
+            if (unit == nullptr || !UnitAssignmentService::IsOnJourney(*unit, journeyId) ||
+                unit->taskGroupId == InvalidTaskGroupId ||
+                player.taskGroups.Find(unit->taskGroupId) == nullptr)
+            {
+                valid = false;
+                break;
+            }
+            groups.insert(unit->taskGroupId);
+        }
+        if (!valid)
+            continue;
+        std::map<TaskGroupId, TaskGroup> originalGroups;
+        for (const TaskGroupId groupId : groups)
+        {
+            const TaskGroup* group = player.taskGroups.Find(groupId);
+            if (group == nullptr)
+            {
+                valid = false;
+                break;
+            }
+            originalGroups.emplace(groupId, *group);
+        }
+        if (!valid)
+            continue;
+        const auto restoreJourneyAssignments = [&]()
+        {
+            for (const int unitId : transfer->unitInstanceIds)
+            {
+                BattleUnit* unit = player.roster.FindUnit(unitId);
+                const auto originalIt = unit == nullptr
+                    ? originalGroups.end() : originalGroups.find(unit->taskGroupId);
+                if (unit != nullptr && originalIt != originalGroups.end())
+                    UnitAssignmentService::AssignJourney(
+                        *unit, journey.sourceProvinceId, journeyId,
+                        originalIt->second.homeBarracksBuildingId);
+            }
+            for (const auto& [groupId, original] : originalGroups)
+                player.taskGroups.Relocate(groupId, original.stationProvinceId,
+                                            original.homeBarracksBuildingId);
+        };
+        std::vector<int> movedUnitIds;
+        movedUnitIds.reserve(transfer->unitInstanceIds.size());
+        for (const int unitId : transfer->unitInstanceIds)
+        {
+            BattleUnit* unit = player.roster.FindUnit(unitId);
+            if (!UnitAssignmentService::AssignReserve(
+                    *unit, journey.targetProvinceId, transfer->destinationBarracksBuildingId))
+            {
+                valid = false;
+                break;
+            }
+            movedUnitIds.push_back(unitId);
+        }
+        if (!valid)
+        {
+            for (const int movedUnitId : movedUnitIds)
+            {
+                BattleUnit* unit = player.roster.FindUnit(movedUnitId);
+                const auto originalIt = unit == nullptr
+                    ? originalGroups.end() : originalGroups.find(unit->taskGroupId);
+                if (unit != nullptr && originalIt != originalGroups.end())
+                    UnitAssignmentService::AssignJourney(
+                        *unit, journey.sourceProvinceId, journeyId,
+                        originalIt->second.homeBarracksBuildingId);
+            }
+            continue;
+        }
+        bool relocated = true;
+        for (const TaskGroupId groupId : groups)
+            if (!player.taskGroups.Relocate(groupId, journey.targetProvinceId,
+                                            transfer->destinationBarracksBuildingId))
+            {
+                relocated = false;
+                break;
+            }
+        if (!relocated)
+        {
+            restoreJourneyAssignments();
+            continue;
+        }
+        transfer->unitInstanceIds.clear();
+    }
+}
+
+bool GameWorld::CompleteColonization(const ColonizationOperation& operation)
+{
+    auto playerIt = playerHandler.players.find(static_cast<int>(operation.playerId));
+    auto* target = globalMap.FindBuildableProvince(operation.targetProvinceId);
+    if (playerIt == playerHandler.players.end() || playerIt->second == nullptr ||
+        target == nullptr || target->GetOwnerId() != InvalidPlayerId ||
+        target->GetSimulation() != nullptr)
+        return false;
+
+    Player* player = playerIt->second.get();
+    MapParameters localParams = campaignGenerationParameters.localMap;
+    const auto& provinceParameters = target->GetParameters();
+    localParams.sizeX = std::clamp(provinceParameters.sizeX, 1,
+                                   PersistenceLimits::MaxMapDimension);
+    localParams.sizeY = std::clamp(provinceParameters.sizeY, 1,
+                                   PersistenceLimits::MaxMapDimension);
+    localParams.seed = GlobalMapGenerator::DeriveProvinceSeed(
+        campaignGenerationParameters.globalMap.seed, operation.targetProvinceId);
+    localParams.aiOpponentCount = 0;
+    localParams.aiDifficulty = 0;
+    if (!provinceParameters.naturalResourceTypes.empty())
+        MapGenerator::FilterResourcePatchesForProfile(
+            localParams, provinceParameters.naturalResourceTypes);
+
+    auto candidate = std::make_unique<ProvinceSimulation>(
+        operation.targetProvinceId, operation.playerId);
+    WorldLayoutResult layout = GenerateWorldLayout(candidate->GetTileMap(), localParams, 1);
+    if (!layout.success)
+        return false;
+
+    // ProvinceSimulation constructs its economy before terrain generation,
+    // when the owned TileMap is still empty. Rebind after GenerateWorldLayout
+    // so the navigation mirror has the final dimensions before the starting
+    // village can request its first supply shipment.
+    candidate->GetEconomy().BindTileMap(candidate->GetTileMap());
+
+    const ProvinceId previousActiveProvince = player->GetActiveProvinceId();
+    player->BindProvince(operation.targetProvinceId, *candidate);
+    if (!player->SetActiveProvince(operation.targetProvinceId))
+    {
+        player->UnbindProvince(operation.targetProvinceId);
+        return false;
+    }
+
+    CreateStartingHq(player, layout.anchors.front(), localParams.seed,
+                     candidate->GetTileMap());
+    CreateStartingVillageAndResources(player, layout.anchors.front(), localParams.seed,
+                     candidate->GetTileMap());
+    const auto& buildings = candidate->GetEconomy().dataTracker.buildings;
+    const bool hasHeadquarters = std::any_of(buildings.begin(), buildings.end(),
+        [](const Building* building)
+        {
+            return building != nullptr && building->buildingType == BuildingType::Headquarters;
+        });
+    const bool hasVillage = std::any_of(buildings.begin(), buildings.end(),
+        [](const Building* building)
+        {
+            return building != nullptr && building->buildingType == BuildingType::Village;
+        });
+    if (previousActiveProvince != InvalidProvinceId)
+        player->SetActiveProvince(previousActiveProvince);
+    else
+        player->SetActiveProvince(player->homeProvinceId);
+    if (!hasHeadquarters || !hasVillage)
+    {
+        player->UnbindProvince(operation.targetProvinceId);
+        return false;
+    }
+
+    // The candidate already owns a fully generated economy and base. The
+    // following two authority calls are the single commit point for ownership
+    // and discovery, so no failed generation can leave an owner without a map.
+    if (!target->InstallSimulation(std::move(candidate)) ||
+        !globalMap.SetBuildableOwner(operation.playerId, operation.targetProvinceId))
+    {
+        player->UnbindProvince(operation.targetProvinceId);
+        return false;
+    }
+    player->BindProvince(operation.targetProvinceId, *target->GetSimulation());
+    globalMap.InitializeDiscovery(operation.playerId, operation.targetProvinceId);
+    return true;
+}
+
+bool GameWorld::CompleteAutomaticColonization(Player& player, ProvinceId targetProvinceId)
+{
+    auto* target = globalMap.FindBuildableProvince(targetProvinceId);
+    if (target == nullptr || target->GetOwnerId() != InvalidPlayerId ||
+        target->GetSimulation() != nullptr)
+        return false;
+
+    MapParameters localParams = campaignGenerationParameters.localMap;
+    const auto& provinceParameters = target->GetParameters();
+    localParams.sizeX = std::clamp(provinceParameters.sizeX, 1,
+                                   PersistenceLimits::MaxMapDimension);
+    localParams.sizeY = std::clamp(provinceParameters.sizeY, 1,
+                                   PersistenceLimits::MaxMapDimension);
+    localParams.seed = GlobalMapGenerator::DeriveProvinceSeed(
+        campaignGenerationParameters.globalMap.seed, targetProvinceId);
+    localParams.aiOpponentCount = 0;
+    localParams.aiDifficulty = 0;
+    if (!provinceParameters.naturalResourceTypes.empty())
+        MapGenerator::FilterResourcePatchesForProfile(
+            localParams, provinceParameters.naturalResourceTypes);
+
+    auto candidate = std::make_unique<ProvinceSimulation>(targetProvinceId, player.id);
+    const WorldLayoutResult layout = GenerateWorldLayout(
+        candidate->GetTileMap(), localParams, 1);
+    if (!layout.success)
+        return false;
+
+    candidate->GetEconomy().BindTileMap(candidate->GetTileMap());
+
+    const ProvinceId previousActiveProvince = player.GetActiveProvinceId();
+    player.BindProvince(targetProvinceId, *candidate);
+    if (!player.SetActiveProvince(targetProvinceId))
+    {
+        player.UnbindProvince(targetProvinceId);
+        return false;
+    }
+    CreateStartingHq(&player, layout.anchors.front(), localParams.seed,
+                    candidate->GetTileMap());
+    CreateStartingVillageAndResources(&player, layout.anchors.front(), localParams.seed,
+                                      candidate->GetTileMap());
+    const auto& buildings = candidate->GetEconomy().dataTracker.buildings;
+    const bool hasHeadquarters = std::any_of(buildings.begin(), buildings.end(),
+        [](const Building* building)
+        {
+            return building != nullptr && building->buildingType == BuildingType::Headquarters;
+        });
+    const bool hasVillage = std::any_of(buildings.begin(), buildings.end(),
+        [](const Building* building)
+        {
+            return building != nullptr && building->buildingType == BuildingType::Village;
+        });
+    if (previousActiveProvince != InvalidProvinceId)
+        player.SetActiveProvince(previousActiveProvince);
+    else
+        player.SetActiveProvince(player.homeProvinceId);
+    if (!hasHeadquarters || !hasVillage)
+    {
+        player.UnbindProvince(targetProvinceId);
+        return false;
+    }
+
+    if (!target->InstallSimulation(std::move(candidate)) ||
+        !globalMap.SetBuildableOwner(player.id, targetProvinceId))
+    {
+        player.UnbindProvince(targetProvinceId);
+        return false;
+    }
+    player.BindProvince(targetProvinceId, *target->GetSimulation());
+    globalMap.InitializeDiscovery(player.id, targetProvinceId);
+    return true;
+}
+
 // Validates and applies one gameplay command.
 bool GameWorld::ExecuteCommand(const GameCommand& command)
 {
@@ -117,23 +657,511 @@ bool GameWorld::ExecuteCommand(const GameCommand& command)
     Player* player = playerIt->second.get();
     if (player == nullptr)
         return false;
-    // TD(etap-6.3): an eliminated player's roster/units already vanished and
-    // their AI/input is expected to stop — reject any stray command from a
-    // stale client/controller rather than letting it silently re-mutate a
-    // defeated player's (mostly inert) remaining state.
-    if (player->defeated)
+    const bool isLocalMapCommand = command.type == GameCommandType::BuildBuilding ||
+                                   command.type == GameCommandType::DestroyBuilding ||
+                                   command.type == GameCommandType::SetReceiver ||
+                                   command.type == GameCommandType::StartTechnologyResearch ||
+                                   command.type == GameCommandType::RecruitUnit ||
+                                   command.type == GameCommandType::UpgradeBuilding ||
+                                    command.type == GameCommandType::SetRecipe ||
+                                    command.type == GameCommandType::SetProductionBlocked ||
+                                    command.type == GameCommandType::SetRoadPriority ||
+                                    command.type == GameCommandType::AssignUnitsToGarrison ||
+                                    command.type == GameCommandType::ReturnUnitsToBarracks ||
+                                    command.type == GameCommandType::CreateTaskGroup ||
+                                    command.type == GameCommandType::AddUnitsToTaskGroup ||
+                                    command.type == GameCommandType::RemoveUnitsFromTaskGroup ||
+                                    command.type == GameCommandType::DisbandTaskGroup;
+    ProvinceSimulation* provinceSimulation = nullptr;
+    ProvinceEconomy* economy = nullptr;
+    if (isLocalMapCommand)
+    {
+        const ProvinceId provinceId = command.provinceId == InvalidProvinceId
+            ? player->homeProvinceId : command.provinceId;
+        auto* province = provinceId == InvalidProvinceId
+            ? nullptr : globalMap.FindBuildableProvince(provinceId);
+        provinceSimulation = province != nullptr ? province->GetSimulation() : nullptr;
+        economy = provinceSimulation != nullptr ? &provinceSimulation->GetEconomy() : nullptr;
+        if (provinceId == InvalidProvinceId || province == nullptr ||
+            province->GetOwnerId() != player->id || economy == nullptr)
+            return false;
+    }
+    TileMap* localMap = economy != nullptr ? economy->tilemap : player->GetTileMap();
+    if (localMap == nullptr)
         return false;
+    TileMap& tilemap = *localMap;
     auto acceptCommand = [&]()
     {
-        player->TrackAcceptedCommand(command.type);
+        const ProvinceId commandProvinceId = economy != nullptr
+            ? economy->provinceId
+            : (command.provinceId != InvalidProvinceId
+                   ? command.provinceId : player->homeProvinceId);
+        player->TrackAcceptedCommand(command.type, commandProvinceId);
         return true;
     };
 
-    auto playFx = [this, &command](const std::string& id, float vol = 1.0f)
+    if (command.type == GameCommandType::StartTrade)
     {
-        if (audio != nullptr && command.playerId == localPlayerId)
-            audio->PlaySound(id, vol);
-    };
+        if (activeTradeOrders.size() >= MaxActiveTradeOrders || nextTradeOrderId == 0 ||
+            nextTradeOrderId == std::numeric_limits<std::uint64_t>::max())
+            return false;
+
+        auto* source = globalMap.FindBuildableProvince(command.provinceId);
+        auto* sourceSimulation = source != nullptr ? source->GetSimulation() : nullptr;
+        auto* city = dynamic_cast<NeutralCityProvince*>(
+            globalMap.FindProvince(command.targetProvinceId));
+        const TradeRequest request{command.tradeOfferType, command.tradeRequestType,
+                                   command.tradeRequestedAmount, command.tradeOfferedAmount,
+                                   command.tradeMode};
+        if (source == nullptr || sourceSimulation == nullptr || city == nullptr ||
+            source->GetOwnerId() != player->id || source->GetKnowledge(player->id) < ProvinceKnowledgeLevel::Scouted ||
+            city->GetKnowledge(player->id) < ProvinceKnowledgeLevel::Scouted ||
+            request.offerType == ResourceType::Null || request.requestType == ResourceType::Null ||
+            request.offerType == request.requestType || request.requestedAmount <= 0 ||
+            request.offeredAmount < 0 || request.mode < TradeMode::Coin ||
+            request.mode > TradeMode::Barter || command.expectedCityRevision == 0)
+            return false;
+
+        const auto route = TradeRouteService::FindRoute(
+            globalMap, source->GetId(), city->GetId(), player->id);
+        if (!route.has_value() || route->path.empty())
+            return false;
+
+        TradeQuote quote = TradePricingService::Calculate(
+            *city, source->GetId(), city->GetId(), player->id, request);
+        if (!quote.valid)
+            return false;
+        quote.route = *route;
+        quote.requiredOfferAmount = player->ModifyBalanceInt(
+            BalanceStat::TradeExchangeRate, quote.requiredOfferAmount,
+            BuildingType::Building, request.offerType, 1);
+        if (request.offeredAmount < quote.requiredOfferAmount)
+            return false;
+
+        StockpileTradeInventory inventory(sourceSimulation->GetEconomy());
+        if (inventory.Get(request.offerType) < quote.requiredOfferAmount)
+            return false;
+
+        TradeOrder order;
+        if (!TradeService::StartOrder(*city, inventory, quote,
+                                      command.expectedCityRevision, nextTradeOrderId,
+                                      player->id, order))
+            return false;
+
+        WorldJourney journey;
+        if (!TradeService::BuildJourney(order, quote, journey))
+        {
+            TradeService::RefundOrder(*city, inventory, order);
+            return false;
+        }
+        const WorldJourneyRules journeyRules = ResolveJourneyRules(*player, 100);
+        const WorldJourneyStartResult start = armyJourneySystem.Start(
+            std::move(journey), globalMap, simulationTick, journeyRules);
+        if (!start)
+        {
+            TradeService::RefundOrder(*city, inventory, order);
+            return false;
+        }
+
+        order.journeyId = start.journeyId;
+        const auto [orderIt, inserted] = activeTradeOrders.emplace(order.id, order);
+        if (!inserted)
+        {
+            armyJourneySystem.Cancel(order.journeyId);
+            TradeService::RefundOrder(*city, inventory, order);
+            return false;
+        }
+        (void)orderIt;
+        ++nextTradeOrderId;
+        return acceptCommand();
+    }
+
+    if (command.type == GameCommandType::StartProvinceAttack)
+    {
+        std::vector<int> unitIds = command.unitInstanceIds;
+        if (!command.taskGroupIds.empty())
+        {
+            std::string failureReason;
+            if (!ExpandReadyTaskGroups(*player, command.provinceId, command.taskGroupIds,
+                                       unitIds, failureReason))
+                return false;
+        }
+        std::map<PlayerId, Player*> players;
+        for (const auto& [playerId, candidate] : playerHandler.players)
+            if (candidate != nullptr)
+                players.emplace(playerId, candidate.get());
+        BattleId battleId = InvalidBattleId;
+        std::string failureReason;
+        if (!battleSystem.StartProvinceAttack(*player, command.provinceId,
+                                               command.targetProvinceId,
+                                               unitIds, globalMap,
+                                               armyJourneySystem, players, simulationTick,
+                                               campaignGenerationParameters.globalMap.seed,
+                                               battleId, failureReason))
+            return false;
+        return acceptCommand();
+    }
+
+    if (command.type == GameCommandType::AssignUnitsToGarrison)
+    {
+        std::vector<int> unitIds = command.unitInstanceIds;
+        int sourceBarracksId = command.sourceTileId;
+        if (command.taskGroupId != InvalidTaskGroupId)
+        {
+            const TaskGroup* group = player->taskGroups.Find(command.taskGroupId);
+            std::string failureReason;
+            if (group == nullptr ||
+                !ExpandReadyTaskGroups(*player, command.provinceId,
+                                       {command.taskGroupId}, unitIds, failureReason))
+                return false;
+            sourceBarracksId = group->homeBarracksBuildingId;
+        }
+        std::string failureReason;
+        if (!GarrisonService::AssignUnitsToGarrison(*player, *economy,
+                                                     sourceBarracksId, command.targetTileId,
+                                                     unitIds, failureReason))
+            return false;
+        return acceptCommand();
+    }
+
+    if (command.type == GameCommandType::ReturnUnitsToBarracks)
+    {
+        std::vector<int> unitIds = command.unitInstanceIds;
+        int targetBarracksId = command.targetTileId;
+        if (command.taskGroupId != InvalidTaskGroupId)
+        {
+            const TaskGroup* group = player->taskGroups.Find(command.taskGroupId);
+            if (group == nullptr || group->stationProvinceId != command.provinceId ||
+                command.targetTileId != group->homeBarracksBuildingId)
+                return false;
+            for (const auto& [unitId, unit] : player->roster.units)
+                if (unit.taskGroupId == command.taskGroupId &&
+                    unit.assignment.kind == UnitAssignmentKind::DefensiveGarrison)
+                    unitIds.push_back(unitId);
+            if (unitIds.empty())
+                return false;
+            targetBarracksId = group->homeBarracksBuildingId;
+            std::sort(unitIds.begin(), unitIds.end());
+        }
+        std::string failureReason;
+        if (!GarrisonService::ReturnUnitsToBarracks(*player, *economy,
+                                                    command.sourceTileId, targetBarracksId,
+                                                    unitIds, failureReason))
+            return false;
+        return acceptCommand();
+    }
+
+    if (command.type == GameCommandType::CreateTaskGroup)
+    {
+        // Task groups persist a building id, not a tile id. Building ids are
+        // intentionally independent from map positions (and include a
+        // province/player prefix), so looking them up through TileMap treated
+        // most valid Barracks as an out-of-range tile.
+        Building* barracks = FindProvinceBuilding(*economy, command.sourceTileId);
+        if (barracks == nullptr || barracks->owner != player ||
+            barracks->buildingType != BuildingType::Barracks ||
+            barracks->IsUnderConstruction())
+            return false;
+
+        TaskGroupId createdId = InvalidTaskGroupId;
+        if (!player->taskGroups.Create(economy->provinceId, barracks->id, createdId))
+            return false;
+        return acceptCommand();
+    }
+
+    if (command.type == GameCommandType::AddUnitsToTaskGroup ||
+        command.type == GameCommandType::RemoveUnitsFromTaskGroup ||
+        command.type == GameCommandType::DisbandTaskGroup)
+    {
+        const TaskGroup* group = player->taskGroups.Find(command.taskGroupId);
+        if (group == nullptr || group->stationProvinceId != economy->provinceId)
+            return false;
+
+        std::string failureReason;
+        bool changed = false;
+        if (command.type == GameCommandType::AddUnitsToTaskGroup)
+        {
+            changed = TaskGroupService::AddUnits(player->taskGroups, command.taskGroupId,
+                                                 player->id, command.unitInstanceIds,
+                                                 player->roster, failureReason);
+        }
+        else if (command.type == GameCommandType::RemoveUnitsFromTaskGroup)
+        {
+            changed = TaskGroupService::RemoveUnits(player->taskGroups, command.taskGroupId,
+                                                    player->id, command.unitInstanceIds,
+                                                    player->roster, failureReason);
+        }
+        else
+        {
+            changed = TaskGroupService::Disband(player->taskGroups, command.taskGroupId,
+                                                player->id, player->roster, failureReason);
+        }
+        return changed ? acceptCommand() : false;
+    }
+
+    if (command.type == GameCommandType::SpawnDebugRaid)
+    {
+        auto* target = globalMap.FindBuildableProvince(command.targetProvinceId);
+        if (!player->debugMode || target == nullptr ||
+            target->GetOwnerId() != player->id || command.raidStrength <= 0)
+            return false;
+        BattleId battleId = InvalidBattleId;
+        std::string failureReason;
+        if (!battleSystem.StartRaid(*player, command.targetProvinceId,
+                                    command.raidStrength, globalMap, simulationTick,
+                                    campaignGenerationParameters.globalMap.seed,
+                                    battleId, failureReason))
+            return false;
+        return acceptCommand();
+    }
+
+    if (command.type == GameCommandType::StartResourceTransfer)
+    {
+        auto* source = globalMap.FindBuildableProvince(command.provinceId);
+        auto* target = globalMap.FindBuildableProvince(command.targetProvinceId);
+        auto* sourceSimulation = source != nullptr ? source->GetSimulation() : nullptr;
+        auto* targetSimulation = target != nullptr ? target->GetSimulation() : nullptr;
+        std::vector<ProvinceConnectionId> path;
+        if (source == nullptr || target == nullptr || sourceSimulation == nullptr ||
+            targetSimulation == nullptr || source == target ||
+            source->GetOwnerId() != player->id || target->GetOwnerId() != player->id ||
+            command.resourceCargo.empty() || command.resourceCargo.size() >
+                GameCommand::MaxResourceCargoTypes ||
+            !globalMap.FindShortestPath(source->GetId(), target->GetId(), path) || path.empty())
+            return false;
+        for (std::size_t i = 0; i < command.resourceCargo.size(); ++i)
+        {
+            const auto& cargo = command.resourceCargo[i];
+            if (cargo.type == ResourceType::Null || cargo.amount <= 0 ||
+                (i > 0 && static_cast<int>(command.resourceCargo[i - 1].type) >=
+                    static_cast<int>(cargo.type)) ||
+                StockpileIndex::GetTotal(sourceSimulation->GetEconomy(), cargo.type) < cargo.amount)
+                return false;
+        }
+        std::vector<ResourceAmount> consumedCargo;
+        consumedCargo.reserve(command.resourceCargo.size());
+        for (const auto& cargo : command.resourceCargo)
+        {
+            const int consumed = StockpileIndex::Consume(sourceSimulation->GetEconomy(),
+                                                         cargo.type, cargo.amount);
+            if (consumed != cargo.amount)
+            {
+                for (const auto& restored : consumedCargo)
+                    StockpileIndex::Deposit(sourceSimulation->GetEconomy(), restored.type,
+                                            restored.amount);
+                if (consumed > 0)
+                    StockpileIndex::Deposit(sourceSimulation->GetEconomy(), cargo.type,
+                                            consumed);
+                return false;
+            }
+            else
+                consumedCargo.push_back(cargo);
+        }
+        WorldJourney journey;
+        journey.ownerId = player->id;
+        journey.sourceProvinceId = source->GetId();
+        journey.targetProvinceId = target->GetId();
+        journey.kind = WorldJourneyKind::ResourceTransfer;
+        journey.legPlan.reserve(path.size());
+        for (const ProvinceConnectionId connectionId : path)
+            journey.legPlan.push_back({connectionId});
+        journey.payload = ResourceConvoy{command.resourceCargo};
+        const WorldJourneyStartResult start = armyJourneySystem.Start(
+            std::move(journey), globalMap, simulationTick,
+            ResolveJourneyRules(*player, 100));
+        if (!start)
+        {
+            for (const auto& cargo : command.resourceCargo)
+                StockpileIndex::Deposit(sourceSimulation->GetEconomy(), cargo.type,
+                                        cargo.amount);
+            return false;
+        }
+        return acceptCommand();
+    }
+
+    if (command.type == GameCommandType::StartArmyTransfer)
+    {
+        auto* source = globalMap.FindBuildableProvince(command.provinceId);
+        auto* target = globalMap.FindBuildableProvince(command.targetProvinceId);
+        auto* sourceSimulation = source != nullptr ? source->GetSimulation() : nullptr;
+        auto* targetSimulation = target != nullptr ? target->GetSimulation() : nullptr;
+        if (source == nullptr || target == nullptr || sourceSimulation == nullptr ||
+            targetSimulation == nullptr || source == target ||
+            source->GetOwnerId() != player->id || target->GetOwnerId() != player->id ||
+            command.destinationBarracksId <= 0)
+            return false;
+        auto findBuilding = [](ProvinceEconomy& economy, int id) -> Building*
+        {
+            for (Building* building : economy.dataTracker.buildings)
+                if (building != nullptr && building->id == id)
+                    return building;
+            return nullptr;
+        };
+        Building* destinationBarracks = findBuilding(targetSimulation->GetEconomy(),
+                                                     command.destinationBarracksId);
+        if (destinationBarracks == nullptr || destinationBarracks->owner != player ||
+            destinationBarracks->buildingType != BuildingType::Barracks ||
+            destinationBarracks->IsUnderConstruction())
+            return false;
+        std::vector<int> unitIds;
+        std::string failureReason;
+        if (!ExpandReadyTaskGroups(*player, command.provinceId, command.taskGroupIds,
+                                   unitIds, failureReason))
+            return false;
+        double slowestMoveSpeed = std::numeric_limits<double>::max();
+        for (const int unitId : unitIds)
+        {
+            const BattleUnit* unit = player->roster.FindUnit(unitId);
+            if (unit == nullptr)
+                return false;
+            const double speed = unit->GetEffectiveMoveSpeed(*player);
+            if (!std::isfinite(speed) || speed <= 0.0)
+                return false;
+            slowestMoveSpeed = std::min(slowestMoveSpeed, speed);
+        }
+        std::vector<ProvinceConnectionId> path;
+        if (!globalMap.FindShortestPath(source->GetId(), target->GetId(), path) || path.empty() ||
+            slowestMoveSpeed * JourneyTiming::BasisPoints > std::numeric_limits<int>::max())
+            return false;
+        WorldJourney journey;
+        journey.ownerId = player->id;
+        journey.sourceProvinceId = source->GetId();
+        journey.targetProvinceId = target->GetId();
+        journey.kind = WorldJourneyKind::ArmyTransfer;
+        journey.legPlan.reserve(path.size());
+        for (const ProvinceConnectionId connectionId : path)
+            journey.legPlan.push_back({connectionId});
+        const int moverSpeedBasisPoints = static_cast<int>(std::llround(
+            slowestMoveSpeed * JourneyTiming::BasisPoints));
+        WorldJourneyRules journeyRules = ResolveJourneyRules(*player, 100);
+        journeyRules.speedProfile.moverSpeedBasisPoints = moverSpeedBasisPoints;
+        journey.payload = ArmyTransferParty{unitIds, command.destinationBarracksId};
+        const WorldJourneyStartResult start = armyJourneySystem.Start(
+            std::move(journey), globalMap, simulationTick, journeyRules);
+        if (!start)
+            return false;
+        const WorldJourneyId journeyId = start.journeyId;
+        for (const int unitId : unitIds)
+        {
+            BattleUnit* unit = player->roster.FindUnit(unitId);
+            const TaskGroup* group = unit == nullptr
+                ? nullptr : player->taskGroups.Find(unit->taskGroupId);
+            if (unit == nullptr || group == nullptr || !UnitAssignmentService::AssignJourney(
+                    *unit, source->GetId(), journeyId, group->homeBarracksBuildingId))
+            {
+                for (const int rollbackId : unitIds)
+                {
+                    BattleUnit* rollback = player->roster.FindUnit(rollbackId);
+                    const TaskGroup* rollbackGroup = rollback == nullptr
+                        ? nullptr : player->taskGroups.Find(rollback->taskGroupId);
+                    if (rollback != nullptr && rollbackGroup != nullptr)
+                        UnitAssignmentService::AssignReserve(
+                            *rollback, source->GetId(), rollbackGroup->homeBarracksBuildingId);
+                }
+                armyJourneySystem.Cancel(journeyId);
+                return false;
+            }
+        }
+        return acceptCommand();
+    }
+
+    if (command.type == GameCommandType::ColonizeProvince)
+    {
+        auto* source = globalMap.FindBuildableProvince(command.provinceId);
+        auto* target = globalMap.FindBuildableProvince(command.targetProvinceId);
+        auto* sourceSimulation = source != nullptr ? source->GetSimulation() : nullptr;
+        const auto* definition = FindColonizationDefinition("frontier_settlement");
+        if (source == nullptr || target == nullptr || sourceSimulation == nullptr ||
+            definition == nullptr)
+            return false;
+
+        const ColonizationQuote quote = BuildColonizationQuote(
+            globalMap, *player, sourceSimulation->GetEconomy(), source->GetId(), target->GetId(),
+            *definition, pendingColonizations.contains(target->GetId()),
+            pendingColonizations.size(), PersistenceLimits::MaxColonizationOperations);
+        if (!quote.allowed)
+            return false;
+
+        std::vector<ColonizationCost> consumed;
+        for (const auto& cost : quote.costs)
+        {
+            const int consumedAmount = StockpileIndex::Consume(
+                sourceSimulation->GetEconomy(), cost.type, cost.amount);
+            if (consumedAmount != cost.amount)
+            {
+                for (const auto& restored : consumed)
+                    StockpileIndex::Deposit(sourceSimulation->GetEconomy(), restored.type,
+                                            restored.amount);
+                StockpileIndex::Deposit(sourceSimulation->GetEconomy(), cost.type,
+                                        consumedAmount);
+                return false;
+            }
+            consumed.push_back(cost);
+        }
+
+        WorldJourney journey;
+        journey.ownerId = player->id;
+        journey.sourceProvinceId = source->GetId();
+        journey.targetProvinceId = target->GetId();
+        journey.kind = WorldJourneyKind::Colonization;
+        journey.legPlan.reserve(quote.travel.legs.size());
+        for (const auto& leg : quote.travel.legs)
+            journey.legPlan.push_back({leg.connectionId});
+        journey.payload = Colonists{1};
+        const WorldJourneyRules journeyRules = ResolveJourneyRules(*player, 100);
+        const WorldJourneyStartResult start = armyJourneySystem.Start(
+            std::move(journey), globalMap, simulationTick, journeyRules);
+        if (!start)
+        {
+            for (const auto& cost : quote.costs)
+                StockpileIndex::Deposit(sourceSimulation->GetEconomy(), cost.type, cost.amount);
+            return false;
+        }
+        pendingColonizations.emplace(target->GetId(), ColonizationOperation{
+            player->id, source->GetId(), target->GetId(), start.journeyId,
+            ColonizationPhase::Traveling, 0, quote.settlementDurationTicks, quote.costs});
+        return acceptCommand();
+    }
+
+    if (command.type == GameCommandType::UpgradeProvinceConnection)
+    {
+        auto* source = globalMap.FindBuildableProvince(command.provinceId);
+        auto* sourceSimulation = source != nullptr ? source->GetSimulation() : nullptr;
+        auto* connection = dynamic_cast<LandRouteConnection*>(
+            globalMap.FindConnection(command.connectionId));
+        if (source == nullptr || sourceSimulation == nullptr ||
+            source->GetOwnerId() != player->id || connection == nullptr ||
+            connection->GetNextLevelDefinition() == nullptr ||
+            connection->IsUpgradeInProgress() ||
+            (connection->GetFirstProvinceId() != source->GetId() &&
+             connection->GetSecondProvinceId() != source->GetId()))
+            return false;
+
+        const ProvinceId otherProvinceId =
+            connection->GetFirstProvinceId() == source->GetId()
+                ? connection->GetSecondProvinceId() : connection->GetFirstProvinceId();
+        const auto* otherProvince = globalMap.FindProvince(otherProvinceId);
+        if (otherProvince == nullptr ||
+            source->GetKnowledge(player->id) < ProvinceKnowledgeLevel::Scouted ||
+            otherProvince->GetKnowledge(player->id) < ProvinceKnowledgeLevel::Scouted)
+            return false;
+
+        const auto* nextLevel = connection->GetNextLevelDefinition();
+        for (const auto& cost : nextLevel->upgradeCost)
+            if (cost.amount <= 0 ||
+                StockpileIndex::GetTotal(sourceSimulation->GetEconomy(), cost.type) < cost.amount)
+                return false;
+
+        for (const auto& cost : nextLevel->upgradeCost)
+            StockpileIndex::Consume(sourceSimulation->GetEconomy(), cost.type, cost.amount);
+        if (!connection->BeginUpgrade(nextLevel->level, nextLevel->upgradeDurationTicks))
+        {
+            for (const auto& cost : nextLevel->upgradeCost)
+                StockpileIndex::Deposit(sourceSimulation->GetEconomy(), cost.type, cost.amount);
+            return false;
+        }
+        return acceptCommand();
+    }
 
     if (command.type == GameCommandType::BuildBuilding)
     {
@@ -155,42 +1183,43 @@ bool GameWorld::ExecuteCommand(const GameCommand& command)
             return false;
 
         const auto& definition = GetBuildingDefinition(command.buildingType);
-        const bool freeBuild = ResolveBuildPaymentPolicy(*this, *player) == BuildPaymentPolicy::FreeDebugHuman;
+        const bool freeBuild = ResolveBuildPaymentPolicy(tilemap, *player) == BuildPaymentPolicy::FreeDebugHuman;
         const auto effectiveCosts = player->GetEffectiveBuildCosts(definition);
         if (!freeBuild)
         {
-            auto failures = player->GetBuildRequirementFailures(definition);
+            auto failures = player->GetBuildRequirementFailures(definition, *economy);
             if (!failures.empty())
             {
                 Log::Msg("[GameWorld]", "Command rejected: ", definition.name, " locked by ", failures.front());
                 return false;
             }
         }
-        if (!freeBuild && !player->TryPayBuildCost(effectiveCosts))
+        if (!freeBuild && !player->TryPayBuildCost(*economy, effectiveCosts))
         {
             Log::Msg("[GameWorld]", "Command rejected: not enough resources to build ", definition.name);
             return false;
         }
 
         int tileId = tilemap.GetIdFromCoords(command.tilePos);
-        auto building = CreateBuildingFromType(command.buildingType, player->id * 100000 + player->build.buildingId++);
+        const int buildingId = economy->build.buildingIdPrefix + economy->build.buildingId++;
+        auto building = CreateBuildingFromType(command.buildingType, buildingId);
         if (building == nullptr)
         {
             if (!freeBuild)
-                player->RefundBuildCost(effectiveCosts);
+                player->RefundBuildCost(*economy, effectiveCosts);
             return false;
         }
 
-        double buildTime = player->ModifyBalanceAt(BalanceStat::BuildTime, definition.buildTime, command.buildingType, command.tilePos);
+        double buildTime = player->ModifyBalanceAt(
+            BalanceStat::BuildTime, definition.buildTime, economy->provinceId,
+            command.buildingType, command.tilePos);
         building->buildTime = buildTime;
         building->constructionRemaining = freeBuild ? 0.0 : buildTime;
-        tilemap.BuildOnTile(tileId, player, std::move(building));
-
-        Building* placed = tilemap.GetBuilding(tileId);
+        Building* placed = provinceSimulation->PlaceBuilding(*player, tileId, std::move(building));
         if (placed == nullptr)
         {
             if (!freeBuild)
-                player->RefundBuildCost(effectiveCosts);
+                player->RefundBuildCost(*economy, effectiveCosts);
             return false;
         }
         placed->buildCostRecordState = freeBuild ? BuildCostRecordState::Free
@@ -200,17 +1229,15 @@ bool GameWorld::ExecuteCommand(const GameCommand& command)
 
         if (placed->IsUnderConstruction())
         {
-            playFx("build");
             return acceptCommand();
         }
 
-        if (player->roadNetwork != nullptr)
+        if (economy->roadNetwork != nullptr)
         {
             for (int occupiedTileId : tilemap.GetBuildingTileIds(placed))
-                player->roadNetwork->UpdateNavMap(occupiedTileId, placed);
+                economy->roadNetwork->UpdateNavMap(occupiedTileId, placed);
         }
         tilemap.AutoConnectBuilding(placed);
-        playFx("build");
         return acceptCommand();
     }
 
@@ -225,9 +1252,8 @@ bool GameWorld::ExecuteCommand(const GameCommand& command)
             return false;
         }
 
-        if (!ExecuteDemolition(tilemap, *player, *building))
+        if (!provinceSimulation->DestroyBuilding(*player, command.sourceTileId))
             return false;
-        playFx("destroy");
         return acceptCommand();
     }
 
@@ -238,7 +1264,8 @@ bool GameWorld::ExecuteCommand(const GameCommand& command)
             return false;
 
         auto* upgrade = building->GetComponent<UpgradeComponent>();
-        if (upgrade == nullptr || upgrade->isUpgrading || upgrade->level >= upgrade->maxLevel)
+        if (building->IsUnderConstruction() || upgrade == nullptr ||
+            upgrade->isUpgrading || upgrade->level >= upgrade->maxLevel)
             return false;
 
         const auto& definition = GetBuildingDefinition(building->buildingType);
@@ -247,14 +1274,26 @@ bool GameWorld::ExecuteCommand(const GameCommand& command)
         if (levelDefinition == nullptr)
             return false;
 
-        if (!player->TryPayBuildCost(levelDefinition->cost))
+        const auto unlockFailures = player->GetBuildUnlockRequirementFailures(definition);
+        if (!unlockFailures.empty())
+        {
+            Log::Msg("[GameWorld]", "Command rejected: ", building->name,
+                     " upgrade locked by ", unlockFailures.front());
+            return false;
+        }
+
+        if (!player->TryPayBuildCost(*economy, levelDefinition->cost))
         {
             Log::Msg("[GameWorld]", "Command rejected: not enough resources to upgrade ", building->name);
             return false;
         }
 
-        upgrade->isUpgrading = true;
-        upgrade->upgradeRemaining = levelDefinition->buildTime;
+        if (!provinceSimulation->BeginUpgrade(*player, command.sourceTileId,
+                                              levelDefinition->buildTime))
+        {
+            player->RefundBuildCost(*economy, levelDefinition->cost);
+            return false;
+        }
         return acceptCommand();
     }
 
@@ -264,28 +1303,8 @@ bool GameWorld::ExecuteCommand(const GameCommand& command)
         if (building == nullptr || building->owner != player || building->IsUnderConstruction())
             return false;
 
-        auto* recipes = building->GetComponent<RecipeComponent>();
-        auto* production = building->GetComponent<ProductionComponent>();
-        auto* logistics = building->GetComponent<LogisticsComponent>();
-        auto* workers = building->GetComponent<WorkerComponent>();
-        if (recipes == nullptr || production == nullptr || logistics == nullptr || workers == nullptr)
+        if (!provinceSimulation->SetRecipe(*player, command.sourceTileId, command.targetTileId))
             return false;
-
-        if (!recipes->SetActiveRecipe(command.targetTileId, *building, *production, *logistics, *workers))
-            return false;
-        return acceptCommand();
-    }
-
-    if (command.type == GameCommandType::SetTowerTargetMode)
-    {
-        Building* building = tilemap.GetBuilding(command.sourceTileId);
-        if (building == nullptr || building->owner != player || building->IsUnderConstruction())
-            return false;
-        auto* tower = building->GetComponent<TowerCombatComponent>();
-        if (tower == nullptr || command.targetTileId < static_cast<int>(TowerTargetMode::NearestToHq) ||
-            command.targetTileId > static_cast<int>(TowerTargetMode::StrongestUnit))
-            return false;
-        tower->targetMode = static_cast<TowerTargetMode>(command.targetTileId);
         return acceptCommand();
     }
 
@@ -298,7 +1317,9 @@ bool GameWorld::ExecuteCommand(const GameCommand& command)
         if (command.targetTileId != 0 && command.targetTileId != 1)
             return false;
 
-        building->SetProductionBlocked(command.targetTileId == 1);
+        if (!provinceSimulation->SetProductionBlocked(*player, command.sourceTileId,
+                                                      command.targetTileId == 1))
+            return false;
         return acceptCommand();
     }
 
@@ -316,7 +1337,8 @@ bool GameWorld::ExecuteCommand(const GameCommand& command)
         if (road == nullptr || !RoadComponent::IsValidPriorityResource(resource))
             return false;
 
-        road->SetPriorityResource(resource);
+        if (!provinceSimulation->SetRoadPriority(*player, command.sourceTileId, resource))
+            return false;
         return acceptCommand();
     }
 
@@ -331,7 +1353,10 @@ bool GameWorld::ExecuteCommand(const GameCommand& command)
         if (source->IsUnderConstruction() || target->IsUnderConstruction())
             return false;
 
-        tilemap.ConnectReceiver(source, target, command.alternativeReceiver);
+        if (!provinceSimulation->ConnectReceiver(*player, command.sourceTileId,
+                                                 command.targetTileId,
+                                                 command.alternativeReceiver))
+            return false;
         return acceptCommand();
     }
 
@@ -342,7 +1367,6 @@ bool GameWorld::ExecuteCommand(const GameCommand& command)
 
         if (!player->StartFocus(command.researchId))
             return false;
-        playFx("research");
         return acceptCommand();
     }
 
@@ -356,12 +1380,13 @@ bool GameWorld::ExecuteCommand(const GameCommand& command)
             source->GetComponent<ResearchComponent>() == nullptr)
             return false;
 
-        if (command.researchId.empty() || !player->CanResearchTechnology(command.researchId))
+        if (command.researchId.empty() ||
+            !player->CanResearchTechnology(command.researchId, *economy))
             return false;
 
-        if (!player->StartTechnologyResearch(command.researchId, source))
+        if (!provinceSimulation->StartTechnologyResearch(*player, command.sourceTileId,
+                                                         command.researchId))
             return false;
-        playFx("research");
         return acceptCommand();
     }
 
@@ -375,120 +1400,89 @@ bool GameWorld::ExecuteCommand(const GameCommand& command)
         if (recruitment == nullptr || command.researchId.empty())
             return false;
 
-        if (!recruitment->QueueRecruitment(*source, command.researchId))
+        if (!provinceSimulation->RecruitUnit(*player, command.sourceTileId, command.researchId))
             return false;
 
-        playFx("build");
         return acceptCommand();
     }
 
-    if (command.type == GameCommandType::DeployUnits)
+    if (command.type == GameCommandType::StartScoutExpedition ||
+        command.type == GameCommandType::ScoutProvince)
     {
-        int targetPlayerId = command.targetTileId;
-        if (command.unitInstanceIds.empty() || targetPlayerId == player->id)
-            return false;
-        auto targetPlayerIt = playerHandler.players.find(targetPlayerId);
-        if (targetPlayerIt == playerHandler.players.end() || targetPlayerIt->second == nullptr || targetPlayerIt->second->defeated)
-            return false;
-        // TD(etap-6.3): a target need not be a direct ring neighbor as long as
-        // every player in between has been eliminated — the route then runs
-        // through their conquered HQ.
-        auto isEliminated = [&](int playerId)
+        ProvinceId sourceProvinceId = command.provinceId;
+        ProvinceId targetProvinceId = command.targetProvinceId;
+        std::vector<int> scoutIds = command.unitInstanceIds;
+        if (command.type == GameCommandType::ScoutProvince)
         {
-            auto it = playerHandler.players.find(playerId);
-            return it != playerHandler.players.end() && it->second != nullptr && it->second->defeated;
-        };
-        if (!PathingService::AreHqsConnected(militaryRoads, player->id, targetPlayerId, isEliminated))
-            return false;
-
-        // All-or-nothing: every listed unit must be a valid, currently-rostered
-        // instance before any of them are moved, so a malformed/stale command
-        // never partially deploys a column.
-        for (int unitInstanceId : command.unitInstanceIds)
-        {
-            const BattleUnit* unit = player->roster.FindUnit(unitInstanceId);
-            if (unit == nullptr || unit->state != BattleUnitState::InRoster)
-                return false;
-        }
-
-        auto routeKey = std::make_pair(player->id, targetPlayerId);
-        for (int unitInstanceId : command.unitInstanceIds)
-        {
-            auto removed = player->roster.RemoveUnit(unitInstanceId);
-            if (!removed.has_value())
-                continue;
-
-            BattleUnit unit = std::move(removed.value());
-            unit.state = BattleUnitState::Marching;
-            unit.routeFromPlayerId = player->id;
-            unit.routeToPlayerId = targetPlayerId;
-            unit.tileIndex = -1;
-            unit.tileProgress = 0.0;
-            deployedUnits[unitInstanceId] = std::move(unit);
-            spawnQueues[routeKey].push_back(unitInstanceId);
-        }
-
-        playFx("build");
-        return acceptCommand();
-    }
-
-    if (command.type == GameCommandType::DebugDeployEnemyUnits)
-    {
-        if (!tilemap.params.debugMode || command.targetTileId < 1 || command.targetTileId > 16)
-            return false;
-
-        Player* enemy = nullptr;
-        for (int neighborId : militaryRoads.GetNeighbors(player->id))
-        {
-            auto it = playerHandler.players.find(neighborId);
-            if (it != playerHandler.players.end() && it->second != nullptr && !it->second->defeated)
+            // Current clients carry their active province explicitly. Do not
+            // silently switch a current command to another province.
+            const bool sourceWasExplicit = sourceProvinceId != InvalidProvinceId;
+            for (auto& [instanceId, unit] : player->roster.units)
             {
-                enemy = it->second.get();
+                const auto* definition = FindUnitDefinition(unit.unitDefId);
+                if (definition == nullptr || definition->role != UnitRole::Scout)
+                    continue;
+
+                if (!unit.assignment.IsStructurallyValid())
+                    continue;
+                const ProvinceId candidateSource = unit.assignment.provinceId;
+                if (sourceWasExplicit && candidateSource != sourceProvinceId)
+                    continue;
+                const auto* source = globalMap.FindBuildableProvince(candidateSource);
+                if (source == nullptr || source->GetOwnerId() != player->id ||
+                    !UnitAssignmentService::IsAvailableFromReserve(unit, candidateSource))
+                    continue;
+
+                sourceProvinceId = candidateSource;
+                scoutIds.push_back(instanceId);
                 break;
             }
         }
-        if (enemy == nullptr)
+        const ExpeditionDefinition* expeditionDefinition = FindExpeditionDefinition("scout");
+        if (expeditionDefinition == nullptr)
             return false;
-
-        const std::vector<int> route = militaryRoads.GetDirectedTiles(enemy->id, player->id);
-        if (route.empty())
+        const double strategicSupply = player->strategicResources.Get(
+            expeditionDefinition->supplyResource);
+        const bool useStrategicSupply = strategicSupply >= expeditionDefinition->supplyCost;
+        auto* sourceProvince = globalMap.FindBuildableProvince(sourceProvinceId);
+        auto* sourceSimulation = sourceProvince != nullptr
+            ? sourceProvince->GetSimulation() : nullptr;
+        ProvinceEconomy* sourceEconomy = sourceSimulation != nullptr
+            ? &sourceSimulation->GetEconomy() : nullptr;
+        // SupplyPackages are the strategic abstraction used by expedition
+        // definitions. Until a dedicated packaging building exists, one
+        // package is assembled deterministically from one local
+        // FOOD_PROVISIONS in the source province. This closes the otherwise
+        // unreachable production loop while preserving old saves/tests that
+        // already hold strategic packages.
+        const bool canUseLocalProvisions =
+            expeditionDefinition->supplyResource == StrategicResourceType::SupplyPackages &&
+            sourceEconomy != nullptr &&
+            StockpileIndex::GetTotal(*sourceEconomy, ResourceType::FOOD_PROVISIONS) >=
+                expeditionDefinition->supplyCost;
+        if (!useStrategicSupply && !canUseLocalProvisions)
             return false;
-
-        // Debug attacks are meant for rapid combat iteration. Put the head of
-        // the injected column three quarters of the way toward the local HQ,
-        // with following units staggered behind it instead of waiting at the
-        // enemy gate like a normal deployment.
-        const int lastRouteIndex = static_cast<int>(route.size()) - 1;
-        const int furthestMarchIndex = std::max(0, lastRouteIndex - 1);
-        const int debugStartIndex = std::min(furthestMarchIndex, lastRouteIndex * 3 / 4);
-        for (int i = 0; i < command.targetTileId; ++i)
+        WorldJourneyId journeyId = InvalidWorldJourneyId;
+        std::string failureReason;
+        const WorldJourneyRules journeyRules = ResolveJourneyRules(*player, 100);
+        if (!ScoutExpeditionService::Start(player->id, sourceProvinceId, targetProvinceId,
+                                           scoutIds, player->roster, globalMap,
+                                           armyJourneySystem, simulationTick,
+                                           journeyId, failureReason, journeyRules))
+            return false;
+        if (useStrategicSupply)
         {
-            const int instanceId = enemy->id * 100000 + enemy->nextUnitInstanceId++;
-            BattleUnit unit(instanceId, enemy->id, "militia");
-            unit.currentHp = unit.GetEffectiveMaxHp(*enemy);
-            unit.state = BattleUnitState::Marching;
-            unit.routeFromPlayerId = enemy->id;
-            unit.routeToPlayerId = player->id;
-            unit.tileIndex = std::max(0, debugStartIndex - i);
-            unit.tileProgress = 0.0;
-            unit.attackTimer = 0.0;
-            deployedUnits[instanceId] = std::move(unit);
+            if (!player->strategicResources.Consume(
+                    expeditionDefinition->supplyResource,
+                    static_cast<double>(expeditionDefinition->supplyCost)))
+                return false;
         }
-
-        playFx("build");
+        else if (StockpileIndex::Consume(*sourceEconomy, ResourceType::FOOD_PROVISIONS,
+                                         expeditionDefinition->supplyCost) !=
+                 expeditionDefinition->supplyCost)
+            return false;
         return acceptCommand();
     }
 
     return false;
-}
-
-std::string GameWorld::GetAITrace(int playerId) const
-{
-    for (const auto& controller : controllers)
-    {
-        const auto* ai = dynamic_cast<const AIController*>(controller.get());
-        if (ai != nullptr && ai->playerId == playerId)
-            return ai->GetDecisionTrace();
-    }
-    return {};
 }

@@ -33,12 +33,16 @@ void InputProcessor::HandleInputs()
         controller->MakeAction("t");
     if (IsActionPressed(OPEN_ROSTER_GUI))
         controller->MakeAction("u");
+    if (IsActionPressed(OPEN_UPGRADE_GUI))
+        controller->MakeAction("g");
+    if (IsActionPressed(OPEN_GLOBAL_MAP_GUI))
+        controller->MakeAction("global_map");
     if (IsActionPressed(CENTER_CAMERA_ON_HEADQUARTERS))
         controller->MakeAction("space");
     if (debugActionsEnabled && IsActionPressed(DEBUG_GRANT_RESOURCES))
         controller->MakeAction("debug_resources");
-    if (debugActionsEnabled && IsActionPressed(DEBUG_DEPLOY_ENEMY_UNITS))
-        controller->MakeAction("debug_enemy_units");
+    if (debugActionsEnabled && IsActionPressed(DEBUG_SPAWN_RAID))
+        controller->MakeAction("debug_raid");
     if (IsActionPressed(LEFT_BUTTON_DOWN))
         controller->MakeAction("lmbp");
     if (IsActionReleased(LEFT_BUTTON_DOWN))
@@ -89,6 +93,12 @@ void GuiController::ChangeSystem(std::string name)
     activeSystem->OnActivate();
 }
 
+bool GuiController::IsSystemActive(const std::string& name) const
+{
+    const auto it = systems.find(name);
+    return it != systems.end() && activeSystem == it->second;
+}
+
 // Rebuilds the widget draw list through the active system every frame.
 void GuiController::Update(double dt)
 {
@@ -127,6 +137,7 @@ BasicMapViewSystem::BasicMapViewSystem(GuiController* con)
     researchPanel.scene = scene;
     selectedBuildingWidget.scene = scene;
     productionWarningWidget.scene = scene;
+    buildingHoverTooltipWidget.scene = scene;
     SetupStrategicHud(strategicHudWidget, scene);
 }
 
@@ -193,6 +204,7 @@ void BasicMapViewSystem::Update(double dt)
 
             scene->SubmitLocalCommand(GameCommand::StartTechnologyResearch(
                 scene->game->GetLocalPlayerId(),
+                scene->game->GetLocalActiveProvinceId(),
                 technologyId,
                 university->positionId));
         };
@@ -201,6 +213,8 @@ void BasicMapViewSystem::Update(double dt)
     ApplyStrategicHudCameraPadding(scene);
     MoveCamera(scene, cameraMovement);
     owner->AddUiWidget(&productionWarningWidget);
+    if (!isBuildingSelected)
+        owner->AddUiWidget(&buildingHoverTooltipWidget);
 
     if (isBuildingSelected)
     {
@@ -230,7 +244,8 @@ void BasicMapViewSystem::Update(double dt)
         {
             Building* building = activePanel->GetBuilding();
             if (building != nullptr && building->CanBeManuallyDestroyed())
-                scene->SubmitLocalCommand(GameCommand::DestroyBuilding(scene->game->GetLocalPlayerId(), building->positionId));
+            scene->SubmitLocalCommand(GameCommand::DestroyBuilding(
+                scene->game->GetLocalPlayerId(), scene->game->GetLocalActiveProvinceId(), building->positionId));
             ClearBuildingSelection();
             selectedBuildingWidget.building = nullptr;
             return;
@@ -335,6 +350,8 @@ void BasicMapViewSystem::TechPressed()
 
 void BasicMapViewSystem::RosterPressed()
 {
+    if (!HasCompletedBarracks(scene))
+        return;
     ClearBuildingSelection();
     selectedBuildingWidget.building = nullptr;
     owner->ChangeSystem("roster");
@@ -394,7 +411,7 @@ void BasicMapViewSystem::LmbPressed()
         float ddx = mousePos.x - centerScreen.x;
         float ddy = mousePos.y - centerScreen.y;
         if (ddx * ddx + ddy * ddy > radiusScreen * radiusScreen)
-            building = nullptr;  // outside the circle → treat as an empty-ground click
+            building = nullptr;  // outside the circle -> treat as an empty-ground click
     }
 
     if (building != nullptr)
@@ -459,7 +476,8 @@ void BasicMapViewSystem::RmbReleased()
             {
                 bool alternativeReceiver = InputManager::IsKeyDown(KEY_LEFT_CONTROL) || InputManager::IsKeyDown(KEY_RIGHT_CONTROL);
                 scene->SubmitLocalCommand(GameCommand::SetReceiver(
-                    scene->game->GetLocalPlayerId(), selected->positionId,
+                    scene->game->GetLocalPlayerId(), scene->game->GetLocalActiveProvinceId(),
+                    selected->positionId,
                     receiver->positionId, alternativeReceiver));
                 Log::Msg("[Input]", receiver->name,
                          alternativeReceiver ? " set as alternative receiver for " : " set as receiver for ",

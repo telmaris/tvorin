@@ -1,0 +1,75 @@
+# Data-driven world events. Effects are typed and intentionally not scripts.
+
+event bandit_ambush
+    name "Bandit ambush"
+    title "Ambush on the road"
+    description "A caravan was attacked on an unsafe tract."
+    trigger Route
+    chance_bp 250
+    weight 10
+    duration_ticks 0
+    require_adjacent_trait ambush_country
+    effect KillJourneyUnits 1
+end
+
+event bandit_raid
+    name "Bandit raid"
+    title "Raiders at the frontier"
+    description "Bandits from a nearby camp attack an exposed settlement."
+    trigger ProvincePeriodic
+    chance_bp 150
+    weight 10
+    check_interval_ticks 3000
+    duration_ticks 0
+    allow_kind Buildable
+    require_adjacent_trait ambush_country
+    effect StartRaid 20
+end
+
+event frontier_harvest
+    name "Frontier harvest"
+    title "A productive season"
+    description "Careful work brings an unexpected surplus to the province."
+    trigger ProvincePeriodic
+    chance_bp 500
+    weight 10
+    check_interval_ticks 1000
+    duration_ticks 6000
+    allow_kind Buildable
+    effect ModifyResource WHEAT 5
+end
+
+event market_favor
+    name "Market favor"
+    title "A trusted trading partner"
+    description "A completed delivery improves the city's opinion of the trader."
+    trigger Discovery
+    chance_bp 300
+    weight 5
+    duration_ticks 0
+    allow_kind NeutralCity
+    effect ModifyTradeScore 1
+end
+
+# Journal-only mission reports. A zero chance prevents these definitions from
+# entering random discovery rolls; the journey authority publishes them at
+# the exact terminal transition.
+event scout_mission_completed
+    name "Scouting report"
+    title "Scouting mission completed"
+    description "A scouting party completed its survey."
+    trigger Discovery
+    chance_bp 0
+    weight 0
+    duration_ticks 0
+end
+
+event scout_mission_failed
+    name "Failed scouting report"
+    title "Scouting mission failed"
+    description "The scouting party did not return."
+    trigger Discovery
+    chance_bp 0
+    weight 0
+    duration_ticks 0
+end

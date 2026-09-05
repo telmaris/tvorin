@@ -187,7 +187,7 @@ technology regular_drills
     research_time 180
     requires standing_forces
     modifier UnitHp multiplier 1.1
-    modifier UnitRoadAttack multiplier 1.25
+    modifier UnitFieldAttack multiplier 1.25
 end
 
 technology veteran_cadres
@@ -199,7 +199,7 @@ technology veteran_cadres
     tags military production
     research_time 210
     requires regular_drills
-    modifier UnitRoadAttack multiplier 1.2
+    modifier UnitFieldAttack multiplier 1.2
     modifier UnitRecruitManpowerCost multiplier 1.1
     modifier ProductionCycleTime multiplier 1.11111111111
     modifier UnitMoveSpeed additive 2
@@ -214,7 +214,7 @@ technology standing_army
     tags military
     research_time 300
     requires veteran_cadres
-    modifier UnitRoadAttack multiplier 1.2
+    modifier UnitFieldAttack multiplier 1.2
     modifier UnitHp multiplier 1.2
     modifier UnitRecruitTime multiplier 1.2
     modifier UnitArmor additive 1
@@ -230,8 +230,8 @@ technology night_watch_rotations
     research_time 150
     requires war_provisioning
     requires martial_obligation
-    modifier TowerAttackSpeed multiplier 1.1
-    modifier HqDefense additive 1
+    modifier ProvinceDefenseReadiness multiplier 1.1
+    modifier ProvinceDefense additive 1
 end
 
 technology fletchers_quota
@@ -243,7 +243,7 @@ technology fletchers_quota
     tags military production
     research_time 180
     requires night_watch_rotations
-    modifier TowerDamage multiplier 1.1
+    modifier ProvinceDefensePower multiplier 1.1
     modifier ProductionCycleTime multiplier 0.833333 building Bowyer
 end
 
@@ -256,8 +256,8 @@ technology measured_kill_zones
     tags military
     research_time 210
     requires fletchers_quota
-    modifier TowerRange multiplier 1.15
-    modifier TowerAttackSpeed multiplier 0.9
+    modifier ProvinceDefenseCoverage multiplier 1.15
+    modifier ProvinceDefenseReadiness multiplier 0.9
 end
 
 technology dismantle_the_timber_ring
@@ -269,9 +269,9 @@ technology dismantle_the_timber_ring
     tags military construction
     research_time 300
     requires measured_kill_zones
-    modifier HqDefense multiplier 0.8
-    modifier TowerRange multiplier 1.1
-    modifier TowerAttackSpeed multiplier 1.1
+    modifier ProvinceDefense multiplier 0.8
+    modifier ProvinceDefenseCoverage multiplier 1.1
+    modifier ProvinceDefenseReadiness multiplier 1.1
 end
 
 technology layered_stone_defenses
@@ -283,10 +283,9 @@ technology layered_stone_defenses
     tags military construction
     research_time 360
     requires dismantle_the_timber_ring
-    modifier HqMaxHp multiplier 1.3
-    modifier HqDefense additive 2
-    modifier TowerRange multiplier 1.1
-    modifier BuildCost multiplier 1.1 building DefenseTower
+    modifier ProvinceFortification multiplier 1.3
+    modifier ProvinceDefense additive 2
+    modifier ProvinceDefenseCoverage multiplier 1.1
 end
 
 technology supply_wagons
@@ -298,7 +297,7 @@ technology supply_wagons
     tags military construction production
     research_time 180
     requires campaign_supply
-    modifier UnitSiegeAttack multiplier 1.1 unit ram
+    modifier UnitSiegePower multiplier 1.1 unit ram
     modifier UnitMoveSpeed multiplier 0.9 unit ram
     modifier ProductionCycleTime multiplier 0.833333 building SiegeWorkshop
 end
@@ -350,7 +349,7 @@ technology council_of_elders
     tags construction military manpower
     research_time 150
     requires community_gatherings
-    modifier HqDefense additive 1
+    modifier ProvinceDefense additive 1
     modifier BuildTime multiplier 1.11111
 end
 
@@ -378,7 +377,7 @@ technology written_custom
     research_time 210
     requires market_days
     modifier BuildCost multiplier 0.9
-    modifier HqDefense additive 1
+    modifier ProvinceDefense additive 1
 end
 
 technology road_surfacing
@@ -752,7 +751,7 @@ technology fight_against_the_unfaithful
     tags manpower
     research_time 210
     requires proclamation_of_the_faith
-    modifier UnitRoadAttack multiplier 1.2
+    modifier UnitFieldAttack multiplier 1.2
     modifier UnitHp multiplier 1.1
 end
 
@@ -845,9 +844,9 @@ technology holy_refuge
     tags manpower
     research_time 240
     requires acts_of_mercy
-    modifier HqMaxHp multiplier 1.2
-    modifier HqThorns additive 3
-    modifier TowerDamage multiplier 1.2
+    modifier ProvinceFortification multiplier 1.2
+    modifier ProvinceCounterattack additive 3
+    modifier ProvinceDefensePower multiplier 1.2
 end
 
 technology zealous_brotherhood
@@ -876,7 +875,7 @@ technology sacred_muster
     modifier UnitRecruitTime multiplier 0.7
     modifier ProductionCycleTime multiplier 1.17647058824
     modifier UnitRecruitManpowerCost additive -2
-    modifier UnitRoadAttack multiplier 0.9
+    modifier UnitFieldAttack multiplier 0.9
 end
 
 technology storage_network
@@ -954,7 +953,7 @@ technology mass_levy
     requires martial_obligation
     modifier PopulationCap additive 15
     modifier UnitRecruitManpowerCost multiplier 0.9
-    modifier UnitRoadAttack multiplier 0.9
+    modifier UnitFieldAttack multiplier 0.9
 end
 
 technology campaign_supply
@@ -988,7 +987,7 @@ technology broader_conscription
     research_time 210
     requires muster_rolls
     modifier UnitRecruitManpowerCost multiplier 0.8
-    modifier UnitRoadAttack multiplier 0.95
+    modifier UnitFieldAttack multiplier 0.95
 end
 
 technology general_mobilization
@@ -1015,8 +1014,8 @@ technology engineering_corps
     research_time 300
     requires veteran_cadres
     modifier UnitArmor additive 2
-    modifier UnitSiegeAttack additive 2
-    modifier UnitRoadAttack multiplier 1.3 unit ballista
+    modifier UnitSiegePower additive 2
+    modifier UnitFieldAttack multiplier 1.3 unit ballista
     modifier UnitMoveSpeed multiplier 0.85
 end
 
@@ -1050,4 +1049,16 @@ technology primitive_training_drill
     requires war_provisioning
     modifier BuildCost additive -10 building Barracks
     modifier UnitRecruitTime multiplier 1.2
+end
+
+technology frontier_defense_charter
+    name "Frontier Defense Charter"
+    description "A civic charter establishes a measured defense and garrison supply policy."
+    category WARFARE
+    layout_lane "Warfare"
+    layout_order 9100
+    tags military expansion
+    research_time 60
+    modifier GarrisonCapacity additive 4
+    modifier GarrisonFoodUpkeep multiplier 0.90
 end

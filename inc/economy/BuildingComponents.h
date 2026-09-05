@@ -7,6 +7,7 @@
 #include <array>
 #include <bitset>
 #include <cstddef>
+#include <cstdint>
 #include <deque>
 #include <map>
 #include <memory>
@@ -45,9 +46,11 @@ enum class BuildingCapability : std::size_t
     Population,
     Road,
     Recruitment,
-    Hq,
-    TowerCombat,
     Upgrade,
+    DefenseCoverage,
+    Garrison,
+    GarrisonUpkeep,
+    Safety,
     Count
 };
 
@@ -194,11 +197,9 @@ struct LogisticsComponent : IBuildingComponent
     void DispatchOutputs(Building& self, ProductionComponent& prod);
     int HandleTransportFrom(ResourceType type, int amount, Building* receiver,
                             Building& self, ProductionComponent& prod);
-    // AI rework (TODO #2): whether this building has a physical road path to
-    // ANY of its owner's storage-like buildings (HQ included) — the "is it
-    // wired into the logistics network" check the AI keeps every building
-    // honest with. Order-independent (boolean OR over Player::storages), so
-    // lockstep-safe. Ignores construction state: it inspects roads only.
+    // Returns whether this building has a physical road path to any of its
+    // owner's storage-like buildings (HQ included). The result is
+    // order-independent and ignores construction state.
     // Not free (one road-network BFS per storage until a hit) — callers on a
     // per-tick path should throttle/cache.
     bool IsConnectedToRoadNetwork(Building& self) const;
@@ -285,8 +286,8 @@ struct StorageComponent : IBuildingComponent
     std::vector<ResourceBufferView> GetBufferViews() const;
 };
 
-// Private delivery buffer used by consumers such as Barracks and
-// DefenseTower. It accepts resources addressed to its owning building, but it
+// Private delivery buffer used by consumers such as Barracks. It accepts
+// resources addressed to its owning building, but it
 // is deliberately not a warehouse: it is absent from Player::storages, cannot
 // serve outgoing requests and never contributes to StockpileIndex.
 struct LocalResourceBufferComponent : IBuildingComponent
@@ -366,7 +367,7 @@ struct RecruitmentQueueEntry
 };
 
 // Recruitment queue for a unit-producing building (Barracks; future
-// Stables/MageTower/Workshop are only new UnitDefinition::recruitBuilding
+// Stables/Workshop are only new UnitDefinition::recruitBuilding
 // values, no new component). User request (docs/work_plan_2026-07-13.md,
 // 2026-07-15 + TODO #1 2026-07-16): an order joins the queue immediately on
 // click (as long as manpower allows), tagged "waiting for resources" if its
@@ -407,72 +408,74 @@ struct RecruitmentComponent : IBuildingComponent
     std::string DiagnoseRecruitmentBlock(const Building& self, const std::string& unitDefId) const;
 };
 
-// --- HqComponent ---
-// HP/defense state for a player's Headquarters (TD etap-6). Losing all HP
-// eliminates the owner (see GameWorld::EliminatePlayer) — a real war-system
-// requirement, unlike the pre-rework Headquarters which was indestructible.
-struct HqComponent : IBuildingComponent
+// --- DefenseCoverageComponent ---
+// Static defensive footprint data. Effective values are resolved by the owner
+// at query time, like the other balance-aware building components. The
+// component deliberately does not cache pointers to other buildings: raid and
+// coverage services derive overlaps from the live building registry.
+struct DefenseCoverageComponent : IBuildingComponent
 {
-    Stat<double> maxHp{BalanceStat::HqMaxHp, 500.0};
-    double currentHp{500.0};
-    Stat<double> hardDefense{BalanceStat::HqDefense, 0.0};
-    Stat<double> thornsDamage{BalanceStat::HqThorns, 0.0};
-    // Not BalanceStat-wrapped (like UnitDefinition::attackRange) — a fixed
-    // data-driven cadence, not something tech/focus buffs are expected to
-    // touch in v1.
-    double thornsInterval{3.0};
-    double thornsTimer{0.0};
-    // Conquest spoils (TD etap-6.3), read once at elimination time.
-    double captureStockFraction{0.4};
-    double conquestRampDuration{600.0};
+    Stat<double> radius{BalanceStat::ProvinceDefenseCoverage, 0.0};
+    Stat<double> baseProtection{BalanceStat::ProvinceDefensePower, 0.0};
+    std::string requiredState;
 
-    // Render-only "under attack" indicator (ticked in HqCombatSystem::Update,
-    // set whenever siege damage lands) — deliberately NOT persisted/saved,
-    // resetting to 0 after a load is an acceptable trade-off for a transient
-    // HUD cue.
-    double recentDamageTimer{0.0};
-
-    BuildingCapability GetCapability() const override { return BuildingCapability::Hq; }
-    double GetModifiedMaxHp(const Building& self) const;
-    double GetModifiedHardDefense(const Building& self) const;
-    double GetModifiedThornsDamage(const Building& self) const;
+    BuildingCapability GetCapability() const override { return BuildingCapability::DefenseCoverage; }
+    double GetEffectiveRadius(const Building& self) const;
+    double GetEffectiveProtection(const Building& self) const;
 };
 
-// --- TowerCombatComponent ---
-// Combat stats + attack cooldown for a DefenseTower (TD etap-7). Ammo itself
-// lives in the building's own local resource buffer (one entry, keyed by
-// `ammoResource`) — reusing the same road-network delivery path as any
-// production building's inputs, not a separate ammo-tracking mechanism.
-// The chosen priority is stored; the concrete target is still resolved fresh
-// for every shot, so dead or out-of-range units are never retained.
-enum class TowerTargetMode
+// --- GarrisonComponent ---
+// Capacity and presentation-only metadata live here. Unit IDs are not
+// duplicated in this component; GarrisonService reads canonical roster
+// assignments from UnitAssignmentService.
+struct GarrisonComponent : IBuildingComponent
 {
-    NearestToHq,
-    StrongestUnit
+    Stat<int> capacity{BalanceStat::GarrisonCapacity, 0};
+    std::string presentationName;
+
+    BuildingCapability GetCapability() const override { return BuildingCapability::Garrison; }
+    int GetEffectiveCapacity(const Building& self) const;
 };
 
-struct TowerCombatComponent : IBuildingComponent
+enum class GarrisonSupplyStatus : std::uint8_t
 {
-    Stat<double> damage{BalanceStat::TowerDamage, 3.5};
-    Stat<double> range{BalanceStat::TowerRange, 6.0};
-    Stat<double> attackSpeed{BalanceStat::TowerAttackSpeed, 1.0};
-    double attackTimer{0.0};
-    ResourceType ammoResource{ResourceType::ARROWS};
-    // Ammo consumed per shot, reduced (floored at 0 — a strong enough bonus
-    // makes shots free) by BalanceStat::TowerAmmoEfficiency.
-    Stat<int> ammoPerShot{BalanceStat::TowerAmmoEfficiency, 1};
-    TowerTargetMode targetMode{TowerTargetMode::NearestToHq};
+    Supplied,
+    Unsupplied,
+    RequestPending
+};
 
-    BuildingCapability GetCapability() const override { return BuildingCapability::TowerCombat; }
-    // Tops up the ammo buffer via the road network every tick (the
-    // MaintainInputRequests pattern production buildings use, minus the
-    // ProductionComponent coupling that pattern normally requires — a tower
-    // has no recipe, just one buffer to keep full).
+// --- GarrisonUpkeepComponent ---
+// Fixed-point debt is accumulated by GarrisonService. No fractional Resource
+// is ever created: once debt reaches a whole package, the building requests or
+// consumes an integer FOOD_PROVISIONS amount through its local logistics path.
+struct GarrisonUpkeepComponent : IBuildingComponent
+{
+    static constexpr std::int64_t DebtScale = 1'000'000;
+    ResourceType requiredResource{ResourceType::FOOD_PROVISIONS};
+    double timer{0.0};
+    // Canonical fixed-point debt. One unit equals 1 / DebtScale of a package.
+    std::int64_t debtMicros{0};
+    double intervalSeconds{60.0};
+    double packageSize{1.0};
+    int requestedAmount{0};
+    GarrisonSupplyStatus supplyStatus{GarrisonSupplyStatus::Supplied};
+
+    BuildingCapability GetCapability() const override { return BuildingCapability::GarrisonUpkeep; }
     void Update(Building& self, double dt) override;
-    double GetModifiedDamage(const Building& self) const;
-    double GetModifiedRange(const Building& self) const;
-    double GetModifiedAttackSpeed(const Building& self) const;
-    int GetModifiedAmmoPerShot(const Building& self) const;
+    double GetDebtInPackages() const;
+};
+
+// --- SafetyComponent ---
+// Intrinsic raid resilience and explicit target policy. Coverage and garrison
+// strength are calculated externally; no pointer to a defensive building is
+// stored here, which keeps save/load and deterministic raid resolution simple.
+struct SafetyComponent : IBuildingComponent
+{
+    double intrinsicResilience{0.0};
+    bool raidDestructible{true};
+    bool raidStockLossTarget{true};
+
+    BuildingCapability GetCapability() const override { return BuildingCapability::Safety; }
 };
 
 template<typename T>
@@ -491,8 +494,10 @@ template<> constexpr BuildingCapability GetBuildingComponentCapability<LocalReso
 template<> constexpr BuildingCapability GetBuildingComponentCapability<PopulationComponent>() { return BuildingCapability::Population; }
 template<> constexpr BuildingCapability GetBuildingComponentCapability<RoadComponent>() { return BuildingCapability::Road; }
 template<> constexpr BuildingCapability GetBuildingComponentCapability<RecruitmentComponent>() { return BuildingCapability::Recruitment; }
-template<> constexpr BuildingCapability GetBuildingComponentCapability<HqComponent>() { return BuildingCapability::Hq; }
-template<> constexpr BuildingCapability GetBuildingComponentCapability<TowerCombatComponent>() { return BuildingCapability::TowerCombat; }
 template<> constexpr BuildingCapability GetBuildingComponentCapability<UpgradeComponent>() { return BuildingCapability::Upgrade; }
+template<> constexpr BuildingCapability GetBuildingComponentCapability<DefenseCoverageComponent>() { return BuildingCapability::DefenseCoverage; }
+template<> constexpr BuildingCapability GetBuildingComponentCapability<GarrisonComponent>() { return BuildingCapability::Garrison; }
+template<> constexpr BuildingCapability GetBuildingComponentCapability<GarrisonUpkeepComponent>() { return BuildingCapability::GarrisonUpkeep; }
+template<> constexpr BuildingCapability GetBuildingComponentCapability<SafetyComponent>() { return BuildingCapability::Safety; }
 
 #endif

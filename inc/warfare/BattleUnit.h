@@ -2,6 +2,8 @@
 #define BATTLE_UNIT_H
 
 #include "economy/BalanceStats.h"
+#include "world/WorldIds.h"
+#include "warfare/TaskGroupIds.h"
 
 #include <map>
 #include <optional>
@@ -10,13 +12,30 @@
 
 class Player;
 
-enum class BattleUnitState
+enum class UnitAssignmentKind : std::uint8_t
 {
-    InRoster,
-    Marching,
-    FightingUnit,
-    AttackingHq,
-    Dying
+    BarracksReserve,
+    DefensiveGarrison,
+    Journey,
+    Battle,
+    Unassigned
+};
+
+struct UnitAssignment
+{
+    UnitAssignmentKind kind{UnitAssignmentKind::Unassigned};
+    ProvinceId provinceId{InvalidProvinceId};
+    int buildingId{0};
+    WorldJourneyId worldJourneyId{InvalidWorldJourneyId};
+    BattleId battleId{InvalidBattleId};
+
+    static UnitAssignment Reserve(ProvinceId provinceId, int buildingId);
+    static UnitAssignment Garrison(ProvinceId provinceId, int buildingId);
+    static UnitAssignment Journey(ProvinceId provinceId, WorldJourneyId journeyId,
+                                  int originBarracksId = 0);
+    static UnitAssignment Battle(ProvinceId provinceId, BattleId battleId,
+                                 int originBarracksId = 0);
+    bool IsStructurallyValid() const;
 };
 
 // DLC-ready equipment seam (ETAP 3.4 — not implemented, only reserved). Always
@@ -32,7 +51,7 @@ struct EquipmentInstance
 // BattleUnit class plus a UnitDefinition id — no Swordsman : BattleUnit
 // hierarchy. Effective stats are resolved from the definition + the owning
 // player's BalanceModifierSet at query time (never cached on the instance),
-// so a tech-tree/focus buff affects units that are already deployed.
+// so a tech-tree/focus buff affects units already present in the roster.
 class BattleUnit
 {
 public:
@@ -40,8 +59,8 @@ public:
     BattleUnit(int instanceId, int ownerPlayerId, std::string unitDefId);
 
     double GetEffectiveMaxHp(const Player& owner) const;
-    double GetEffectiveRoadAttack(const Player& owner) const;
-    double GetEffectiveSiegeAttack(const Player& owner) const;
+    double GetEffectiveFieldAttack(const Player& owner) const;
+    double GetEffectiveSiegePower(const Player& owner) const;
     double GetEffectiveArmor(const Player& owner) const;
     double GetEffectiveMoveSpeed(const Player& owner) const;
     double GetEffectiveAttackSpeed(const Player& owner) const;
@@ -49,29 +68,36 @@ public:
     int instanceId{0};
     int ownerPlayerId{-1};
     std::string unitDefId;
-    double currentHp{0.0};
-    BattleUnitState state{BattleUnitState::InRoster};
-
-    // Ring-route position while marching/fighting — ETAP 4+ populates and
-    // consumes these; left at defaults for a unit still InRoster.
-    int routeFromPlayerId{-1};
-    int routeToPlayerId{-1};
-    int tileIndex{0};
-    double tileProgress{0.0};
-    double attackTimer{0.0};
-
+    TaskGroupId taskGroupId{InvalidTaskGroupId};
+    // Canonical location. It can only be changed through UnitAssignmentService.
+    UnitAssignment assignment;
     // DLC seam — always empty in v1.
     std::vector<EquipmentInstance> equipment;
 };
 
-// Per-player pool of recruited-but-not-yet-deployed BattleUnit instances.
+class UnitAssignmentService
+{
+public:
+    static bool AssignReserve(BattleUnit& unit, ProvinceId provinceId, int barracksBuildingId);
+    static bool AssignGarrison(BattleUnit& unit, ProvinceId provinceId, int buildingId);
+    static bool AssignJourney(BattleUnit& unit, ProvinceId provinceId,
+                              WorldJourneyId journeyId, int originBarracksId = 0);
+    static bool AssignBattle(BattleUnit& unit, ProvinceId provinceId, BattleId battleId,
+                             int originBarracksId = 0);
+    static bool IsInReserve(const BattleUnit& unit, ProvinceId provinceId);
+    static bool IsAvailableFromReserve(const BattleUnit& unit, ProvinceId provinceId);
+    static bool IsOnJourney(const BattleUnit& unit, WorldJourneyId journeyId);
+    static bool IsInBattle(const BattleUnit& unit, BattleId battleId);
+};
+
+// Per-player pool of recruited BattleUnit instances.
 // Deterministic iteration order (std::map keyed by instanceId).
 class UnitRoster
 {
 public:
     void AddUnit(BattleUnit unit);
-    // Removes a unit from the roster (e.g. once ETAP 4 deploys it). Returns
-    // it by value, or std::nullopt if no such instance is in the roster.
+    // Removes a unit from the roster. Returns it by value, or std::nullopt if
+    // no such instance is in the roster.
     std::optional<BattleUnit> RemoveUnit(int instanceId);
     BattleUnit* FindUnit(int instanceId);
     const BattleUnit* FindUnit(int instanceId) const;

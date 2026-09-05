@@ -20,6 +20,18 @@ enum class TransportUpdateResult : std::uint8_t
     Finished
 };
 
+// Presentation-only phase of an active shipment. Loading is limited to one
+// source-side shipment at a time; WaitingForRoad means loading has completed
+// but admission to the next road tile is currently blocked.
+enum class TransportPhase : std::uint8_t
+{
+    Loading,
+    WaitingForRoad,
+    InTransit,
+    Delivered,
+    Cancelled
+};
+
 struct Transportable
 {
     virtual ~Transportable() = default;

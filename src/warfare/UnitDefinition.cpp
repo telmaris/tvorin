@@ -85,16 +85,27 @@ namespace
                 definition.textureId = RtsDataIntOr(tokens[1]);
             else if (command == "max_hp" && tokens.size() >= 2)
                 definition.maxHp = RtsDataDoubleOr(tokens[1]);
-            else if (command == "road_attack" && tokens.size() >= 2)
-                definition.roadAttack = RtsDataDoubleOr(tokens[1]);
-            else if (command == "siege_attack" && tokens.size() >= 2)
-                definition.siegeAttack = RtsDataDoubleOr(tokens[1]);
+            else if (command == "field_attack" && tokens.size() >= 2)
+                definition.fieldAttack = RtsDataDoubleOr(tokens[1]);
+            else if (command == "siege_power" && tokens.size() >= 2)
+                definition.siegePower = RtsDataDoubleOr(tokens[1]);
             else if (command == "armor" && tokens.size() >= 2)
                 definition.armor = RtsDataDoubleOr(tokens[1]);
             else if (command == "move_speed" && tokens.size() >= 2)
                 definition.moveSpeed = RtsDataDoubleOr(tokens[1]);
             else if (command == "attack_speed" && tokens.size() >= 2)
                 definition.attackSpeed = RtsDataDoubleOr(tokens[1]);
+            else if (command == "role" && tokens.size() >= 2)
+            {
+                if (tokens[1] == "Scout") definition.role = UnitRole::Scout;
+                else if (tokens[1] == "Supply") definition.role = UnitRole::Supply;
+                else if (tokens[1] == "Garrison") definition.role = UnitRole::Garrison;
+                else
+                {
+                    definition.id.clear();
+                    Log::Msg("[UnitCatalog]", "unknown unit role '", tokens[1], "' near line ", index + 1);
+                }
+            }
             else if (command == "attack_range" && tokens.size() >= 2)
                 definition.attackRange = RtsDataDoubleOr(tokens[1]);
             else if (command == "movement" && tokens.size() >= 2)
@@ -121,6 +132,8 @@ namespace
                 definition.recruitTime = RtsDataDoubleOr(tokens[1]);
             else if (command == "manpower_cost" && tokens.size() >= 2)
                 definition.manpowerCost = RtsDataDoubleOr(tokens[1]);
+            else if (command == "garrison_food_upkeep_per_minute" && tokens.size() >= 2)
+                definition.garrisonFoodUpkeepPerMinute = std::max(0.0, RtsDataDoubleOr(tokens[1]));
             else if (command == "cost" && tokens.size() >= 3)
                 definition.cost.push_back({ParseResourceType(tokens[1]), RtsDataIntOr(tokens[2])});
         }

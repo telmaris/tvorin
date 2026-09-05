@@ -2,7 +2,8 @@
 #include "core/RoadTopology.h"
 #include "core/VisibleTileBounds.h"
 #include "economy/BuildingConfig.h"
-#include "warfare/UnitMarchSystem.h"
+#include "economy/StockpileIndex.h"
+#include "ui/BuildingPresentation.h"
 
 #include <algorithm>
 #include <cmath>
@@ -16,63 +17,6 @@ using namespace GameWorldInternal;
 
 namespace
 {
-    // Placeholder per-unit-type fill color (pending real sprites) — lets units
-    // be told apart at a glance regardless of owner; owner identity is still
-    // shown via the box outline. Unknown/future unit ids fall back to a
-    // deterministic hash-derived color rather than a single flat default, so
-    // adding a new unit to units.rtsdata never makes two types look identical.
-    Color PlaceholderUnitColor(const std::string& unitDefId)
-    {
-        if (unitDefId == "militia")
-            return Color{170, 170, 170, 255};
-        if (unitDefId == "swordsman")
-            return Color{70, 130, 220, 255};
-        if (unitDefId == "knight")
-            return Color{230, 190, 40, 255};
-        if (unitDefId == "ram")
-            return Color{150, 90, 40, 255};
-
-        std::size_t hash = std::hash<std::string>{}(unitDefId);
-        return Color{
-            static_cast<unsigned char>(80 + (hash % 150)),
-            static_cast<unsigned char>(80 + ((hash / 150) % 150)),
-            static_cast<unsigned char>(80 + ((hash / 22500) % 150)),
-            255};
-    }
-
-    // Small health bar centered above a world-space anchor (already flipped
-    // to screen Y). `ratio` is clamped to [0,1]; green->red by remaining HP.
-    void DrawHealthBar(int screenX, int screenTopY, int width, float ratio)
-    {
-        ratio = std::clamp(ratio, 0.0f, 1.0f);
-        int height = 4;
-        int x = screenX - width / 2;
-        Color fill = Color{
-            static_cast<unsigned char>(220 * (1.0f - ratio) + 30 * ratio),
-            static_cast<unsigned char>(200 * ratio + 30 * (1.0f - ratio)),
-            30,
-            255};
-        DrawRectangle(x, screenTopY, width, height, Color{20, 20, 20, 200});
-        DrawRectangle(x, screenTopY, static_cast<int>(width * ratio), height, fill);
-        DrawRectangleLines(x, screenTopY, width, height, Color{0, 0, 0, 200});
-    }
-
-    void DrawDamageFlashOverlay(Vec2f position, Vec2i footprint, float remainingSeconds)
-    {
-        if (remainingSeconds <= 0.0f)
-            return;
-        const float width = footprint.x * TILE_SIZE;
-        const float height = footprint.y * TILE_SIZE;
-        const float top = RENDER_HEIGHT - position.y - height;
-        const float pulse = 0.45f + 0.55f * std::abs(std::sin(static_cast<float>(GetTime()) * 10.0f));
-        const unsigned char fillAlpha = static_cast<unsigned char>(18.0f + pulse * 28.0f);
-        const unsigned char lineAlpha = static_cast<unsigned char>(125.0f + pulse * 110.0f);
-        DrawRectangle(static_cast<int>(position.x), static_cast<int>(top),
-                      static_cast<int>(width), static_cast<int>(height), Color{255, 58, 32, fillAlpha});
-        DrawRectangleLinesEx({position.x - 2.0f, top - 2.0f, width + 4.0f, height + 4.0f},
-                             2.5f, Color{255, 110, 72, lineAlpha});
-    }
-
     float GetRoadUtilization(const Building& building)
     {
         const auto* road = building.GetComponent<RoadComponent>();
@@ -93,15 +37,6 @@ namespace
             {
                 const auto* neighbour = tilemap.tilemap[checkY * tilemap.params.sizeX + checkX].GetBuilding();
                 return neighbour != nullptr && IsRoadLike(neighbour->buildingType);
-            });
-    }
-
-    int GetMilitaryRoadConnectionMask(const TileMap& tilemap, int x, int y)
-    {
-        return RoadTopology::GetCardinalMask(x, y, tilemap.params.sizeX, tilemap.params.sizeY,
-            [&](int checkX, int checkY)
-            {
-                return tilemap.tilemap[checkY * tilemap.params.sizeX + checkX].isMilitaryRoad;
             });
     }
 
@@ -185,132 +120,324 @@ namespace
 void GameWorld::UpdateSimulation(double dt)
 {
     simulationTick++;
-    // Commands issued this tick must use the same deterministic, camera-free
-    // visibility as the build preview. Refresh before controllers/commands,
-    // then once more after movement below.
+    // Keep the compatibility visibility seam refreshed at the same fixed-tick
+    // boundaries as the rest of the world update. Local province visibility
+    // is intentionally unconditional in the campaign rework.
     UpdateFogOfWar();
     UpdateControllers(dt);
     for (auto& [id, player] : playerHandler.players)
-        if (player != nullptr && !player->defeated)
-        {
+        if (player != nullptr)
             player->UpdateFocus(dt);
+
+    // Player-wide research is updated exactly once, independent of how many
+    // owned buildable provinces the player controls.
+    for (auto& [playerId, player] : playerHandler.players)
+    {
+        (void)playerId;
+        if (player != nullptr)
             player->UpdateResearch(dt);
-        }
+    }
+
+    UpdateOwnedProvinceSimulations(dt);
+    globalMap.UpdateConnections();
     ProcessCommands();
-    // Assign each player's builders to the front of their construction queue
-    // before ticking buildings, so only funded builder slots progress this tick.
-    for (auto& [id, player] : playerHandler.players)
-        if (player != nullptr && !player->defeated)
-            player->construction.Refresh(*player);
-    // Task 12: reset per-tick road admission grants before buildings attempt
-    // to dispatch or advance shipments. With no priority configured the
-    // transport path does not consult this state and keeps the old order.
-    for (auto& [id, player] : playerHandler.players)
-        if (player != nullptr && !player->defeated && player->roadNetwork != nullptr)
-            player->roadNetwork->Update(dt);
-    // Update buildings by iterating through Player registries instead of tilemap scan.
-    // Avoids O(1M) tilemap iteration every tick; now O(n_buildings) which is typically ~100-1000.
-    //
-    // Determinism fix (docs/work_plan_2026-07-13.md, found while verifying
-    // B1/B2 via a flaky HqCombatSystemTests.SiegeToEliminationIsDeterministic-
-    // ForSameSeed): this is THE main per-tick building update loop — every
-    // ProductionComponent::Update call along the way competes for the same
-    // player-wide Manpower/Workers pool via AutoAssignWorkers, and the same
-    // shared road capacity/resource pool via LogisticsComponent/Storage-
-    // Component dispatch. Which building's turn comes first each tick
-    // therefore is simulation-visible (it decides who gets scarce workers/
-    // resources this tick), so — same reasoning as every other fixed
-    // instance of this bug class — iteration order must not depend on
-    // Building* heap addresses, which differ across independently-
-    // constructed GameWorld instances (confirmed root cause via targeted
-    // instrumentation: two identically-seeded worlds' same building ended up
-    // with a different GetTotalProduced() count by tick ~5700).
-    std::vector<Building*> orderedBuildings;
-    for (auto& [id, player] : playerHandler.players)
+    eventSystem.Update(globalMap, simulationTick);
+    for (const auto& request : eventSystem.ConsumePendingRaidRequests())
     {
-        if (player == nullptr || player->defeated) continue;
-        orderedBuildings.insert(orderedBuildings.end(), player->GetTrackedBuildings().begin(), player->GetTrackedBuildings().end());
-    }
-    std::sort(orderedBuildings.begin(), orderedBuildings.end(), [](Building* a, Building* b) { return a->id < b->id; });
-
-    for (Building* building : orderedBuildings)
-    {
-        if (building == nullptr || building->owner == nullptr) continue;
-
-        bool wasUnderConstruction = building->IsUnderConstruction();
-        building->Update(dt);
-
-        if (wasUnderConstruction && !building->IsUnderConstruction())
+        const auto playerIt = playerHandler.players.find(static_cast<int>(request.ownerId));
+        if (playerIt == playerHandler.players.end() || playerIt->second == nullptr)
+            continue;
+        BattleId ignoredBattleId = InvalidBattleId;
+        std::string ignoredFailure;
+        if (battleSystem.StartRaid(*playerIt->second, request.provinceId, request.strength,
+                                   globalMap, simulationTick,
+                                   campaignGenerationParameters.globalMap.seed,
+                                   ignoredBattleId, ignoredFailure))
         {
-            tilemap.buildingsDirty = true;
-            if (building->owner->roadNetwork != nullptr)
-            {
-                for (int tileId : tilemap.GetBuildingTileIds(building))
-                    building->owner->roadNetwork->UpdateNavMap(tileId, building);
-            }
-            tilemap.AutoConnectBuilding(building);
+            eventSystem.RecordAppliedEffect(request.eventId,
+                {AppliedWorldEventEffectKind::RaidStarted,
+                 ResourceType::Null, request.strength});
+            eventSystem.ConfirmRaidStarted(request.eventId);
         }
     }
-
-    for (auto& [id, player] : playerHandler.players)
-        if (player != nullptr && !player->defeated)
-        {
-            player->UpdateEconomyTelemetry(dt);
-            player->UpdateConqueredEconomy(dt);
-        }
-
-    UpdateUnits(dt);
+    UpdateBattles();
+    ProcessNonBattleJourneyEvents();
+    ProcessResourceTransfers();
+    ProcessArmyTransfers();
+    ProcessTradeOrders();
+    UpdateColonizationOperations();
     UpdateFogOfWar();
+}
+
+void GameWorld::UpdateBattles()
+{
+    std::map<PlayerId, Player*> players;
+    for (const auto& [playerId, player] : playerHandler.players)
+        if (player != nullptr)
+            players.emplace(playerId, player.get());
+    battleSystem.Update(globalMap, armyJourneySystem, players, simulationTick,
+                        campaignGenerationParameters.globalMap.seed);
+    // A crushing bandit victory first transforms the node in the warfare
+    // service. Finish the automatic colonization only after the local map and
+    // starting base have been generated successfully on the side.
+    for (const auto& report : battleSystem.GetReports())
+    {
+        if (!report.banditTransformed || report.attackerId == InvalidPlayerId)
+            continue;
+        const auto playerIt = playerHandler.players.find(static_cast<int>(report.attackerId));
+        if (playerIt != playerHandler.players.end() && playerIt->second != nullptr)
+            CompleteAutomaticColonization(*playerIt->second, report.targetProvinceId);
+    }
+}
+
+void GameWorld::ProcessNonBattleJourneyEvents()
+{
+    // BattleLifecycleSystem selectively consumes only army/battle journey
+    // events. The remaining events belong to the shared journey payload
+    // handlers and are processed in stable emission order.
+    for (const auto& event : armyJourneySystem.ConsumeLegEvents())
+    {
+        const auto journeyIt = armyJourneySystem.GetJourneys().find(event.journeyId);
+        if (journeyIt == armyJourneySystem.GetJourneys().end())
+            continue;
+        const WorldJourney& journey = journeyIt->second;
+
+        // Resolve the route incident before applying the terminal scout
+        // result. A final-leg ambush must be able to fail the journey before
+        // it grants discovery or marks the target as scouted.
+        eventSystem.TriggerRoute(globalMap, journey.ownerId, event.fromProvinceId,
+                                 event.toProvinceId, [&]()
+                                 {
+                                     const auto* connection = globalMap.FindConnection(
+                                         event.connectionId);
+                                     const auto* route = dynamic_cast<const LandRouteConnection*>(
+                                         connection);
+                                     return route == nullptr ? 0 : route->GetLevel();
+                                 }(), simulationTick, journey.id);
+        for (const auto& loss : eventSystem.ConsumePendingJourneyUnitLosses())
+        {
+            const auto lossJourneyIt = armyJourneySystem.GetJourneys().find(loss.journeyId);
+            if (lossJourneyIt == armyJourneySystem.GetJourneys().end())
+                continue;
+            const auto* scout = std::get_if<ScoutParty>(&lossJourneyIt->second.payload);
+            if (scout == nullptr || loss.ownerId != lossJourneyIt->second.ownerId)
+                continue;
+            const auto lossPlayerIt = playerHandler.players.find(
+                static_cast<int>(loss.ownerId));
+            if (lossPlayerIt == playerHandler.players.end() || lossPlayerIt->second == nullptr)
+                continue;
+            const std::vector<int> casualties = armyJourneySystem.ApplyScoutUnitLoss(
+                loss.journeyId, loss.amount);
+            if (!casualties.empty())
+            {
+                eventSystem.RecordAppliedEffect(loss.eventId,
+                    {AppliedWorldEventEffectKind::UnitLoss,
+                     ResourceType::Null, static_cast<int>(casualties.size())});
+                eventSystem.ConfirmJourneyEffectApplied(loss.eventId);
+            }
+            for (const int unitId : casualties)
+                lossPlayerIt->second->roster.RemoveUnit(unitId);
+            const auto afterLoss = armyJourneySystem.GetJourneys().find(loss.journeyId);
+            if (!casualties.empty() && afterLoss != armyJourneySystem.GetJourneys().end() &&
+                afterLoss->second.status == WorldJourneyStatus::Failed)
+                eventSystem.PublishNotification(
+                    "scout_mission_failed", loss.ownerId,
+                    afterLoss->second.targetProvinceId,
+                    afterLoss->second.sourceProvinceId, simulationTick,
+                    "All assigned scouts were lost before province " +
+                        std::to_string(afterLoss->second.targetProvinceId) +
+                        " could be surveyed.");
+        }
+
+        // A route loss on any leg invalidates the complete scouting
+        // operation. The failed-journey cleanup below releases survivors.
+        if (journey.status == WorldJourneyStatus::Failed)
+            continue;
+        if (const auto* scout = std::get_if<ScoutParty>(&journey.payload))
+        {
+            auto playerIt = playerHandler.players.find(static_cast<int>(journey.ownerId));
+            if (playerIt == playerHandler.players.end() || playerIt->second == nullptr)
+                continue;
+            if (event.journeySucceeded)
+            {
+                globalMap.SetKnowledge(journey.ownerId, journey.targetProvinceId,
+                                       ProvinceKnowledgeLevel::Scouted);
+                for (const ProvinceId neighbor : globalMap.GetNeighbors(journey.targetProvinceId))
+                    if (const auto* province = globalMap.FindProvince(neighbor); province != nullptr &&
+                        province->GetKnowledge(journey.ownerId) == ProvinceKnowledgeLevel::Hidden)
+                        globalMap.SetKnowledge(journey.ownerId, neighbor,
+                                               ProvinceKnowledgeLevel::ReachableUnknown);
+                eventSystem.TriggerDiscovery(globalMap, journey.ownerId,
+                                              journey.targetProvinceId, simulationTick);
+                eventSystem.PublishNotification(
+                    "scout_mission_completed", journey.ownerId,
+                    journey.targetProvinceId, journey.sourceProvinceId, simulationTick,
+                    "Province " + std::to_string(journey.targetProvinceId) +
+                        " was surveyed successfully. " +
+                        std::to_string(scout->unitInstanceIds.size()) +
+                        (scout->unitInstanceIds.size() == 1
+                            ? " scout returned safely."
+                            : " scouts returned safely."));
+                for (const int unitId : scout->unitInstanceIds)
+                {
+                    BattleUnit* unit = playerIt->second->roster.FindUnit(unitId);
+                    if (unit != nullptr)
+                        UnitAssignmentService::AssignReserve(*unit,
+                                                             journey.sourceProvinceId,
+                                                             unit->assignment.buildingId);
+                }
+            }
+            else
+            {
+                for (const int unitId : scout->unitInstanceIds)
+                {
+                    BattleUnit* unit = playerIt->second->roster.FindUnit(unitId);
+                    if (unit != nullptr)
+                        UnitAssignmentService::AssignReserve(*unit,
+                                                             journey.sourceProvinceId,
+                                                             unit->assignment.buildingId);
+                }
+            }
+        }
+    }
+
+    // A path can be failed by an authority effect without emitting a leg
+    // completion event. Release those scout assignments as well.
+    for (const auto& [journeyId, journey] : armyJourneySystem.GetJourneys())
+    {
+        if (journey.status != WorldJourneyStatus::Failed)
+            continue;
+        const auto* scout = std::get_if<ScoutParty>(&journey.payload);
+        auto playerIt = playerHandler.players.find(static_cast<int>(journey.ownerId));
+        if (scout == nullptr || playerIt == playerHandler.players.end() ||
+            playerIt->second == nullptr)
+            continue;
+        for (const int unitId : scout->unitInstanceIds)
+        {
+            BattleUnit* unit = playerIt->second->roster.FindUnit(unitId);
+            if (unit != nullptr && UnitAssignmentService::IsOnJourney(*unit, journeyId))
+                UnitAssignmentService::AssignReserve(*unit, journey.sourceProvinceId,
+                                                     unit->assignment.buildingId);
+        }
+    }
+}
+
+void GameWorld::ProcessTradeOrders()
+{
+    for (auto orderIt = activeTradeOrders.begin(); orderIt != activeTradeOrders.end();)
+    {
+        TradeOrder& order = orderIt->second;
+        const auto journeyIt = armyJourneySystem.GetJourneys().find(order.journeyId);
+        if (journeyIt == armyJourneySystem.GetJourneys().end())
+        {
+            ++orderIt;
+            continue;
+        }
+        const WorldJourney& journey = journeyIt->second;
+        const auto* cargo = std::get_if<TradeCargo>(&journey.payload);
+        if (cargo == nullptr || cargo->offerType != order.request.offerType ||
+            cargo->requestType != order.request.requestType ||
+            cargo->amount != order.cargoAmount)
+        {
+            ++orderIt;
+            continue;
+        }
+
+        auto playerIt = playerHandler.players.find(static_cast<int>(order.playerId));
+        auto* source = globalMap.FindBuildableProvince(order.originProvinceId);
+        auto* city = dynamic_cast<NeutralCityProvince*>(
+            globalMap.FindProvince(order.cityProvinceId));
+        auto* sourceSimulation = source != nullptr ? source->GetSimulation() : nullptr;
+        if (playerIt == playerHandler.players.end() || playerIt->second == nullptr ||
+            source == nullptr || sourceSimulation == nullptr || city == nullptr ||
+            source->GetOwnerId() != order.playerId)
+        {
+            ++orderIt;
+            continue;
+        }
+
+        StockpileTradeInventory inventory(sourceSimulation->GetEconomy());
+
+        if (journey.status == WorldJourneyStatus::Failed ||
+            journey.status == WorldJourneyStatus::Cancelled)
+        {
+            if (TradeService::RefundOrder(*city, inventory, order))
+                orderIt = activeTradeOrders.erase(orderIt);
+            else
+            {
+                // A full source warehouse can temporarily prevent a refund.
+                // Keep the order visible and retry it after capacity changes;
+                // no city stock is removed until the player can receive it.
+                order.status = TradeOrderStatus::AwaitingUnload;
+                ++orderIt;
+            }
+            continue;
+        }
+        if (journey.status != WorldJourneyStatus::Succeeded &&
+            journey.status != WorldJourneyStatus::AwaitingUnload)
+        {
+            ++orderIt;
+            continue;
+        }
+
+        const int cargoAmount = order.cargoAmount;
+        if (!inventory.CanReceive(order.request.requestType, cargoAmount))
+        {
+            order.status = TradeOrderStatus::AwaitingUnload;
+            if (journey.status == WorldJourneyStatus::Succeeded)
+                armyJourneySystem.MarkAwaitingUnload(order.journeyId);
+            ++orderIt;
+            continue;
+        }
+
+        const int scoreGain = playerIt->second->ModifyBalanceInt(
+            BalanceStat::TradeScoreGain, 1, BuildingType::Building,
+            ResourceType::Null, 0);
+        if (TradeService::CompleteOrder(*city, inventory, order, scoreGain))
+            orderIt = activeTradeOrders.erase(orderIt);
+        else
+        {
+            order.status = TradeOrderStatus::AwaitingUnload;
+            if (journey.status == WorldJourneyStatus::Succeeded)
+                armyJourneySystem.MarkAwaitingUnload(order.journeyId);
+            ++orderIt;
+        }
+    }
+}
+
+void GameWorld::UpdateOwnedProvinceSimulations(double dt)
+{
+    // Every local economy is updated in stable ProvinceId order and never
+    // owns a second worker/tick. The owner resolver is used only for concrete
+    // buildable provinces; neutral provinces never receive a Player&.
+    for (ProvinceId provinceId : globalMap.GetProvinceIds())
+    {
+        auto* province = globalMap.FindBuildableProvince(provinceId);
+        if (province == nullptr || province->GetSimulation() == nullptr ||
+            province->GetOwnerId() == InvalidPlayerId)
+            continue;
+        auto playerIt = playerHandler.players.find(static_cast<int>(province->GetOwnerId()));
+        if (playerIt == playerHandler.players.end() || playerIt->second == nullptr)
+            continue;
+        province->GetSimulation()->Update(*playerIt->second, dt, simulationTick);
+    }
 }
 
 bool GameWorld::IsBuildFootprintVisibleToPlayer(int playerId, Vec2i anchor, Vec2i footprint) const
 {
-    auto fogIt = fogOfWarByPlayer.find(playerId);
-    return fogIt != fogOfWarByPlayer.end() && fogIt->second.IsFootprintVisible(anchor, footprint);
+    (void)playerId;
+    (void)anchor;
+    (void)footprint;
+    // Local province maps are completely visible in the campaign rework.
+    // Keep this query as a compatibility seam for placement/UI callers, but
+    // do not gate commands on a stale per-tile visibility field.
+    return true;
 }
 
 void GameWorld::UpdateFogOfWar()
 {
-    const Vec2i mapSize{tilemap.params.sizeX, tilemap.params.sizeY};
-    if (mapSize.x <= 0 || mapSize.y <= 0)
-        return;
-
-    for (const auto& [playerId, player] : playerHandler.players)
-    {
-        FogOfWarState& fog = fogOfWarByPlayer[playerId];
-        if (!fog.IsInitializedFor(mapSize))
-            fog.Initialize(mapSize);
-        else
-            fog.BeginVisibilityUpdate();
-
-        if (player == nullptr || player->defeated)
-            continue;
-
-        for (const Building* building : player->GetTrackedBuildings())
-        {
-            if (building == nullptr)
-                continue;
-
-            const Vec2i anchor = tilemap.GetCoordsFromId(building->positionId);
-            const Vec2i footprint = building->GetFootprint();
-            const Vec2f center{
-                static_cast<float>(anchor.x * TILE_SIZE) + footprint.x * TILE_SIZE * 0.5f,
-                static_cast<float>(anchor.y * TILE_SIZE) + footprint.y * TILE_SIZE * 0.5f};
-            fog.RevealWorldCircle(center, FogOfWar::BuildingRevealRadiusWorld(building->buildingType, footprint));
-        }
-    }
-
-    for (const auto& [instanceId, unit] : deployedUnits)
-    {
-        if (unit.tileIndex < 0 || unit.state == BattleUnitState::Dying)
-            continue;
-
-        auto fogIt = fogOfWarByPlayer.find(unit.ownerPlayerId);
-        if (fogIt == fogOfWarByPlayer.end())
-            continue;
-        fogIt->second.RevealWorldCircle(UnitMarchSystem::ComputeWorldPosition(*this, unit),
-                                        FogOfWar::UnitRevealRadiusWorld);
-    }
+    // Deliberately empty: discovery fog belongs only to the global map. Every
+    // owned province renders and accepts placement across its full local map.
 }
 
 // Advances this object's state for one frame.
@@ -320,34 +447,68 @@ void GameWorld::Update(double dt)
     DrawMap();
 }
 
-bool GameWorld::IsPlayerDefeated(int playerId) const
-{
-    auto it = playerHandler.players.find(playerId);
-    return it != playerHandler.players.end() && it->second != nullptr && it->second->defeated;
-}
-
-int GameWorld::GetVictorPlayerId() const
-{
-    int survivors = 0;
-    int lastAlive = -1;
-    for (const auto& [pid, player] : playerHandler.players)
-    {
-        if (player == nullptr) continue;
-        if (!player->defeated) { survivors++; lastAlive = pid; }
-    }
-    // Only a decided game (started with >=2 players, one left) reports a victor.
-    int total = 0;
-    for (const auto& [pid, player] : playerHandler.players)
-        if (player != nullptr) total++;
-    return (total >= 2 && survivors == 1) ? lastAlive : -1;
-}
-
 // Captures render-safe world state for another thread.
 GameSnapshot GameWorld::BuildSnapshot() const
 {
+    const TileMap& tilemap = GetTileMap();
     GameSnapshot snapshot;
     snapshot.simulationTick = simulationTick;
     snapshot.localPlayerId = localPlayerId;
+    snapshot.activeProvinceId = GetLocalActiveProvinceId();
+    snapshot.globalMapView = globalMap.BuildViewFor(localPlayerId);
+    snapshot.journeyStatuses = BuildJourneyStatusViews(armyJourneySystem, simulationTick,
+                                                       localPlayerId, 64);
+    snapshot.battleStatuses = BuildBattleStatusViews(battleSystem, simulationTick,
+                                                      localPlayerId, 64);
+    for (const auto& report : battleSystem.GetReports())
+    {
+        if (report.attackerId != localPlayerId && report.defenderId != localPlayerId)
+            continue;
+        snapshot.battleReports.push_back(BuildBattleReportView(report));
+        if (snapshot.battleReports.size() >= 64)
+            break;
+    }
+    for (const auto& notification : eventSystem.GetFeed().GetHistory())
+    {
+        if (notification.ownerId != InvalidPlayerId && notification.ownerId != localPlayerId)
+            continue;
+        // Public event-feed entries still carry a province reference. Do not
+        // let that reference reveal an undiscovered node; owner-scoped events
+        // are already private to their recipient above.
+        if (notification.ownerId == InvalidPlayerId)
+        {
+            const auto* province = globalMap.FindProvince(notification.provinceId);
+            if (province == nullptr ||
+                province->GetKnowledge(localPlayerId) < ProvinceKnowledgeLevel::Scouted)
+                continue;
+        }
+        snapshot.eventNotifications.push_back(notification);
+        if (snapshot.eventNotifications.size() > 64)
+            snapshot.eventNotifications.erase(snapshot.eventNotifications.begin());
+    }
+    const auto playerIt = playerHandler.players.find(localPlayerId);
+    if (playerIt != playerHandler.players.end() && playerIt->second != nullptr)
+    {
+        snapshot.taskGroups = TaskGroupService::BuildViews(
+            playerIt->second->taskGroups, playerIt->second->id, playerIt->second->roster);
+        if (snapshot.taskGroups.size() > 64)
+            snapshot.taskGroups.resize(64);
+        const ProvinceId provinceId = playerIt->second->GetActiveProvinceId();
+        const ProvinceEconomy* province = playerIt->second->GetProvinceEconomy(provinceId);
+        const TileMap* provinceMap = playerIt->second->GetTileMap(provinceId);
+        if (province != nullptr && provinceMap != nullptr)
+        {
+            for (Building* building : province->dataTracker.buildings)
+            {
+                if (building == nullptr || building->GetComponent<DefenseCoverageComponent>() == nullptr)
+                    continue;
+                snapshot.provinceDefenses.push_back(BuildProvinceDefenseView(
+                    *provinceMap, *playerIt->second, provinceId, *building));
+                if (snapshot.provinceDefenses.size() >= 64)
+                    break;
+            }
+        }
+    }
     snapshot.mapSize = {tilemap.params.sizeX, tilemap.params.sizeY};
     snapshot.players.reserve(playerHandler.players.size());
     snapshot.tiles.reserve(tilemap.tilemap.size());
@@ -379,17 +540,21 @@ GameSnapshot GameWorld::BuildSnapshot() const
             view.hasBuilding = true;
             view.buildingType = tile.building->buildingType;
             view.buildingFootprint = tile.building->GetFootprint();
-            view.buildingOwnerId = tile.building->owner != nullptr ? tile.building->owner->id : -1;
+            view.buildingOwnerId = tile.building->ownerId != InvalidPlayerId
+                ? tile.building->ownerId
+                : (tile.building->owner != nullptr ? tile.building->owner->id : -1);
             view.isBuildingOperational = !tile.building->IsUnderConstruction();
-            if (const auto* hq = tile.building->GetComponent<HqComponent>(); hq != nullptr)
-                view.buildingDamageIndicator = static_cast<float>(hq->recentDamageTimer);
+            if (const auto* upgrade = tile.building->GetComponent<UpgradeComponent>(); upgrade != nullptr)
+                view.isBuildingUpgrading = upgrade->isUpgrading;
+            view.roadDisconnected = !IsRoadLike(tile.building->buildingType) &&
+                                    view.isBuildingOperational &&
+                                    IsBuildingRoadDisconnected(*tile.building);
             if (IsRoadLike(tile.building->buildingType))
             {
                 view.roadUtilization = GetRoadUtilization(*tile.building);
                 view.roadSaturated = IsRoadRecentlySaturated(*tile.building);
             }
         }
-        view.isMilitaryRoad = tile.isMilitaryRoad;
         snapshot.tiles.push_back(view);
     }
 
@@ -401,6 +566,8 @@ void GameWorld::DrawMap()
 {
     if (render == nullptr || !render->HasWorldLayers())
         return;
+
+    TileMap& tilemap = GetTileMap();
 
     render->SetSimulationTick(simulationTick);
 
@@ -427,7 +594,7 @@ void GameWorld::DrawMap()
     // render target. This keeps the mask stable while panning/zooming.
     for (const auto& [playerId, player] : playerHandler.players)
     {
-        if (player == nullptr)
+        if (playerId != localPlayerId || player == nullptr || player->GetTileMap() != &tilemap)
             continue;
 
         for (Building* building : player->GetTrackedBuildings())
@@ -440,7 +607,7 @@ void GameWorld::DrawMap()
                                  static_cast<float>(anchor.y * TILE_SIZE)};
             render->QueueBuildingLight(building->buildingType, building->GetFootprint(),
                                        position, building->id, !building->IsUnderConstruction());
-            if (!player->defeated && playerId == localPlayerId)
+            if (playerId == localPlayerId)
                 render->QueueBuildingFogReveal(building->buildingType,
                                                building->GetFootprint(), position);
         }
@@ -551,9 +718,6 @@ void GameWorld::DrawMap()
 
                 Vec2f pos = {static_cast<float>(x * TILE_SIZE), static_cast<float>(y * TILE_SIZE)};
                 render->DrawAtlasTile(0, tile.terrainTextureId, pos);
-                // TD(etap-2): military road placeholder — a flat tint until a
-                // dedicated texture exists; kept as its own visual type so
-                // swapping in real art later doesn't touch this call site.
             }
         }
         // Mineral ground halos are light, not coloured paint. Alpha blending
@@ -593,28 +757,6 @@ void GameWorld::DrawMap()
         tilemap.terrainDirty = false;
     }
 
-    // Military tracks are cached separately from buildings and are composed
-    // below StaticObjects. Keep the track on every military-road tile,
-    // including a tile occupied by a Bridge; the bridge sprite is rendered in
-    // StaticObjects and therefore naturally appears one layer above it.
-    if (redrawTerrain || redrawBuildings)
-    {
-        render->ClearLayer(WorldRenderLayer::MilitaryRoads);
-        render->BeginLayer(WorldRenderLayer::MilitaryRoads);
-        for (int x = minTileX; x <= maxTileX; x++)
-        {
-            for (int y = minTileY; y <= maxTileY; y++)
-            {
-                const auto& tile = tilemap.tilemap[y * tilemap.params.sizeX + x];
-                if (tile.isMilitaryRoad)
-                    render->DrawMilitaryRoadTexture(
-                        {static_cast<float>(x * TILE_SIZE), static_cast<float>(y * TILE_SIZE)},
-                        GetMilitaryRoadConnectionMask(tilemap, x, y));
-            }
-        }
-        render->EndLayer();
-    }
-
     if (redrawBuildings)
     {
         render->ClearLayer(WorldRenderLayer::StaticObjects);
@@ -629,13 +771,9 @@ void GameWorld::DrawMap()
 
                 if(tile.building)
                 {
-                    const bool roadDisconnected = !IsRoadLike(tile.building->buildingType) &&
-                                                  IsBuildingRoadDisconnected(*tile.building);
                     const Color tint = tile.building->IsUnderConstruction()
                         ? Color{118, 122, 132, 215}
-                        : roadDisconnected
-                            ? Color{224, 78, 72, 235}
-                            : WHITE;
+                        : WHITE;
                     if (IsRoadLike(tile.building->buildingType))
                         render->DrawRoadTexture(tile.building->buildingType, pos,
                                                 GetRoadConnectionMask(tilemap, x, y), tint);
@@ -648,20 +786,22 @@ void GameWorld::DrawMap()
         tilemap.buildingsDirty = false;
     }
 
-    // TD(etap-4/5): deployed units. Always redrawn (layer 3, never cached)
-    // since marching/fighting units move or change tint every tick, unlike
-    // the mostly-static layers above. Placeholder shape (owner-colored
-    // rectangle — no unit texture yet) pending real sprites/animation
-    // (plan 4.3) — deliberately simple so swapping in art later only touches
-    // this block.
     render->ClearLayer(WorldRenderLayer::DynamicObjects);
     render->BeginLayer(WorldRenderLayer::DynamicObjects);
     for (const auto& [building, position] : visibleBuildings)
     {
-        if (building != nullptr)
+            if (building != nullptr)
         {
-            if (const auto* hq = building->GetComponent<HqComponent>(); hq != nullptr)
-                DrawDamageFlashOverlay(position, building->GetFootprint(), static_cast<float>(hq->recentDamageTimer));
+            if (const auto* upgrade = building->GetComponent<UpgradeComponent>();
+                upgrade != nullptr && upgrade->isUpgrading)
+                DrawBuildingFootprintStatusOverlay(
+                    position, building->GetFootprint(), RENDER_HEIGHT, TILE_SIZE,
+                    BuildingFootprintOverlay::Upgrading);
+            if (!IsRoadLike(building->buildingType) && !building->IsUnderConstruction() &&
+                IsBuildingRoadDisconnected(*building))
+                DrawBuildingFootprintStatusOverlay(
+                    position, building->GetFootprint(), RENDER_HEIGHT, TILE_SIZE,
+                    BuildingFootprintOverlay::Disconnected);
             if (IsLogisticsOverlayPreferenceEnabled() && IsRoadLike(building->buildingType))
                 DrawRoadSaturationIndicator(position, IsRoadRecentlySaturated(*building));
         }
@@ -673,137 +813,10 @@ void GameWorld::DrawMap()
     shipmentViews.reserve(GetLiveShipmentCount());
     for (const auto& [playerId, player] : playerHandler.players)
     {
-        (void)playerId;
-        if (player != nullptr && player->GetRoadNetwork() != nullptr)
+        if (playerId == localPlayerId && player != nullptr && player->GetRoadNetwork() != nullptr)
             player->GetRoadNetwork()->AppendShipmentRenderStates(shipmentViews);
     }
     render->DrawShipments(shipmentViews, {tilemap.params.sizeX, tilemap.params.sizeY});
-    const WorldLightingFrame dynamicLighting = render->GetCurrentWorldLightingFrame();
-    const unsigned char unitShadowAlpha = static_cast<unsigned char>(std::clamp(
-        45.0f + (1.0f - dynamicLighting.ambientIntensity) * 55.0f, 45.0f, 100.0f));
-    const float unitDirectionalLength = dynamicLighting.shadowLength * 0.24f;
-    for (const auto& [instanceId, unit] : deployedUnits)
-    {
-        if (unit.tileIndex < 0)
-            continue; // still waiting in the spawn queue, not on the map yet
-
-        Vec2f worldPos = UnitMarchSystem::ComputeWorldPosition(*this, unit);
-
-        if (unit.ownerPlayerId == localPlayerId && unit.state != BattleUnitState::Dying)
-            render->QueueFogReveal({{worldPos.x, worldPos.y}, FogOfWar::UnitRevealRadiusWorld});
-
-        auto ownerIt = playerHandler.players.find(unit.ownerPlayerId);
-        Player* owner = ownerIt != playerHandler.players.end() ? ownerIt->second.get() : nullptr;
-        Color ownerColor = owner != nullptr ? owner->color : WHITE;
-
-        // Placeholder fill = unit type (told apart at a glance), outline =
-        // owner color (whose unit it is) — real sprites will replace both.
-        Color fillColor = PlaceholderUnitColor(unit.unitDefId);
-        if (unit.state == BattleUnitState::Dying)
-            fillColor.a = 90;
-
-        int screenX = static_cast<int>(worldPos.x);
-        int screenY = static_cast<int>(RENDER_HEIGHT) - static_cast<int>(worldPos.y);
-        int halfSize = static_cast<int>(TILE_SIZE * 0.3f);
-        Rectangle box{static_cast<float>(screenX - halfSize), static_cast<float>(screenY - halfSize),
-                      static_cast<float>(halfSize * 2), static_cast<float>(halfSize * 2)};
-        if (render->AreContactShadowsEnabled())
-        {
-            // This stays in the dynamic layer so it follows marching units
-            // precisely, while the selection/health overlays remain above
-            // the lighting pass in regular UI rendering.
-            const float baseShadowY = screenY + static_cast<float>(halfSize) * 0.62f;
-            if (unitDirectionalLength > 0.5f)
-            {
-                const float cappedLength = std::min(unitDirectionalLength, static_cast<float>(halfSize) * 1.25f);
-                const float shadowX = screenX - dynamicLighting.sunDirection.x * cappedLength * 0.60f;
-                const float shadowY = baseShadowY + dynamicLighting.sunDirection.y * cappedLength * 0.60f;
-                DrawEllipse(static_cast<int>(shadowX), static_cast<int>(shadowY),
-                            static_cast<float>(halfSize) * 0.52f,
-                            std::max(1.5f, static_cast<float>(halfSize) * 0.16f),
-                            Color{0, 0, 0, static_cast<unsigned char>(unitShadowAlpha * 0.30f)});
-            }
-            DrawEllipse(screenX, static_cast<int>(baseShadowY),
-                        static_cast<float>(halfSize) * 0.90f,
-                        std::max(2.0f, static_cast<float>(halfSize) * 0.28f),
-                        Color{0, 0, 0, unitShadowAlpha});
-        }
-        DrawRectangleRec(box, fillColor);
-        DrawRectangleLinesEx(box, unit.state == BattleUnitState::FightingUnit ? 2.0f : 1.0f, ownerColor);
-
-        if (owner != nullptr && unit.state != BattleUnitState::Dying)
-        {
-            double maxHp = unit.GetEffectiveMaxHp(*owner);
-            float ratio = maxHp > 0.0 ? static_cast<float>(unit.currentHp / maxHp) : 0.0f;
-            DrawHealthBar(screenX, screenY - halfSize - 7, halfSize * 2, ratio);
-        }
-    }
-
-    // HQ health bar — shown for a few seconds after an HQ last took siege
-    // damage (HqComponent::recentDamageTimer), so a defender gets an obvious
-    // "under attack" cue without cluttering the view of HQs at full health
-    // that aren't currently being sieged.
-    for (auto& [playerId, player] : playerHandler.players)
-    {
-        if (player == nullptr)
-            continue;
-        for (Building* hqBuilding : player->GetTrackedBuildingsWithComponent<HqComponent>())
-        {
-            const auto* hq = hqBuilding->GetComponent<HqComponent>();
-            if (hq == nullptr || hq->recentDamageTimer <= 0.0)
-                continue;
-
-            Vec2f center = ComputeBuildingCenter(tilemap, *hqBuilding);
-            int screenX = static_cast<int>(center.x);
-            int screenY = static_cast<int>(RENDER_HEIGHT) - static_cast<int>(center.y);
-            Vec2i footprint = hqBuilding->GetFootprint();
-            int barWidth = static_cast<int>(std::max(footprint.x, footprint.y) * TILE_SIZE * 0.8f);
-            int barTopY = screenY - (footprint.y * TILE_SIZE) / 2 - 14;
-            double modifiedMaxHp = hq->GetModifiedMaxHp(*hqBuilding);
-            float ratio = modifiedMaxHp > 0.0 ? static_cast<float>(hq->currentHp / modifiedMaxHp) : 0.0f;
-            DrawHealthBar(screenX, barTopY, barWidth, ratio);
-        }
-    }
-
-    // TD(etap-7.2): in-flight tower projectiles. Same always-redrawn layer as
-    // units (they move every tick too) — placeholder small circle pending
-    // real projectile art (plan 7.2's "krótkie linie/prostokąty/okręgi").
-    for (const auto& [id, projectile] : projectiles)
-    {
-        auto ownerIt = playerHandler.players.find(projectile.sourcePlayerId);
-        Color color = ownerIt != playerHandler.players.end() && ownerIt->second != nullptr
-            ? ownerIt->second->color
-            : WHITE;
-
-        int screenX = static_cast<int>(projectile.position.x);
-        int screenY = static_cast<int>(RENDER_HEIGHT) - static_cast<int>(projectile.position.y);
-        // Tower rounds are intentionally a visual-only high-priority light:
-        // their deterministic simulation position is already available, while
-        // the glow/trail never enters saves, checksums, or combat resolution.
-        render->QueueDynamicLight({{projectile.position.x, projectile.position.y},
-                                   Color{255, 205, 116, 255},
-                                   88.0f, 0.42f, 0.58f, 0.12f, -id, 90});
-
-        auto targetIt = deployedUnits.find(projectile.targetUnitInstanceId);
-        if (targetIt != deployedUnits.end())
-        {
-            Vec2f targetPos = UnitMarchSystem::ComputeWorldPosition(*this, targetIt->second);
-            float dx = targetPos.x - projectile.position.x;
-            float dy = targetPos.y - projectile.position.y;
-            float length = std::sqrt(dx * dx + dy * dy);
-            if (length > 0.001f)
-            {
-                constexpr float TrailLength = 16.0f;
-                float trailX = projectile.position.x - dx / length * TrailLength;
-                float trailY = projectile.position.y - dy / length * TrailLength;
-                DrawLineEx({trailX, static_cast<float>(RENDER_HEIGHT) - trailY},
-                           {static_cast<float>(screenX), static_cast<float>(screenY)},
-                           2.0f, Color{255, 220, 150, 185});
-            }
-        }
-        DrawCircle(screenX, screenY, TILE_SIZE * 0.12f, color);
-        DrawCircle(screenX, screenY, TILE_SIZE * 0.055f, Color{255, 244, 202, 255});
-    }
     render->EndLayer();
 
     cachedCameraTarget = {render->camera.target.x, render->camera.target.y};

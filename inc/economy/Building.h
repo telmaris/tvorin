@@ -6,6 +6,7 @@
 #include <memory>
 
 #include "core/Types.h"
+#include "world/WorldIds.h"
 #include "data/Resource.h"
 #include "simulation/Transport.h"
 #include "core/Stat.h"
@@ -13,6 +14,7 @@
 
 class Player;
 class Tile;
+struct ProvinceEconomy;
 
 enum class BuildingType : int
 {
@@ -43,48 +45,36 @@ enum class BuildingType : int
     Glassworks = 36,
     Powderworks = 37,
 
-    // TD(etap-7): one class handles every tower tier (data-driven, like
-    // BattleUnit) rather than a Woodcutter/Mine-style class per tier — so
-    // this is the only tower BuildingType value needed for now.
-    DefenseTower = 40,
-
-    // B6 (docs/work_plan_2026-07-13.md): resource-road crossing over an
-    // isMilitaryRoad tile — the only building type whose placement rule
-    // REQUIRES that ground instead of refusing it (see TileMap::
-    // CanBuildFootprint). Appended at the end so old save files (which
-    // serialize this enum as a plain int) keep loading unchanged.
-    Bridge = 41,
-
-    AnimalFarm = 42,
-    Butcher = 43,
-    Tannery = 44,
-    Tailor = 45,
-    Armorer = 46,
-    HorseStable = 47,
-    Kiln = 48,
-    HouseholdWorkshop = 49,
-    Soapworks = 50,
-    Inkworks = 51,
-    Scriptorium = 52,
-    Copperworks = 53,
-    UrbanWorkshop = 54,
-    HempFarm = 55,
-    Ropery = 56,
-    Weaver = 57,
-    Bowyer = 58,
+    AnimalFarm = 41,
+    Butcher = 42,
+    Tannery = 43,
+    Tailor = 44,
+    Armorer = 45,
+    HorseStable = 46,
+    Kiln = 47,
+    HouseholdWorkshop = 48,
+    Soapworks = 49,
+    Inkworks = 50,
+    Scriptorium = 51,
+    Copperworks = 52,
+    UrbanWorkshop = 53,
+    HempFarm = 54,
+    Ropery = 55,
+    Weaver = 56,
+    Bowyer = 57,
     ReservedBuilding59 = 59,
     SpearWorkshop = 60,
-    SiegeWorkshop = 61
+    SiegeWorkshop = 61,
+    // Append-only military types for the off-screen province defense system.
+    GuardTower = 62,
+    Fortress = 63
 };
 
-// True for every building type the resource-road network (RoadNetwork/
-// NavigationMap) treats as a traversable road node — Road itself plus Bridge
-// (B6), which is functionally a Road that happens to sit on a military-road
-// tile. Single source of truth so a future road-like type only needs to be
-// added here, not at every "is this tile a road" call site.
+// True for every building type the resource-road network treats as a
+// traversable road node.
 inline bool IsRoadLike(BuildingType type)
 {
-    return type == BuildingType::Road || type == BuildingType::Bridge;
+    return type == BuildingType::Road;
 }
 
 // What deposit (if any) sits on a tile — read by Mine/Woodcutter terrain_production.
@@ -153,8 +143,8 @@ struct BuildingConnectionView
 class Building
 {
 public:
-    Building() = default;
-    Building(int i) : id(i) {}
+    Building();
+    explicit Building(int i);
     Building(const Building&) = delete;
     Building& operator=(const Building&) = delete;
     Building(Building&&) = delete;
@@ -184,6 +174,7 @@ public:
     int  HandleTransport(ResourceType type, int amount, Building* receiver);
     bool CanAcceptResource(ResourceType type) const;
     bool CanReceiveResource(ResourceType type) const;
+    ProvinceEconomy* GetProvinceEconomy() const { return provinceEconomy; }
 
     // --- Capability queries: routed to components, empty/zero when absent ---
     std::vector<ResourceBufferView> GetInputBufferViews() const;
@@ -268,8 +259,14 @@ public:
     double BeginOperationalUpdate(double dt);
 
     Player* owner{nullptr};
+    // Runtime local context. It is rebuilt by TileMap placement/load and is
+    // never serialized; stable ownership is carried by PlayerId/ProvinceId
+    // at the campaign boundary.
+    ProvinceEconomy* provinceEconomy{nullptr};
     Tile* placement{nullptr};
     int id{0};
+    PlayerId ownerId{InvalidPlayerId};
+    ProvinceId provinceId{InvalidProvinceId};
     int positionId{-1};
     std::string name{"Building - Generic"};
     BuildingType buildingType = BuildingType::Building;
@@ -293,6 +290,10 @@ public:
     double lifetime{0.0};
     double activeTime{0.0};
     int totalProduced{0};
+    // Every placed building has an explicit raid-safety policy. Buildings
+    // that are not valid raid targets are filtered by the resolver (HQ/roads/
+    // construction), while specialized data can opt out further.
+    SafetyComponent safety;
 
 protected:
     void RegisterComponent(IBuildingComponent* component)
@@ -341,30 +342,6 @@ public:
     double GetModifiedSpeedModifier() const;
 };
 
-// Resource-road crossing over the immutable military road (B6, docs/
-// work_plan_2026-07-13.md) — a ring/edge of the unit track can otherwise cut
-// off part of the map from the resource-road network (nothing may be built
-// on isMilitaryRoad tiles), stranding whatever is on the far side. Bridge is
-// a Road in every way that matters to the logistics network (same
-// RoadComponent, same IsRoadLike() treatment in RoadNetwork) — the only
-// difference is TileMap::CanBuildFootprint's placement rule, which REQUIRES
-// isMilitaryRoad ground instead of refusing it. Marching units are
-// unaffected: UnitMarchSystem walks the ring's own precomputed tile list, not
-// building occupancy, so a bridge sitting on a track tile doesn't block or
-// alter marching. Bridges have no HP (consistent with towers being the only
-// combat-capable structure today) — they can only be removed by their owner.
-class Bridge : public Building
-{
-public:
-    Bridge() = default;
-    Bridge(int i);
-
-    RoadComponent road;
-    UpgradeComponent upgrade;
-    int GetModifiedMaxCapacity() const;
-    double GetModifiedSpeedModifier() const;
-};
-
 // Building that stores resources and serves as a logistics hub.
 class StorageBuilding : public Building
 {
@@ -377,9 +354,8 @@ public:
     StorageComponent storage;
 };
 
-// Player's starting building: a storage hub with HP/defense (HqComponent,
-// TD etap-6). Never manually destroyed by its own owner — falls only to
-// siege damage (UnitCombatSystem/HqCombatSystem), which triggers elimination.
+// Player's starting building: a storage hub. It is never manually destroyed
+// by its own owner.
 class Headquarters : public Building
 {
 public:
@@ -390,7 +366,6 @@ public:
 
     // --- Component members ---
     StorageComponent storage;
-    HqComponent hq;
 };
 
 // Settlement that generates manpower and consumes food upkeep over time.
@@ -412,9 +387,7 @@ public:
 
 // Recruitment factory. Holds a private local buffer for delivered unit
 // costs, a LogisticsComponent that actively requests those costs over the
-// road network (T3 fix, docs/post_pivot_audit_2026-07-12.md — mirrors
-// DefenseTower's ammo pull, RecruitmentComponent::Update drives it every
-// tick), and a RecruitmentComponent queue that spends those resources plus
+// road network and a RecruitmentComponent queue that spends those resources plus
 // player manpower to produce BattleUnit instances into the owner's roster.
 class Barracks : public Building
 {
@@ -428,23 +401,33 @@ public:
     RecruitmentComponent recruitment;
 };
 
-// Defensive tower (TD etap-7). One class handles every tower tier — combat
-// stats are data-driven (TowerCombatComponent), same as Barracks handles
-// every recruitable unit type via UnitDefinition rather than a class per
-// unit. Ammo is a private local buffer fed by the existing road
-// network (LogisticsComponent); crew is an ordinary WorkerComponent, so
-// manpower auto-returns on destruction for free via the existing generic path.
-class DefenseTower : public Building
+// Off-screen defensive building assembled exclusively from the composition
+// components below. It intentionally has no tower-defense update loop.
+class DefenseBuilding : public Building
 {
 public:
-    DefenseTower() = default;
-    DefenseTower(int);
+    DefenseBuilding() = default;
+    DefenseBuilding(int, BuildingType);
 
-    // --- Component members ---
     LocalResourceBufferComponent storage;
     LogisticsComponent logistics;
-    WorkerComponent workers;
-    TowerCombatComponent combat;
+    DefenseCoverageComponent coverage;
+    GarrisonComponent garrison;
+    GarrisonUpkeepComponent upkeep;
+};
+
+class GuardTower : public DefenseBuilding
+{
+public:
+    GuardTower() = default;
+    explicit GuardTower(int id) : DefenseBuilding(id, BuildingType::GuardTower) {}
+};
+
+class Fortress : public DefenseBuilding
+{
+public:
+    Fortress() = default;
+    explicit Fortress(int id) : DefenseBuilding(id, BuildingType::Fortress) {}
 };
 
 #endif

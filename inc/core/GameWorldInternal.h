@@ -39,9 +39,9 @@ namespace GameWorldInternal
             case BuildingType::Powderworks: return std::make_unique<Powderworks>(id);
             case BuildingType::University: return std::make_unique<University>(id);
             case BuildingType::Barracks: return std::make_unique<Barracks>(id);
+            case BuildingType::GuardTower: return std::make_unique<GuardTower>(id);
+            case BuildingType::Fortress: return std::make_unique<Fortress>(id);
             case BuildingType::Road: return std::make_unique<Road>(id);
-            case BuildingType::DefenseTower: return std::make_unique<DefenseTower>(id);
-            case BuildingType::Bridge: return std::make_unique<Bridge>(id);
             case BuildingType::AnimalFarm:
             case BuildingType::Butcher:
             case BuildingType::Tannery:
@@ -84,6 +84,7 @@ namespace GameWorldInternal
     // Deferred connection restored after all saved buildings are placed.
     struct PendingConnection
     {
+        TileMap* map{nullptr};
         int sourcePosition{-1};
         ResourceType resource{ResourceType::Null};
         int targetPosition{-1};
@@ -182,193 +183,6 @@ namespace GameWorldInternal
         return offsets;
     }
 
-    // `minCenterDist`/`maxCenterDist`: ring the patch center must fall in
-    // (tiles from HQ center). `preferredDir`: unit-ish direction vector the
-    // search biases toward within that ring, so multiple patches (WOOD/
-    // STONE/COAL/IRON_ORE) spread around the HQ instead of overlapping —
-    // see CreateStartingVillageAndResources for the four directions used.
-    inline void PlaceStartingResourcePatch(TileMap& tilemap, Vec2i hqAnchor, Vec2i hqFootprint,
-                                    Vec2i villageAnchor, Vec2i villageFootprint,
-                                    TileType type, std::mt19937& rng,
-                                    int minCenterDist, int maxCenterDist, Vec2i preferredDir)
-    {
-        Vec2i center{hqAnchor.x + hqFootprint.x / 2, hqAnchor.y + hqFootprint.y / 2};
-        const std::vector<Vec2i> patchOffsets = BuildStartingResourcePatchOffsets(rng);
-        Vec2i minOffset = patchOffsets.front();
-        Vec2i maxOffset = patchOffsets.front();
-        int maxExtent = 0;
-        for (Vec2i offset : patchOffsets)
-        {
-            minOffset.x = std::min(minOffset.x, offset.x);
-            minOffset.y = std::min(minOffset.y, offset.y);
-            maxOffset.x = std::max(maxOffset.x, offset.x);
-            maxOffset.y = std::max(maxOffset.y, offset.y);
-            maxExtent = std::max({maxExtent, std::abs(offset.x), std::abs(offset.y)});
-        }
-        // User request (2026-07-17): patch centers live in a ring around the
-        // HQ center (the patch stays clear of the 10-tile HQ build apron once
-        // minCenterDist is 17+) while staying inside the starting zone.
-        // COAL/IRON_ORE (user request 2026-07-19: iron is often missing near
-        // spawn) use a wider ring than WOOD/STONE so all four patches fit
-        // around the HQ without collisions.
-        int kMinPatchCenterDist = minCenterDist;
-        int kMaxPatchCenterDist = maxCenterDist;
-        int preferredMagnitude = kMaxPatchCenterDist - maxExtent;
-        Vec2i preferredOffset{preferredDir.x * preferredMagnitude, preferredDir.y * preferredMagnitude};
-
-        // Track-side reachability (user report 2026-07-19, AIBehaviorHarnessTests
-        // regression): a patch landing on the far side of the military track
-        // from HQ forces the AI's first extractor there to need a Bridge
-        // crossing it wouldn't otherwise need — and if that Bridge's own
-        // PLANKS+STONE cost is blocked by the very extractor stranded across
-        // it (no output reaching storage to build the stock), the deadlock is
-        // permanent. One flood fill from the HQ center, avoiding
-        // isMilitaryRoad tiles (already carved by GenerateWorldLayout before
-        // any player exists), marks every tile reachable from HQ WITHOUT
-        // crossing the track; candidates outside that region are rejected
-        // outright below, same as this function already rejects tiles
-        // sitting on the track itself.
-        int mapTileCount = tilemap.params.sizeX * tilemap.params.sizeY;
-        std::vector<bool> sameSideAsHq(mapTileCount, false);
-        {
-            std::queue<int> frontier;
-            if (tilemap.IsInside(center))
-            {
-                int startId = tilemap.GetIdFromCoords(center);
-                if (!tilemap[startId].isMilitaryRoad)
-                {
-                    sameSideAsHq[startId] = true;
-                    frontier.push(startId);
-                }
-            }
-            while (!frontier.empty())
-            {
-                int current = frontier.front();
-                frontier.pop();
-                Vec2i pos = tilemap.GetCoordsFromId(current);
-                const std::array<Vec2i, 4> neighbours{
-                    Vec2i{pos.x + 1, pos.y}, Vec2i{pos.x - 1, pos.y},
-                    Vec2i{pos.x, pos.y + 1}, Vec2i{pos.x, pos.y - 1}
-                };
-                for (Vec2i next : neighbours)
-                {
-                    if (!tilemap.IsInside(next))
-                        continue;
-                    int nextId = tilemap.GetIdFromCoords(next);
-                    if (sameSideAsHq[nextId] || tilemap[nextId].isMilitaryRoad)
-                        continue;
-                    sameSideAsHq[nextId] = true;
-                    frontier.push(nextId);
-                }
-            }
-        }
-
-        Vec2i bestCenter{-1, -1};
-        int bestScore = std::numeric_limits<int>::min();
-        for (int y = -kMaxPatchCenterDist; y <= kMaxPatchCenterDist; y++)
-        {
-            for (int x = -kMaxPatchCenterDist; x <= kMaxPatchCenterDist; x++)
-            {
-                Vec2i patchCenter{center.x + x, center.y + y};
-                int distSq = x * x + y * y;
-                if (distSq < kMinPatchCenterDist * kMinPatchCenterDist ||
-                    distSq > kMaxPatchCenterDist * kMaxPatchCenterDist)
-                    continue;
-                if (!tilemap.IsInside(patchCenter) || !sameSideAsHq[tilemap.GetIdFromCoords(patchCenter)])
-                    continue;
-
-                Vec2i patchAnchor{patchCenter.x + minOffset.x, patchCenter.y + minOffset.y};
-                Vec2i patchSize{
-                    maxOffset.x - minOffset.x + 1,
-                    maxOffset.y - minOffset.y + 1};
-                if (!tilemap.IsInsideFootprint(patchAnchor, patchSize))
-                    continue;
-                if (FootprintsOverlap(patchAnchor, patchSize, hqAnchor, hqFootprint, 1) ||
-                    FootprintsOverlap(patchAnchor, patchSize, villageAnchor, villageFootprint, 1))
-                    continue;
-
-                int paintableTiles = 0;
-                for (Vec2i offset : patchOffsets)
-                {
-                    Vec2i pos{patchCenter.x + offset.x, patchCenter.y + offset.y};
-                    if (!tilemap.IsInside(pos))
-                        continue;
-
-                    const Tile& tile = tilemap[pos];
-                    if (tile.tileType == TileType::GRASS && !tile.HasBuilding() && !tile.isMilitaryRoad)
-                        paintableTiles++;
-                }
-
-                if (paintableTiles <= 0)
-                    continue;
-
-                int preferredDistance = std::abs(x - preferredOffset.x) + std::abs(y - preferredOffset.y);
-                int score = paintableTiles * 100 - preferredDistance;
-                if (score > bestScore)
-                {
-                    bestScore = score;
-                    bestCenter = patchCenter;
-                }
-            }
-        }
-
-        if (bestCenter.x < 0)
-        {
-            for (int y = -kMaxPatchCenterDist; y <= kMaxPatchCenterDist && bestCenter.x < 0; y++)
-            {
-                for (int x = -kMaxPatchCenterDist; x <= kMaxPatchCenterDist && bestCenter.x < 0; x++)
-                {
-                    Vec2i pos{center.x + x, center.y + y};
-                    if (!tilemap.IsInside(pos))
-                        continue;
-
-                    Tile& tile = tilemap[pos];
-                    if (tile.tileType == TileType::GRASS && !tile.HasBuilding())
-                        bestCenter = pos;
-                }
-            }
-        }
-
-        if (bestCenter.x < 0)
-            return;
-
-        int painted = 0;
-        for (Vec2i offset : patchOffsets)
-        {
-            Vec2i pos{bestCenter.x + offset.x, bestCenter.y + offset.y};
-            if (!tilemap.IsInside(pos))
-                continue;
-
-            auto* building = tilemap.GetBuilding(pos);
-            if (building != nullptr)
-                continue;
-
-            Tile& tile = tilemap[pos];
-            if (tile.tileType != TileType::GRASS)
-                continue;
-            // Since the 2026-07-12 generation reorder these starting
-            // patches run AFTER the military road is baked — a road tile
-            // still has tileType GRASS (only isMilitaryRoad + richness=0
-            // are set), so without this check the patch painted WOOD/
-            // STONE straight over the unit track (user report 2026-07-14:
-            // "tor jednostek na poletku kamienia czy drewna").
-            if (tile.isMilitaryRoad)
-                continue;
-
-            tile.tileType = type;
-            const bool usesOverlay = tilemap.HasResourceOverlay(type);
-            tile.terrainTextureId = tilemap.PickTerrainTexture(usesOverlay ? TileType::GRASS : type, rng);
-            tile.resourceOverlayTextureId = usesOverlay
-                ? tilemap.PickResourceOverlayTexture(type, ResourceOverlayEdgeDirection::None, rng)
-                : -1;
-            tile.resourceRichness = std::max(1, tilemap.params.resourceRichness);
-            painted++;
-        }
-        if (painted == 0)
-            Log::Msg("[MapGenerator]", "Starting resource patch failed for tile type ", static_cast<int>(type));
-        tilemap.terrainDirty = true;
-    }
-
     struct StartingResourcePatchPlan
     {
         TileType type{TileType::GRASS};
@@ -397,42 +211,20 @@ namespace GameWorldInternal
         const Vec2i hqCenter{hqAnchor.x + hqFootprint.x / 2,
                              hqAnchor.y + hqFootprint.y / 2};
 
-        std::vector<bool> sameSideAsHq(tilemap.tilemap.size(), false);
-        std::queue<int> frontier;
-        if (tilemap.IsInside(hqCenter))
-        {
-            const int startId = tilemap.GetIdFromCoords(hqCenter);
-            if (!tilemap.tilemap[startId].isMilitaryRoad)
-            {
-                sameSideAsHq[startId] = true;
-                frontier.push(startId);
-            }
-        }
-        while (!frontier.empty())
-        {
-            const int current = frontier.front();
-            frontier.pop();
-            const Vec2i pos = tilemap.GetCoordsFromId(current);
-            const std::array<Vec2i, 4> neighbours{
-                Vec2i{pos.x + 1, pos.y}, Vec2i{pos.x - 1, pos.y},
-                Vec2i{pos.x, pos.y + 1}, Vec2i{pos.x, pos.y - 1}};
-            for (Vec2i next : neighbours)
-            {
-                if (!tilemap.IsInside(next))
-                    continue;
-                const int nextId = tilemap.GetIdFromCoords(next);
-                if (sameSideAsHq[nextId] || tilemap.tilemap[nextId].isMilitaryRoad)
-                    continue;
-                sameSideAsHq[nextId] = true;
-                frontier.push(nextId);
-            }
-        }
 
         std::array<TileType, 4> resourceTypes{
             TileType::WOOD, TileType::STONE, TileType::COAL, TileType::IRON_ORE};
         std::shuffle(resourceTypes.begin(), resourceTypes.end(), rng);
-        const std::array<int, 4> minDistances{17, 17, 26, 26};
-        const std::array<int, 4> maxDistances{23, 23, 32, 32};
+        constexpr int kNearStartingResourceMinDistance = 20;
+        constexpr int kNearStartingResourceMaxDistance = 26;
+        constexpr int kFarStartingResourceMinDistance = 29;
+        constexpr int kFarStartingResourceMaxDistance = 35;
+        const std::array<int, 4> minDistances{
+            kNearStartingResourceMinDistance, kNearStartingResourceMinDistance,
+            kFarStartingResourceMinDistance, kFarStartingResourceMinDistance};
+        const std::array<int, 4> maxDistances{
+            kNearStartingResourceMaxDistance, kNearStartingResourceMaxDistance,
+            kFarStartingResourceMaxDistance, kFarStartingResourceMaxDistance};
         for (int index = 0; index < 4; index++)
         {
             auto& patch = layout.patches[index];
@@ -494,7 +286,7 @@ namespace GameWorldInternal
                         }
                         const int tileId = tilemap.GetIdFromCoords(pos);
                         const Tile& tile = tilemap.tilemap[tileId];
-                        if (!sameSideAsHq[tileId] || tile.isMilitaryRoad || tile.HasBuilding() ||
+                        if (tile.HasBuilding() ||
                             tile.tileType != TileType::GRASS)
                         {
                             validSide = false;
@@ -604,7 +396,7 @@ namespace GameWorldInternal
                 if (!tilemap.IsInside(pos))
                     continue;
                 Tile& tile = tilemap[pos];
-                if (tile.HasBuilding() || tile.isMilitaryRoad || tile.tileType != TileType::GRASS)
+                if (tile.HasBuilding() || tile.tileType != TileType::GRASS)
                     continue;
 
                 tile.tileType = patch.type;
@@ -626,64 +418,14 @@ namespace GameWorldInternal
         return true;
     }
 
-    // Builds an orthogonal road between two starting buildings, routing
-    // around the military track (user report 2026-07-19: "road do village
-    // nachodzi na tor jednostek"). The original version walked a straight
-    // Manhattan path (horizontal leg then vertical leg) between ONE fixed
-    // point on each building's nearest side, with no awareness of the track
-    // at all — CanBuildFootprint (via Player::Build) already refuses to
-    // place a Road on an isMilitaryRoad tile, so a track tile on that
-    // straight line was silently skipped, but the walk kept going past it
-    // regardless, leaving a road that runs up against (or gaps across) the
-    // track instead of avoiding it.
-    //
-    // A first BFS-based fix here still picked ONE fixed point per side as
-    // the mandatory start/goal — which failed just as badly whenever that
-    // one point happened to land ON the track itself (very possible: the
-    // track is only GUARANTEED straight for kStubSeedLength tiles out of each HQ,
-    // MilitaryRoadNetwork.cpp, and is free to wiggle after that). A 60-seed
-    // sweep caught 9/120 villages this way: the BFS correctly found no path
-    // to an unbuildable single tile and visited ~99% of the map proving it.
-    //
-    // Fixed properly by treating EVERY tile adjacent to each building's
-    // footprint as a valid start/goal (same pattern AIActions::SubmitRoadPath
-    // already uses for the same reason) — a multi-source, multi-target BFS
-    // that finds the nearest REACHABLE pair of perimeter tiles instead of
-    // gambling that one specific point is buildable.
-    // Multi-source, multi-target BFS between every tile adjacent to each
-    // building's footprint (same pattern AIActions::SubmitRoadPath uses),
-    // treating every isMilitaryRoad-avoiding, buildable tile as passable.
-    // Read-only — places nothing. Returns an empty path if no route exists.
-    inline bool HasMilitaryRoadClearance(TileMap& tilemap, Vec2i anchor, Vec2i footprint, int clearance)
-    {
-        for (int y = anchor.y; y < anchor.y + footprint.y; y++)
-        {
-            for (int x = anchor.x; x < anchor.x + footprint.x; x++)
-            {
-                for (int offsetY = -clearance; offsetY <= clearance; offsetY++)
-                {
-                    for (int offsetX = -clearance; offsetX <= clearance; offsetX++)
-                    {
-                        Vec2i nearby{x + offsetX, y + offsetY};
-                        if (tilemap.IsInside(nearby) && tilemap[nearby].isMilitaryRoad)
-                            return false;
-                    }
-                }
-            }
-        }
-        return true;
-    }
-
     inline std::vector<int> FindRoadPathBetweenFootprints(TileMap& tilemap, Player* player,
-        Vec2i fromAnchor, Vec2i fromFootprint, Vec2i toAnchor, Vec2i toFootprint,
-        int militaryRoadClearance = 0)
+        Vec2i fromAnchor, Vec2i fromFootprint, Vec2i toAnchor, Vec2i toFootprint)
     {
         const auto& roadDefinition = GetBuildingDefinition(BuildingType::Road);
         auto passable = [&](int tileId)
         {
             Vec2i pos = tilemap.GetCoordsFromId(tileId);
-            return tilemap.CanBuildFootprint(pos, roadDefinition.footprint, player, BuildingType::Road) &&
-                   HasMilitaryRoadClearance(tilemap, pos, roadDefinition.footprint, militaryRoadClearance);
+            return tilemap.CanBuildFootprint(pos, roadDefinition.footprint, player, BuildingType::Road);
         };
 
         std::vector<int> fromAdjacent = tilemap.GetAdjacentTileIds(fromAnchor, fromFootprint);
@@ -736,9 +478,8 @@ namespace GameWorldInternal
             }
         }
 
-        // No track-avoiding route exists between any pair of perimeter
-        // tiles — shouldn't happen (the ring doesn't enclose a single HQ's
-        // local area) short of a building being fully boxed in.
+        // No route exists between any pair of perimeter tiles, which means
+        // the building is fully boxed in by terrain or existing structures.
         if (reached < 0)
             return {};
 
@@ -749,47 +490,23 @@ namespace GameWorldInternal
         return path;
     }
 
-    // Builds an orthogonal road between two starting buildings, routing
-    // around the military track (user report 2026-07-19: "road do village
-    // nachodzi na tor jednostek"). The original version walked a straight
-    // Manhattan path (horizontal leg then vertical leg) between ONE fixed
-    // point on each building's nearest side, with no awareness of the track
-    // at all — CanBuildFootprint (via Player::Build) already refuses to
-    // place a Road on an isMilitaryRoad tile, so a track tile on that
-    // straight line was silently skipped, but the walk kept going past it
-    // regardless, leaving a road that runs up against (or gaps across) the
-    // track instead of avoiding it.
-    //
-    // A first BFS-based fix here still picked ONE fixed point per side as
-    // the mandatory start/goal — which failed just as badly whenever that
-    // one point happened to land ON the track itself (very possible: the
-    // track is only GUARANTEED straight for kStubSeedLength tiles out of each HQ,
-    // MilitaryRoadNetwork.cpp, and is free to wiggle after that). A 60-seed
-    // sweep caught 9/120 villages this way: the BFS correctly found no path
-    // to an unbuildable single tile and visited ~99% of the map proving it.
-    //
-    // Fixed properly by treating EVERY tile adjacent to each building's
-    // footprint as a valid start/goal (same pattern AIActions::SubmitRoadPath
-    // already uses for the same reason) — a multi-source, multi-target BFS
-    // that finds the nearest REACHABLE pair of perimeter tiles instead of
-    // gambling that one specific point is buildable. Pathfinding itself now
-    // lives in FindRoadPathBetweenFootprints above so callers can measure a
-    // route's length before committing to build it (village-too-far re-roll,
-    // GameWorld.Init.cpp).
+    // Builds an orthogonal road between two starting buildings using the same
+    // multi-source, multi-target BFS used by generation preflight.
     inline void BuildStartRoad(Player* player, Vec2i fromAnchor, Vec2i fromFootprint,
-        Vec2i toAnchor, Vec2i toFootprint, int militaryRoadClearance = 0)
+        Vec2i toAnchor, Vec2i toFootprint)
     {
         if (player == nullptr)
             return;
 
-        TileMap& tilemap = *player->tilemap;
+        TileMap* map = player->GetTileMap();
+        if (map == nullptr)
+            return;
+        TileMap& tilemap = *map;
         std::vector<int> path = FindRoadPathBetweenFootprints(
-            tilemap, player, fromAnchor, fromFootprint, toAnchor, toFootprint, militaryRoadClearance);
+            tilemap, player, fromAnchor, fromFootprint, toAnchor, toFootprint);
 
-        // No track-avoiding route exists — leave the village unconnected
-        // rather than place a Road the placement rules would refuse anyway
-        // (the old straight-walk fallback did exactly that, silently, for
-        // the same net result).
+        // No route exists — leave the village unconnected rather than place
+        // roads that the placement rules would refuse.
         for (int tileId : path)
             player->Build<Road>(tilemap.GetCoordsFromId(tileId), false);
     }

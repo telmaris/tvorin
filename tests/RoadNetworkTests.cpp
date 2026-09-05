@@ -5,6 +5,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <cmath>
 
 namespace
 {
@@ -81,6 +82,100 @@ TEST(RoadNetworkTests, CalculatesPathAcrossRoadTilesBetweenBuildingFootprints)
     EXPECT_NE(std::find(path.begin(), path.end(), map.GetIdFromCoords({4, 2})), path.end());
 }
 
+TEST(RoadNetworkTests, CongestionCostIsFiniteAndIncreasesWithTraffic)
+{
+    Road road{1};
+    road.owner = nullptr;
+    const double emptyCost = ComputeRoadTraversalCost(road, ResourceType::WOOD);
+
+    Resource first{ResourceType::WOOD};
+    road.transportables.push_back(&first);
+    road.road.trafficUtilizationEma = 0.75;
+    const double congestedCost = ComputeRoadTraversalCost(road, ResourceType::WOOD);
+
+    EXPECT_GE(emptyCost, 0.05);
+    EXPECT_GT(congestedCost, emptyCost);
+    EXPECT_TRUE(std::isfinite(congestedCost));
+    road.transportables.clear();
+}
+
+TEST(RoadNetworkTests, WeightedRoutingAvoidsCongestedShortRouteAndReturnsAfterTtl)
+{
+    TileMap map;
+    Player player{0, map};
+    FillOwnedMap(map, &player, 14, 8);
+    RoadNetwork network{map};
+
+    auto* source = PlaceAndRegister<StorageBuilding>(map, network, &player, {0, 1}, 1);
+    auto* destination = PlaceAndRegister<StorageBuilding>(map, network, &player, {9, 1}, 2);
+    ASSERT_NE(source, nullptr);
+    ASSERT_NE(destination, nullptr);
+
+    std::vector<Road*> shortRoute;
+    int roadId = 10;
+    for (int x = 3; x <= 8; ++x)
+    {
+        auto* road = PlaceAndRegister<Road>(map, network, &player, {x, 2}, roadId++);
+        ASSERT_NE(road, nullptr);
+        shortRoute.push_back(road);
+    }
+    for (int x = 2; x <= 9; ++x)
+        ASSERT_NE(PlaceAndRegister<Road>(map, network, &player, {x, 4}, roadId++), nullptr);
+
+    for (Road* road : shortRoute)
+        road->road.trafficUtilizationEma = 1.0;
+
+    const auto detour = network.CalculatePath(source, destination, ResourceType::WOOD);
+    ASSERT_FALSE(detour.empty());
+    EXPECT_NE(std::find(detour.begin(), detour.end(), map.GetIdFromCoords({2, 4})), detour.end());
+    EXPECT_EQ(std::find(detour.begin(), detour.end(), map.GetIdFromCoords({3, 2})), detour.end());
+
+    for (Road* road : shortRoute)
+        road->road.trafficUtilizationEma = 0.0;
+    for (int tick = 0; tick <= 50; ++tick)
+        network.Update(0.01);
+
+    const auto recovered = network.CalculatePath(source, destination, ResourceType::WOOD);
+    ASSERT_FALSE(recovered.empty());
+    EXPECT_NE(std::find(recovered.begin(), recovered.end(), map.GetIdFromCoords({3, 2})), recovered.end());
+}
+
+TEST(RoadNetworkTests, ExplicitCostInvalidationDropsRouteCachedBeforeRoadSpeedChange)
+{
+    TileMap map;
+    Player player{0, map};
+    FillOwnedMap(map, &player, 14, 8);
+    RoadNetwork network{map};
+
+    auto* source = PlaceAndRegister<StorageBuilding>(map, network, &player, {0, 1}, 1);
+    auto* destination = PlaceAndRegister<StorageBuilding>(map, network, &player, {9, 1}, 2);
+    ASSERT_NE(source, nullptr);
+    ASSERT_NE(destination, nullptr);
+
+    std::vector<Road*> shortRoute;
+    int roadId = 100;
+    for (int x = 3; x <= 8; ++x)
+    {
+        auto* road = PlaceAndRegister<Road>(map, network, &player, {x, 2}, roadId++);
+        ASSERT_NE(road, nullptr);
+        shortRoute.push_back(road);
+    }
+    for (int x = 2; x <= 9; ++x)
+        ASSERT_NE(PlaceAndRegister<Road>(map, network, &player, {x, 4}, roadId++), nullptr);
+
+    const auto original = network.CalculatePath(source, destination, ResourceType::STONE);
+    ASSERT_NE(std::find(original.begin(), original.end(), map.GetIdFromCoords({3, 2})), original.end());
+
+    for (Road* road : shortRoute)
+        road->road.speedModifier.SetBase(0.1);
+    network.InvalidateRoutingCosts();
+
+    const auto rerouted = network.CalculatePath(source, destination, ResourceType::STONE);
+    ASSERT_FALSE(rerouted.empty());
+    EXPECT_NE(std::find(rerouted.begin(), rerouted.end(), map.GetIdFromCoords({2, 4})), rerouted.end());
+    EXPECT_EQ(std::find(rerouted.begin(), rerouted.end(), map.GetIdFromCoords({3, 2})), rerouted.end());
+}
+
 TEST(RoadNetworkTests, ReturnsEmptyPathWhenRoadConnectionIsBroken)
 {
     TileMap map;
@@ -132,20 +227,19 @@ TEST(RoadNetworkTests, BeginTransportQueuesResourceOnSourceWhenPathAndCapacityEx
     EXPECT_NE(wood.shipmentId, 0u);
     EXPECT_EQ(network.GetLiveShipmentCount(), 1u);
     EXPECT_EQ(network.GetShipmentRecordCount(), 1u);
-    const ResourceShipment* record = network.FindShipmentRecord(wood.shipmentId);
-    ASSERT_NE(record, nullptr);
-    EXPECT_EQ(record->type, ResourceType::WOOD);
-    EXPECT_EQ(record->quantity, 1);
-    EXPECT_EQ(record->sourceBuildingId, source->id);
-    EXPECT_EQ(record->targetBuildingId, destination->id);
-    EXPECT_EQ(record->pathTileIds, wood.transportPath);
+    ResourceShipment record;
+    ASSERT_TRUE(network.TryGetShipmentRecord(wood.shipmentId, record));
+    EXPECT_EQ(record.type, ResourceType::WOOD);
+    EXPECT_EQ(record.quantity, 1);
+    EXPECT_EQ(record.sourceBuildingId, source->id);
+    EXPECT_EQ(record.targetBuildingId, destination->id);
+    EXPECT_EQ(record.pathTileIds, wood.transportPath);
     EXPECT_DOUBLE_EQ(wood.transportTime, 0.1);
 
     source->UpdateTransportables(0.09);
     EXPECT_EQ(wood.currentPathStep, 0);
-    record = network.FindShipmentRecord(wood.shipmentId);
-    ASSERT_NE(record, nullptr);
-    EXPECT_DOUBLE_EQ(record->elapsedTime, 0.09);
+    ASSERT_TRUE(network.TryGetShipmentRecord(wood.shipmentId, record));
+    EXPECT_DOUBLE_EQ(record.elapsedTime, 0.09);
     ASSERT_EQ(source->transportables.size(), 1u);
     EXPECT_EQ(source->transportables.front(), &wood);
 
@@ -247,6 +341,78 @@ TEST(RoadNetworkTests, DispatchDelaySerializesResourcesCreatedInTheSameTick)
     first.ReleaseShipment();
     second.ReleaseShipment();
     roadA->transportables.clear();
+}
+
+TEST(RoadNetworkTests, ReadyBlockedShipmentDoesNotBlockTheNextSourceLoader)
+{
+    TileMap map;
+    Player player{0, map};
+    FillOwnedMap(map, &player, 12, 8);
+    RoadNetwork network{map};
+
+    auto* source = PlaceAndRegister<StorageBuilding>(map, network, &player, {0, 1}, 1);
+    auto* firstDestination = PlaceAndRegister<StorageBuilding>(map, network, &player, {8, 1}, 2);
+    auto* secondDestination = PlaceAndRegister<StorageBuilding>(map, network, &player, {8, 3}, 3);
+    ASSERT_NE(source, nullptr);
+    ASSERT_NE(firstDestination, nullptr);
+    ASSERT_NE(secondDestination, nullptr);
+
+    int roadId = 10;
+    for (int x = 2; x <= 7; ++x)
+        ASSERT_NE(PlaceAndRegister<Road>(map, network, &player, {x, 1}, roadId++), nullptr);
+    ASSERT_NE(PlaceAndRegister<Road>(map, network, &player, {2, 2}, roadId++), nullptr);
+    for (int x = 2; x <= 7; ++x)
+        ASSERT_NE(PlaceAndRegister<Road>(map, network, &player, {x, 3}, roadId++), nullptr);
+
+    firstDestination->storage.buffers.clear();
+    firstDestination->storage.buffers[ResourceType::WOOD] = ResourceBuffer{ResourceType::WOOD, 2};
+    secondDestination->storage.buffers.clear();
+    secondDestination->storage.buffers[ResourceType::WOOD] = ResourceBuffer{ResourceType::WOOD, 2};
+    source->dispatchDelay.SetBase(0.1);
+
+    Resource first{ResourceType::WOOD};
+    Resource second{ResourceType::WOOD};
+    ASSERT_TRUE(network.BeginTransport(source, firstDestination, &first));
+    ASSERT_TRUE(network.BeginTransport(source, secondDestination, &second));
+    ASSERT_FALSE(first.transportPath.empty());
+    ASSERT_FALSE(second.transportPath.empty());
+    ASSERT_NE(std::find(first.transportPath.begin(), first.transportPath.end(), map.GetIdFromCoords({3, 1})), first.transportPath.end());
+    ASSERT_NE(std::find(second.transportPath.begin(), second.transportPath.end(), map.GetIdFromCoords({3, 3})), second.transportPath.end());
+
+    // Fill the first branch. The first shipment is ready but cannot be
+    // admitted; the second shipment must still finish source loading.
+    Building* firstRoad = map.GetBuilding(first.transportPath[1]);
+    ASSERT_NE(firstRoad, nullptr);
+    ASSERT_TRUE(firstRoad->HasComponent<RoadComponent>());
+    firstRoad->GetComponent<RoadComponent>()->maxCapacity = 0;
+
+    source->UpdateTransportables(0.11);
+    EXPECT_EQ(first.currentPathStep, 0);
+    EXPECT_EQ(second.currentPathStep, 0);
+    EXPECT_DOUBLE_EQ(second.elapsedTime, 0.0);
+
+    // The blocked shipment no longer counts as an active loader on the next
+    // tick, so the second shipment can finish its own dispatch delay and use
+    // its free branch.
+    source->UpdateTransportables(0.11);
+    EXPECT_EQ(first.currentPathStep, 0);
+    EXPECT_EQ(second.currentPathStep, 1);
+    EXPECT_DOUBLE_EQ(second.elapsedTime, 0.0);
+
+    std::vector<ShipmentRenderState> views;
+    network.AppendShipmentRenderStates(views);
+    ASSERT_EQ(views.size(), 2u);
+    auto firstView = std::find_if(views.begin(), views.end(), [&first](const auto& view)
+    {
+        return view.shipmentId == first.shipmentId;
+    });
+    ASSERT_NE(firstView, views.end());
+    EXPECT_EQ(firstView->phase, TransportPhase::WaitingForRoad);
+
+    first.ReleaseShipment();
+    second.ReleaseShipment();
+    source->transportables.clear();
+    firstRoad->transportables.clear();
 }
 
 TEST(RoadNetworkTests, PrioritizedRoadAdmissionWinsAcrossConvergingSources)
@@ -580,11 +746,11 @@ TEST(RoadNetworkTests, ProductionPlacementFindsPathWithoutTileOwnership)
     ASSERT_NE(roadA, nullptr);
     ASSERT_NE(roadB, nullptr);
 
-    std::vector<int> path = player.roadNetwork->CalculatePath(source, destination);
+    std::vector<int> path = player.GetRoadNetwork()->CalculatePath(source, destination);
     ASSERT_FALSE(path.empty());
 
     Resource wood{ResourceType::WOOD};
-    EXPECT_TRUE(player.roadNetwork->BeginTransport(source, destination, &wood));
+    EXPECT_TRUE(player.GetRoadNetwork()->BeginTransport(source, destination, &wood));
 }
 
 // End-to-end companion to the test above: drives the full transport pipeline

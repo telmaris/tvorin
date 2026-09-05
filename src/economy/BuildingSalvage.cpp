@@ -83,8 +83,12 @@ std::vector<Building*> OrderedWarehouses(const Player& owner, const Building& so
         if (warehouse == nullptr)
             continue;
         std::vector<int> path;
-        const RoadNetwork* roadNetwork = owner.GetRoadNetwork();
-        const int expectedMapArea = owner.tilemap->params.sizeX * owner.tilemap->params.sizeY;
+        const ProvinceEconomy* economy = source.provinceEconomy != nullptr
+            ? source.provinceEconomy : owner.GetProvinceEconomy();
+        const RoadNetwork* roadNetwork = economy != nullptr ? economy->roadNetwork.get() : nullptr;
+        const TileMap* tilemap = economy != nullptr ? economy->tilemap : nullptr;
+        const int expectedMapArea = tilemap != nullptr
+            ? tilemap->params.sizeX * tilemap->params.sizeY : 0;
         if (roadNetwork != nullptr && roadNetwork->navMap != nullptr &&
             static_cast<int>(roadNetwork->navMap->map.size()) == expectedMapArea)
         {
@@ -97,7 +101,7 @@ std::vector<Building*> OrderedWarehouses(const Player& owner, const Building& so
                               !path.empty(),
                               warehouse->buildingType == BuildingType::Headquarters,
                               static_cast<int>(path.size()),
-                              Distance(*owner.tilemap, source, *warehouse)});
+                              tilemap != nullptr ? Distance(*tilemap, source, *warehouse) : 0});
     }
 
     std::sort(candidates.begin(), candidates.end(), [](const Candidate& a, const Candidate& b)

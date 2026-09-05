@@ -5,6 +5,7 @@
 #include "ui/GuiHandler.h"
 #include "ui/UiAssetContext.h"
 #include "core/Events.h"
+#include "core/GameSession.h"
 
 #include <utility>
 
@@ -26,6 +27,9 @@ class Scene : public EventClient
     virtual void OnActivated() {}
     // Called immediately before GameWindow switches away from this scene.
     virtual void OnDeactivated() {}
+    // Called when the native window gains or loses focus. Implementations may
+    // adjust presentation state, but focus alone must not pause simulation.
+    virtual void OnWindowFocusChanged(bool focused) { (void)focused; }
 
     std::string   name;
     std::string   previousSceneName;
@@ -61,7 +65,7 @@ class GameWindow : public EventBroker
         activeScene->Update(dt);
     }
 
-    // Broadcasts a resize event when the render size changes.
+    // Broadcasts a resize event when the logical UI screen size changes.
     void UpdateWindowSize();
 
     // Initializes Raylib, creates scenes and starts the game loop.
@@ -69,6 +73,22 @@ class GameWindow : public EventBroker
 
     // Runs the frame loop until a quit event is received.
     void MainLoop();
+    // True when no fade/hold transition is in flight. LoadingScene uses this
+    // before publishing success, cancellation or startup failure transitions.
+    bool IsSceneTransitionIdle() const;
+
+    // LoadingScene publishes a fully initialized/synchronized session here so
+    // it survives the scene transition. The target gameplay scene consumes it
+    // on the main thread from OnActivated().
+    void PublishPreparedGameSession(std::unique_ptr<IGameSession> session,
+                                    std::string targetScene,
+                                    bool multiplayerClient,
+                                    bool usedFallback);
+    std::unique_ptr<IGameSession> TakePreparedGameSession(
+        const std::string& targetScene,
+        bool& multiplayerClient,
+        bool& usedFallback);
+    void DiscardPreparedGameSession();
 
     // Releases scene renderers while the OpenGL context is still alive.
     void ShutdownRenderers();
@@ -112,8 +132,12 @@ private:
     float transitionAlpha{0.0f};
     float transitionElapsed{0.0f};
     float transitionHoldRemaining{0.0f};
-    static constexpr float FadeOutSeconds = 0.32f;
-    static constexpr float FadeInSeconds = 0.55f;
-    static constexpr float HoldSeconds = 0.12f;
+    static constexpr float FadeOutSeconds = 0.24f;
+    static constexpr float FadeInSeconds = 0.38f;
+    static constexpr float HoldSeconds = 0.06f;
+    std::unique_ptr<IGameSession> preparedGameSession;
+    std::string preparedGameTarget;
+    bool preparedGameIsClient{false};
+    bool preparedGameUsedFallback{false};
 };
 #endif

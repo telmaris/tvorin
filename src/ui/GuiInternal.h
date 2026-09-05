@@ -6,6 +6,7 @@
 // This header is internal to src/ — nothing outside the GUI code includes it.
 
 #include "ui/GuiController.h"
+#include "core/GameCommand.h"
 
 #include <string>
 #include <vector>
@@ -17,6 +18,10 @@ class Player;
 
 // Returns the local player controlled by this client, or nullptr.
 Player* GuiLocalPlayer(GameScene* scene);
+
+// Campaign-wide presentation gate shared by the Roster and Global Map
+// systems. It checks every bound province, not only the active one.
+bool HasCompletedBarracks(GameScene* scene);
 
 // Returns true once the local player has a completed University, gating the
 // Technology panel.
@@ -69,6 +74,8 @@ float PanelTitleCloseReserve(Rectangle panel);
 
 // Formats a compact fixed-point HUD value with one decimal place.
 std::string FormatOneDecimal(double value);
+std::string FormatSimulationTimestamp(std::uint64_t ticks);
+std::string FormatDurationTicks(std::uint64_t ticks);
 
 // Tooltip body for one resource: the player-wide total followed by one line
 // per warehouse holding it ("HQ #1: 42"). Shared by the strategic HUD chips
@@ -86,8 +93,6 @@ Building* FindLocalHeadquarters(GameScene* scene);
 // Grants the local player's HQ a package of every resource — debug worlds
 // only (params.debugMode). Wired to the F10 action in WireCommonSystemActions.
 void GrantDebugResources(GameScene* scene, int amount);
-// Submits a deterministic debug-only enemy attack command (F12).
-void DeployDebugEnemyUnits(GameScene* scene, int count);
 
 // ─── Strategic HUD buttons ───────────────────────────────────────────────────
 
@@ -98,10 +103,9 @@ Rectangle TechHudButtonRect(const StrategicResourceHudWidget& hud);
 Rectangle DestroyHudButtonRect(const StrategicResourceHudWidget& hud);
 Rectangle RoadHudButtonRect(const StrategicResourceHudWidget& hud);
 Rectangle BuildHudButtonRect(const StrategicResourceHudWidget& hud);
-// TD(etap-8): roster/deploy panel button, left of Build.
+// Roster panel button, left of Build.
 Rectangle RosterHudButtonRect(const StrategicResourceHudWidget& hud);
-// Compact visual-only logistics overlay toggle, left of the roster button.
-Rectangle LogisticsHudButtonRect(const StrategicResourceHudWidget& hud);
+Rectangle GlobalMapHudButtonRect(const StrategicResourceHudWidget& hud);
 
 bool IsStatsHudButtonHovered(const StrategicResourceHudWidget& hud);
 bool IsFocusHudButtonHovered(const StrategicResourceHudWidget& hud);
@@ -111,13 +115,13 @@ bool IsDestroyHudButtonHovered(const StrategicResourceHudWidget& hud);
 bool IsRoadHudButtonHovered(const StrategicResourceHudWidget& hud);
 bool IsBuildHudButtonHovered(const StrategicResourceHudWidget& hud);
 bool IsRosterHudButtonHovered(const StrategicResourceHudWidget& hud);
-bool IsLogisticsHudButtonHovered(const StrategicResourceHudWidget& hud);
+bool IsGlobalMapHudButtonHovered(const StrategicResourceHudWidget& hud);
 
 // True when the cursor is over any strategic HUD mode button.
 bool IsAnyHudButtonHovered(const StrategicResourceHudWidget& hud);
 
 // Routes an LMB press on a strategic HUD mode button to the system's matching
-// keyboard action ("q"/"r"/"d"/"s"/"f"/"t"/"u"). Returns true when the click
+// keyboard action ("q"/"r"/"d"/"s"/"f"/"t"/"u"/"m"). Returns true when the click
 // was consumed by a HUD button.
 bool DispatchHudButtonClick(GuiSystem& system, const StrategicResourceHudWidget& hud);
 
@@ -140,6 +144,11 @@ void WireCommonSystemActions(SystemT& system, CameraMovement& cameraMovement)
     system.actionMap["f"]    = [&system] { system.FocusPressed(); };
     system.actionMap["t"]    = [&system] { system.TechPressed(); };
     system.actionMap["u"]    = [&system] { system.RosterPressed(); };
+    system.actionMap["g"]    = [&system]
+    {
+        if (system.owner != nullptr)
+            system.owner->ChangeSystem("upgrade");
+    };
     // Click sound + dispatch — lives here (in the systems' own wiring), not
     // in GuiController::MakeAction: the controller is pure transition/
     // dispatch plumbing (user-directed rework, 2026-07-14).
@@ -155,7 +164,21 @@ void WireCommonSystemActions(SystemT& system, CameraMovement& cameraMovement)
     system.actionMap["mmbp"] = [&cameraMovement] { cameraMovement.isMoving = true; };
     system.actionMap["mmbr"] = [&cameraMovement] { cameraMovement.isMoving = false; };
     system.actionMap["debug_resources"] = [&system] { GrantDebugResources(system.scene, 50); };
-    system.actionMap["debug_enemy_units"] = [&system] { DeployDebugEnemyUnits(system.scene, 4); };
+    system.actionMap["debug_raid"] = [&system]
+    {
+        if (system.scene == nullptr || system.scene->game == nullptr ||
+            !system.scene->game->GetTileMap().params.debugMode)
+            return;
+        const ProvinceId targetProvinceId = system.scene->game->GetLocalActiveProvinceId();
+        if (targetProvinceId != InvalidProvinceId)
+            system.scene->SubmitLocalCommand(GameCommand::SpawnDebugRaid(
+                system.scene->game->GetLocalPlayerId(), targetProvinceId));
+    };
+    system.actionMap["global_map"] = [&system]
+    {
+        if (system.owner != nullptr && HasCompletedBarracks(system.scene))
+            system.owner->ChangeSystem("global_map");
+    };
     system.actionMap["scroll"] = [&system] { system.Scroll(); };
 }
 

@@ -32,8 +32,14 @@ StudioSplashScene::~StudioSplashScene()
     studioLogo.Reset();
 }
 
+void StudioSplashScene::OnActivated()
+{
+    Renderer::SetCustomCursorVisible(false);
+}
+
 void StudioSplashScene::OnDeactivated()
 {
+    Renderer::SetCustomCursorVisible(true);
     if (studioLogo.IsValid())
     {
         studioLogo.Reset();

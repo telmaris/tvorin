@@ -14,33 +14,38 @@ if (NOT GTest_FOUND)
 endif()
 
 add_executable(tvorin_tests
-    AIBehaviorHarnessTests.cpp
     AtomicFileTests.cpp
     BalanceModifierTests.cpp
+    BalanceContractTests.cpp
     BattleUnitTests.cpp
-    BridgeTests.cpp
+    BattleLifecycleTests.cpp
+    BattleSimulatorTests.cpp
+    UnitAssignmentTests.cpp
+    DefenseComponentsTests.cpp
+    GarrisonServiceTests.cpp
+    RaidDamageTests.cpp
+    WarfareViewsTests.cpp
     BuildingConfigTests.cpp
+    BuildingPresentationTests.cpp
     BuildingDomainTests.cpp
     BuildingSalvageTests.cpp
     BuildingPlacementTests.cpp
-    CombatPipelineTests.cpp
-    EliminationTests.cpp
     EconomyExpansionTests.cpp
     FogOfWarTests.cpp
     FaultInjectingGameTransportTests.cpp
     GameCommandTests.cpp
     GameSnapshotTests.cpp
-    HqCombatSystemTests.cpp
+    CampaignPersistenceTests.cpp
+    ProvinceCommandRoutingTests.cpp
+    ScoutExpeditionTests.cpp
     MapGeneratorTests.cpp
-    MilitaryRoadNetworkTests.cpp
     NetworkProtocolTests.cpp
-    PathingServiceTests.cpp
     PlayerEconomyTests.cpp
+    PeacefulWorldTests.cpp
     PersistenceValidationTests.cpp
     RendererAnimationTests.cpp
     RaylibResourceTests.cpp
     ResourceBufferTests.cpp
-    ResourceShipmentTests.cpp
     RtsDataFileTests.cpp
     RoadNetworkTests.cpp
     RoadPriorityArbitrationTests.cpp
@@ -53,12 +58,25 @@ add_executable(tvorin_tests
     TcpGameTransportTests.cpp
     TileMapDomainTests.cpp
     TechnologyTests.cpp
-    TowerAttackSystemTests.cpp
-    UtilityAIModelTests.cpp
     SimulationPerfTests.cpp
-    UnitCombatSystemTests.cpp
-    UnitMarchSystemTests.cpp
+    UiTextTests.cpp
+    UpgradeLineRasterizerTests.cpp
+    UpgradeGestureTargetsTests.cpp
+    BuildInteractionStateTests.cpp
     WorldLightingTests.cpp
+    GlobalMapTests.cpp
+    GlobalMapGeneratorV2Tests.cpp
+    ColonizationTests.cpp
+    ProvinceDefinitionTests.cpp
+    ProvinceConnectionTests.cpp
+    TradeTests.cpp
+    WorldJourneyTests.cpp
+    JourneyTimingTests.cpp
+    WorldEventSystemTests.cpp
+    WorldEventDefinitionTests.cpp
+    ProvinceDomainTests.cpp
+    StrategicHudLayoutTests.cpp
+    KeyBindingsTests.cpp
 )
 
 target_link_libraries(tvorin_tests
@@ -104,15 +122,10 @@ if (ENABLE_COVERAGE AND MSVC)
     target_link_options(tvorin_tests PRIVATE /DEBUG)
 endif()
 
-add_test(NAME tvorin_tests COMMAND tvorin_tests --gtest_filter=-AIBehaviorHarnessTests.*)
+add_test(NAME tvorin_tests COMMAND tvorin_tests)
 set_tests_properties(tvorin_tests PROPERTIES
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
     LABELS "fast;integration;network;data"
-)
-add_test(NAME tvorin_ai_long COMMAND tvorin_tests --gtest_filter=AIBehaviorHarnessTests.*)
-set_tests_properties(tvorin_ai_long PROPERTIES
-    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
-    LABELS "ai_long;integration"
 )
 
 if (ENABLE_COVERAGE AND MSVC)
@@ -132,7 +145,6 @@ if (ENABLE_COVERAGE AND MSVC)
                     --export_type html:${COVERAGE_HTML_DIR}
                     --export_type cobertura:${COVERAGE_XML_FILE}
                     -- $<TARGET_FILE:tvorin_tests>
-                    --gtest_filter=-AIBehaviorHarnessTests.*
             WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
             DEPENDS tvorin_tests
             COMMENT "Running fast unit tests and generating OpenCppCoverage report"
@@ -150,7 +162,6 @@ elseif (ENABLE_COVERAGE AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     if (GCOVR_EXECUTABLE)
         add_custom_target(coverage
             COMMAND $<TARGET_FILE:tvorin_tests>
-                    --gtest_filter=-AIBehaviorHarnessTests.*
             COMMAND ${GCOVR_EXECUTABLE}
                     --root ${CMAKE_SOURCE_DIR}
                     --filter ${CMAKE_SOURCE_DIR}/src

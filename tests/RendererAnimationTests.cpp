@@ -228,6 +228,49 @@ TEST(RendererLifecycleTests, CameraKeepsTileEdgesAndOriginOnRenderPixels)
                 std::round(renderer.camera.target.y * renderer.camera.zoom), 0.0001f);
 }
 
+TEST(RendererLifecycleTests, CameraMinimumZoomIsOneWheelStepCloserThanFullMapFit)
+{
+    Renderer renderer;
+    renderer.camera.zoom = 0.0f;
+
+    renderer.ClampCameraToMap({200, 200});
+
+    // Width fit is 0.15 for a 200-tile map; one 0.12 wheel step plus tile
+    // alignment gives ceil(0.27 * 64) / 64 = 0.28125.
+    EXPECT_FLOAT_EQ(renderer.camera.zoom, 0.28125f);
+}
+
+TEST(RendererLifecycleTests, CameraClampKeepsEntireRenderSurfaceInsideMap)
+{
+    Renderer renderer;
+    renderer.camera.zoom = 1.25f;
+    renderer.camera.target = {-5000.0f, 5000.0f};
+    const Vec2i MapSize{200, 200};
+    renderer.ClampCameraToMap(MapSize);
+
+    const CameraVisibleWorldRect visible = ComputeCameraVisibleWorldRect(renderer.camera, 0.0f);
+    const float mapWidth = static_cast<float>(MapSize.x * TILE_SIZE);
+    const float mapHeight = static_cast<float>(MapSize.y * TILE_SIZE);
+    EXPECT_GE(visible.minX, 0.0f);
+    EXPECT_LE(visible.maxX, mapWidth);
+    EXPECT_GE(visible.minY, 0.0f);
+    EXPECT_LE(visible.maxY, mapHeight);
+}
+
+TEST(RendererLifecycleTests, VisibleWorldRectUsesTopHudPaddingAndCamera)
+{
+    Camera2D camera{};
+    camera.target = {100.0f, -200.0f};
+    camera.zoom = 2.0f;
+
+    const CameraVisibleWorldRect visible = ComputeCameraVisibleWorldRect(camera, 120.0f);
+
+    EXPECT_FLOAT_EQ(visible.minX, 100.0f);
+    EXPECT_FLOAT_EQ(visible.maxX, 1060.0f);
+    EXPECT_FLOAT_EQ(visible.minY, 800.0f);
+    EXPECT_FLOAT_EQ(visible.maxY, 1280.0f);
+}
+
 TEST(RendererLifecycleTests, OperationalBuildingsQueueAStableLight)
 {
     Renderer renderer;
@@ -531,7 +574,7 @@ TEST(TextureConfigIntegrationTests, ArmorerArtworkUsesTheAuthoredStaticSprite)
     EXPECT_FALSE(buildingIt->animation.enabled);
 }
 
-TEST(TextureConfigIntegrationTests, RoadAndBridgeUseCanonical64PixelAutotileAtlas)
+TEST(TextureConfigIntegrationTests, RoadUsesCanonical64PixelAutotileAtlas)
 {
     std::string error;
     const TextureConfig config = LoadTextureConfig("assets/data/textures.rtsdata", &error);
@@ -548,11 +591,8 @@ TEST(TextureConfigIntegrationTests, RoadAndBridgeUseCanonical64PixelAutotileAtla
     };
 
     const auto roadIt = findBuilding("Road");
-    const auto bridgeIt = findBuilding("Bridge");
     ASSERT_NE(roadIt, config.buildings.end());
-    ASSERT_NE(bridgeIt, config.buildings.end());
     EXPECT_EQ(roadIt->sprite.atlasId, 19);
-    EXPECT_EQ(bridgeIt->sprite.atlasId, 19);
 
     const TextureAtlasDefinition* atlas = config.FindAtlas(19);
     ASSERT_NE(atlas, nullptr);
@@ -560,39 +600,4 @@ TEST(TextureConfigIntegrationTests, RoadAndBridgeUseCanonical64PixelAutotileAtla
               "assets/textures/roads/generated/roads_bridges_4x8_64px.png");
     EXPECT_EQ(atlas->cellWidth, 64);
     EXPECT_EQ(atlas->cellHeight, 64);
-}
-
-TEST(TextureConfigIntegrationTests, MilitaryRoadUsesCanonical64PixelAutotileAtlas)
-{
-    std::string error;
-    const TextureConfig config = LoadTextureConfig("assets/data/textures.rtsdata", &error);
-    ASSERT_TRUE(error.empty()) << error;
-
-    const TextureAtlasDefinition* atlas = config.FindAtlas(144);
-    ASSERT_NE(atlas, nullptr);
-    EXPECT_EQ(atlas->path,
-              "assets/textures/military_roads/generated/military_road_autotiles_4x4_64px.png");
-    EXPECT_EQ(atlas->cellWidth, 64);
-    EXPECT_EQ(atlas->cellHeight, 64);
-}
-
-TEST(TextureConfigIntegrationTests, RoadsAndMilitaryRoadsExposeDeterministicMaterialVariants)
-{
-    std::string error;
-    const TextureConfig config = LoadTextureConfig("assets/data/textures.rtsdata", &error);
-    ASSERT_TRUE(error.empty()) << error;
-
-    const TextureAtlasDefinition* roadVariants = config.FindAtlas(145);
-    ASSERT_NE(roadVariants, nullptr);
-    EXPECT_EQ(roadVariants->path,
-              "assets/textures/roads/generated/roads_autotile_variants_3x4_64px.png");
-    EXPECT_EQ(roadVariants->cellWidth, 64);
-    EXPECT_EQ(roadVariants->cellHeight, 64);
-
-    const TextureAtlasDefinition* militaryRoadVariants = config.FindAtlas(146);
-    ASSERT_NE(militaryRoadVariants, nullptr);
-    EXPECT_EQ(militaryRoadVariants->path,
-              "assets/textures/military_roads/generated/military_road_variants_3x4_64px.png");
-    EXPECT_EQ(militaryRoadVariants->cellWidth, 64);
-    EXPECT_EQ(militaryRoadVariants->cellHeight, 64);
 }

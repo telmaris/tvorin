@@ -1,0 +1,9 @@
+# Deterministic province-war pilot rules. Values are fractions unless noted.
+battle_rules pilot
+    base_loss_fraction 0.20
+    casualty_cap_fraction 0.85
+    draw_band 0.10
+    crushing_ratio 3.0
+    loot_fraction 0.10
+    duration_ticks 100
+end

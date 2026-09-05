@@ -55,7 +55,7 @@ namespace
         float x = bounds.x;
         auto drawButton = [&](const std::string& label, const std::string& value)
         {
-            float width = std::min(112.0f, std::max(54.0f, static_cast<float>(MeasureText(label.c_str(), 14) + 22)));
+            float width = std::min(112.0f, std::max(54.0f, static_cast<float>(UiText::Measure(label, 14) + 22)));
             Rectangle rect{x, bounds.y, width, bounds.height};
             bool selected = selectedTag == value;
             bool hover = CheckCollisionPointRec(mouse, rect);
@@ -388,7 +388,7 @@ void ResearchTreePanelWidget::Update(double dt)
     if (panning && InputManager::IsMouseButtonReleased(MOUSE_BUTTON_RIGHT))
         panning = false;
 
-    // ── Layout: lanes → depth rows → per-row horizontal placement ────────────
+    // Layout: lanes -> depth rows -> per-row horizontal placement
     float nodeW = 150.0f * zoom;
     float nodeH = 118.0f * zoom;
     float colGap = 118.0f * zoom;
@@ -636,7 +636,9 @@ void ResearchTreePanelWidget::Update(double dt)
             }
             else if (Building* university = FindIdleUniversity(scene))
             {
-                scene->SubmitLocalCommand(GameCommand::StartTechnologyResearch(scene->game->GetLocalPlayerId(), node.id, university->positionId));
+                scene->SubmitLocalCommand(GameCommand::StartTechnologyResearch(
+                    scene->game->GetLocalPlayerId(), scene->game->GetLocalActiveProvinceId(),
+                    node.id, university->positionId));
             }
         }
     }
