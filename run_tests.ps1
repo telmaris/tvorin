@@ -33,14 +33,15 @@ function Assert-LastCommandSucceeded([string]$StepName) {
 
 function Stop-RunningTestExecutable([string]$ExecutablePath) {
     $fullExecutablePath = [System.IO.Path]::GetFullPath($ExecutablePath)
-    $runningTests = Get-CimInstance Win32_Process -Filter "Name = 'rts_tests.exe'" |
+    $executableName = [System.IO.Path]::GetFileName($fullExecutablePath)
+    $runningTests = Get-CimInstance Win32_Process -Filter "Name = '$executableName'" |
         Where-Object {
             $_.ExecutablePath -and
             [System.IO.Path]::GetFullPath($_.ExecutablePath) -ieq $fullExecutablePath
         }
 
     foreach ($runningTest in $runningTests) {
-        Write-Host "Stopping stale rts_tests.exe (PID $($runningTest.ProcessId)) before linking..." `
+        Write-Host "Stopping stale $executableName (PID $($runningTest.ProcessId)) before linking..." `
             -ForegroundColor DarkYellow
         Stop-Process -Id $runningTest.ProcessId -Force
         Wait-Process -Id $runningTest.ProcessId -ErrorAction SilentlyContinue
@@ -59,11 +60,11 @@ cmake -S $RepoRoot -B $BuildPath `
     "-Draygui_INCLUDE_DIR=$RayguiInclude"
 Assert-LastCommandSucceeded "CMake configure"
 
-$TestExe = Join-Path $BuildPath "tests\$Config\rts_tests.exe"
+$TestExe = Join-Path $BuildPath "tests\$Config\tvorin_tests.exe"
 Stop-RunningTestExecutable $TestExe
 
-Write-Host "Building rts_tests ($Config)..." -ForegroundColor Cyan
-cmake --build $BuildPath --parallel --config $Config --target rts_tests
+Write-Host "Building tvorin_tests ($Config)..." -ForegroundColor Cyan
+cmake --build $BuildPath --parallel --config $Config --target tvorin_tests
 Assert-LastCommandSucceeded "CMake build"
 
 if (-not (Test-Path $TestExe)) {
@@ -74,6 +75,7 @@ if ($List) {
     Write-Host "Available tests:" -ForegroundColor Cyan
     & $TestExe --gtest_list_tests
     Assert-LastCommandSucceeded "Test listing"
+    return
 }
 
 Write-Host "Running tests..." -ForegroundColor Cyan

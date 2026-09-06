@@ -23,6 +23,7 @@ namespace
 {
     constexpr float GlobalFogMaskScale = 0.5f;
     constexpr float GlobalMapNodeHitRadius = 52.0f;
+    constexpr std::size_t CampaignJournalMaxVisibleEffects = 3;
 
     bool IsActiveJourneyStatus(WorldJourneyStatus status)
     {
@@ -2040,12 +2041,11 @@ void CampaignStatusWidget::Update(double dt)
     const float viewportHeight = std::max(24.0f, panel.height - 78.0f);
     constexpr float HeaderHeight = 34.0f;
     constexpr float EffectHeight = 22.0f;
-    constexpr std::size_t MaxVisibleEffects = 3;
     const auto eventHeight = [this](const WorldEventNotificationView& event)
     {
         if (!expandedEventIds.contains(event.instanceId))
             return HeaderHeight;
-        const std::size_t visibleEffects = std::min(MaxVisibleEffects,
+        const std::size_t visibleEffects = std::min(CampaignJournalMaxVisibleEffects,
                                                     event.appliedEffects.size());
         const float effectsHeight = event.appliedEffects.empty()
             ? EffectHeight
@@ -2113,7 +2113,7 @@ void CampaignStatusWidget::Update(double dt)
         else
         {
             const std::size_t visibleEffects = std::min(
-                MaxVisibleEffects, event.appliedEffects.size());
+                CampaignJournalMaxVisibleEffects, event.appliedEffects.size());
             for (std::size_t effectIndex = 0; effectIndex < visibleEffects; ++effectIndex)
             {
                 const AppliedWorldEventEffect& effect = event.appliedEffects[effectIndex];

@@ -48,15 +48,21 @@ TEST(BattleLifecycleTests, ArmyTravelsBeforeSnapshotAndCrushingBanditVictoryTran
               battles.GetBattles().at(battleId).journeyId);
     EXPECT_EQ(battles.GetBattles().at(battleId).status, BattleLifecycleStatus::InTransit);
 
-    battles.Update(map, journeys, players, 99, 99);
-    EXPECT_EQ(battles.GetBattles().at(battleId).status, BattleLifecycleStatus::InTransit);
-    battles.Update(map, journeys, players, 100, 99);
+    const WorldJourneyId journeyId = battles.GetBattles().at(battleId).journeyId;
+    const std::uint64_t arrivalTick = journeys.GetJourneys().at(journeyId).legCompletionTick;
+    ASSERT_GT(arrivalTick, 0u);
+    battles.Update(map, journeys, players, arrivalTick - 1, 99);
+    EXPECT_EQ(battles.GetBattles().at(battleId).status,
+              BattleLifecycleStatus::InTransit);
+    battles.Update(map, journeys, players, arrivalTick, 99);
     EXPECT_EQ(battles.GetBattles().at(battleId).status, BattleLifecycleStatus::Active);
     EXPECT_TRUE(battles.ConsumeReports().empty());
 
-    battles.Update(map, journeys, players, 199, 99);
+    const std::uint64_t battleEndTick = battles.GetBattles().at(battleId).endTick;
+    ASSERT_GT(battleEndTick, arrivalTick);
+    battles.Update(map, journeys, players, battleEndTick - 1, 99);
     EXPECT_TRUE(battles.ConsumeReports().empty());
-    battles.Update(map, journeys, players, 200, 99);
+    battles.Update(map, journeys, players, battleEndTick, 99);
     const auto reports = battles.ConsumeReports();
     ASSERT_EQ(reports.size(), 1u);
     EXPECT_EQ(reports.front().outcome.winner, BattleWinner::Attacker);

@@ -403,11 +403,15 @@ TEST(BattleUnitTests, SaveAndLoadPreservesRosterAndInstanceCounter)
     ASSERT_EQ(human->roster.units.size(), 1u);
     int originalInstanceId = human->roster.units.begin()->first;
 
-    const auto path = (std::filesystem::temp_directory_path() / "rts_roster_test.save").string();
-    ASSERT_TRUE(world.SaveToFile(path));
+    const auto path = std::filesystem::temp_directory_path() / "rts_roster_test.save";
+    std::error_code cleanupError;
+    std::filesystem::remove(path, cleanupError);
+    ASSERT_FALSE(cleanupError) << "Failed to remove stale test save: "
+                               << cleanupError.message();
+    ASSERT_TRUE(world.SaveToFile(path.string()));
 
     GameWorld loaded;
-    ASSERT_TRUE(loaded.LoadFromFile(path, nullptr));
+    ASSERT_TRUE(loaded.LoadFromFile(path.string(), nullptr));
     Player* loadedHuman = loaded.GetPlayerHandler().players.at(0).get();
     ASSERT_EQ(loadedHuman->roster.units.size(), 1u);
     const BattleUnit& loadedUnit = loadedHuman->roster.units.begin()->second;
@@ -415,5 +419,7 @@ TEST(BattleUnitTests, SaveAndLoadPreservesRosterAndInstanceCounter)
     EXPECT_EQ(loadedUnit.unitDefId, "militia");
     EXPECT_EQ(loadedHuman->nextUnitInstanceId, human->nextUnitInstanceId);
 
-    std::filesystem::remove(path);
+    std::filesystem::remove(path, cleanupError);
+    EXPECT_FALSE(cleanupError) << "Failed to remove test save: "
+                               << cleanupError.message();
 }
