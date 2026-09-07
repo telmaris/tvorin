@@ -107,8 +107,11 @@ jobs:
             throw "Could not fetch release tags."
           }
           $tag = "${{ steps.version.outputs.tag }}"
-          git show-ref --verify --quiet "refs/tags/$tag"
-          if ($LASTEXITCODE -eq 0) {
+          $matchingTags = @(git tag --list $tag)
+          if ($LASTEXITCODE -ne 0) {
+            throw "Could not check whether $tag already exists."
+          }
+          if ($matchingTags.Count -gt 0) {
             $existingCommit = git rev-list -n 1 $tag
             if ($LASTEXITCODE -ne 0) {
               throw "Could not resolve existing tag $tag."
@@ -116,8 +119,6 @@ jobs:
             if ($existingCommit -ne "${{ github.sha }}") {
               throw "$tag already points to $existingCommit. Bump VERSION before publishing another commit."
             }
-          } elseif ($LASTEXITCODE -ne 1) {
-            throw "Could not check whether $tag already exists."
           }
 
       - name: Download Windows build
