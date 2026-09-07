@@ -3,7 +3,6 @@ name: Windows CI
 on:
   push:
     branches: ["**"]
-    tags: ["v*"]
   pull_request:
     branches: [main, master]
   workflow_dispatch:
@@ -55,25 +54,31 @@ jobs:
       - name: Package Windows build
         shell: pwsh
         run: |
+          $version = (Get-Content VERSION -Raw).Trim()
+          if ($version -notmatch '^\d+\.\d+\.\d+$') {
+            throw "VERSION must contain MAJOR.MINOR.PATCH, got '$version'."
+          }
           $package = "dist\tvorin-windows-x64"
           New-Item -ItemType Directory -Force $package | Out-Null
           Copy-Item "build\Release\tvorin.exe" $package
           Copy-Item assets "$package\assets" -Recurse
           New-Item -ItemType Directory -Force "$package\saves" | Out-Null
           Compress-Archive -Path "$package\*" `
-            -DestinationPath "dist\tvorin-windows-x64.zip" -Force
+            -DestinationPath "dist\tvorin-$version-windows-x64.zip" -Force
 
       - name: Upload Windows build
         uses: actions/upload-artifact@v4
         with:
           name: tvorin-windows-x64
-          path: dist/tvorin-windows-x64.zip
+          path: dist/tvorin-*-windows-x64.zip
           if-no-files-found: error
           retention-days: 14
 
   release:
-    name: Publish tagged release
-    if: startsWith(github.ref, 'refs/tags/v')
+    name: Publish VERSION release
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     needs: build
     runs-on: windows-latest
     permissions:
@@ -83,12 +88,36 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Verify tag matches VERSION
+      - name: Read release version
+        id: version
         shell: pwsh
         run: |
-          $expected = "v$((Get-Content VERSION -Raw).Trim())"
-          if ("${{ github.ref_name }}" -ne $expected) {
-            throw "Tag ${{ github.ref_name }} does not match VERSION ($expected)."
+          $version = (Get-Content VERSION -Raw).Trim()
+          if ($version -notmatch '^\d+\.\d+\.\d+$') {
+            throw "VERSION must contain MAJOR.MINOR.PATCH, got '$version'."
+          }
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "tag=v$version" >> $env:GITHUB_OUTPUT
+
+      - name: Verify release tag is not reused
+        shell: pwsh
+        run: |
+          git fetch --force --tags
+          if ($LASTEXITCODE -ne 0) {
+            throw "Could not fetch release tags."
+          }
+          $tag = "${{ steps.version.outputs.tag }}"
+          git show-ref --verify --quiet "refs/tags/$tag"
+          if ($LASTEXITCODE -eq 0) {
+            $existingCommit = git rev-list -n 1 $tag
+            if ($LASTEXITCODE -ne 0) {
+              throw "Could not resolve existing tag $tag."
+            }
+            if ($existingCommit -ne "${{ github.sha }}") {
+              throw "$tag already points to $existingCommit. Bump VERSION before publishing another commit."
+            }
+          } elseif ($LASTEXITCODE -ne 1) {
+            throw "Could not check whether $tag already exists."
           }
 
       - name: Download Windows build
@@ -98,7 +127,12 @@ jobs:
           path: dist
 
       - name: Create GitHub release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
-          files: dist/tvorin-windows-x64.zip
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: Tvorin ${{ steps.version.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          files: dist/tvorin-*-windows-x64.zip
+          fail_on_unmatched_files: true
+          overwrite_files: true
           generate_release_notes: true

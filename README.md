@@ -98,3 +98,8 @@ Generate HTML and Cobertura coverage reports with [OpenCppCoverage](https://gith
 
 The in-game Controls screen contains the complete list, including debug bindings available on debug maps.
 
+## Releases
+
+The version in `VERSION` is embedded in the executable. After a successful build and test run on `main`, CI publishes the matching `vMAJOR.MINOR.PATCH` release and tags the exact commit that produced it.
+
+Prepare the next version before committing with `./scripts/release_version.ps1`. CI rejects attempts to reuse an existing version tag for a different commit.
