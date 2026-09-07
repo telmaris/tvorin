@@ -11,37 +11,12 @@ void KeyBindingMap::ResetToDefaults()
     keyToAction.clear();
     actionToKey.clear();
 
-    // Gameplay bindings are kept in sync with InputProcessor::Init and the
-    // direct panel/debug checks. Unused legacy actions remain explicitly
-    // unbound instead of advertising keys that do something else.
     SetDefault(GameAction::EnterBuildMode, KEY_Q);
     SetDefault(GameAction::EnterDestroyMode, KEY_D);
     SetDefault(GameAction::EnterRoadMode, KEY_R);
-    SetDefault(GameAction::TogglePauseGame, 0);
-
-    // Camera panning and zooming are mouse gestures in the current game.
-    SetDefault(GameAction::CameraUp, 0);
-    SetDefault(GameAction::CameraDown, 0);
-    SetDefault(GameAction::CameraLeft, 0);
-    SetDefault(GameAction::CameraRight, 0);
-    SetDefault(GameAction::CameraZoomIn, 0);
-    SetDefault(GameAction::CameraZoomOut, 0);
-
-    // UI panels
     SetDefault(GameAction::OpenResearchPanel, KEY_T);
     SetDefault(GameAction::OpenStatsPanel, KEY_S);
     SetDefault(GameAction::OpenFocusTree, KEY_F);
-
-    // Save/load hotkeys are not active gameplay actions. F5/F9 are reserved
-    // for renderer diagnostics and Ctrl+F9 final-frame capture.
-    SetDefault(GameAction::SaveGame, 0);
-    SetDefault(GameAction::LoadGame, 0);
-
-    // Map views are currently represented by the logistics overlay and the
-    // global-map panel, not by the removed legacy number-key overlays.
-    SetDefault(GameAction::ToggleTerritoryView, 0);
-    SetDefault(GameAction::ToggleRoadNetworkView, 0);
-    SetDefault(GameAction::ToggleResourceView, 0);
     SetDefault(GameAction::OpenGlobalMap, KEY_M);
 
     SetDefault(GameAction::OpenStockpilePanel, KEY_E);
@@ -69,17 +44,14 @@ GameAction KeyBindingMap::GetAction(int raylib_key) const
 
 void KeyBindingMap::SetKeyBinding(GameAction action, int raylib_key)
 {
-    // Remove old binding for this action if it exists
     auto oldKey = GetKeyForAction(action);
     if (oldKey != 0)
         keyToAction.erase(oldKey);
 
-    // Remove old binding for this key if it exists
     auto oldAction = GetAction(raylib_key);
     if (oldAction != GameAction::Count)
         actionToKey.erase(oldAction);
 
-    // Add new binding
     if (raylib_key != 0)
     {
         keyToAction[raylib_key] = action;
@@ -87,7 +59,6 @@ void KeyBindingMap::SetKeyBinding(GameAction action, int raylib_key)
     }
     else
     {
-        // Unbind
         actionToKey.erase(action);
     }
 }

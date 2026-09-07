@@ -4,6 +4,7 @@
 #include "economy/Building.h"
 
 #include <string>
+#include <vector>
 
 // Stable, short player-facing status for a building. The general status is
 // intentionally separate from the optional production line so enemy hover
@@ -13,6 +14,16 @@ struct BuildingPresentationStatus
     std::string general;
     std::string production;
 };
+
+struct VillagePresentationView
+{
+    double inhabitants{0.0};
+    int populationCap{0};
+    double manpowerGainPerMinute{0.0};
+    std::vector<PopulationComponent::SupplyConsumptionView> supplies;
+};
+
+VillagePresentationView BuildVillagePresentationView(const Building& building);
 
 enum class BuildingPresentationAudience
 {

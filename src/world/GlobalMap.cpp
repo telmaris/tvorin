@@ -2,6 +2,7 @@
 
 #include "core/PersistenceLimits.h"
 #include "world/ProvinceDefinition.h"
+#include "world/RouteIncidentRisk.h"
 
 #include <algorithm>
 #include <array>
@@ -211,32 +212,161 @@ namespace
         parameters.mountainAmount = SelectValue(definition.mountainAmount, stream);
         parameters.ruggedness = SelectValue(definition.ruggedness, stream);
         parameters.wealthTier = ScaleInt(SelectInt({0, 3}, stream), wealthScale);
-        for (const auto& trait : definition.traits)
-            parameters.traitIds.push_back(trait.id);
+        if (!definition.traitCount.has_value())
+        {
+            for (const auto& trait : definition.traits)
+                parameters.traitIds.push_back(trait.id);
+        }
+        else
+        {
+            DeterministicRandomStream traitStream(
+                DomainSeed(globalSeed, 0x7A17'0001u, provinceId));
+            const int requestedCount = std::clamp(
+                SelectInt(*definition.traitCount, traitStream), 0,
+                static_cast<int>(definition.traits.size()));
+            std::vector<const ProvinceTraitDefinition*> candidates;
+            for (const auto& trait : definition.traits)
+                candidates.push_back(&trait);
+            for (int selected = 0; selected < requestedCount && !candidates.empty(); selected++)
+            {
+                int totalWeight = 0;
+                for (const auto* trait : candidates)
+                    totalWeight += std::max(1, trait->weight);
+                std::uint64_t pick = traitStream.UniformBelow(
+                    static_cast<std::uint64_t>(std::max(1, totalWeight)));
+                size_t selectedIndex = 0;
+                for (; selectedIndex < candidates.size(); selectedIndex++)
+                {
+                    const int weight = std::max(1, candidates[selectedIndex]->weight);
+                    if (pick < static_cast<std::uint64_t>(weight))
+                        break;
+                    pick -= static_cast<std::uint64_t>(weight);
+                }
+                selectedIndex = std::min(selectedIndex, candidates.size() - 1);
+                parameters.traitIds.push_back(candidates[selectedIndex]->id);
+                candidates.erase(candidates.begin() + static_cast<std::ptrdiff_t>(selectedIndex));
+            }
+            std::sort(parameters.traitIds.begin(), parameters.traitIds.end());
+        }
         return parameters;
     }
 
     void AssignNaturalResourceProfile(BuildableProvinceParameters& parameters,
+                                      const ProvinceDefinition& definition,
                                       ProvinceId provinceId, std::uint32_t globalSeed,
                                       bool homeProvince)
     {
-        parameters.naturalResourceTypes = {
-            ResourceType::WOOD, ResourceType::STONE,
-            ResourceType::COAL, ResourceType::IRON_ORE};
-        if (!homeProvince)
+        parameters.naturalResourceTypes.clear();
+        parameters.resourceDeposits.clear();
+        if (!definition.resourceDeposits.empty())
         {
-            constexpr std::array<ResourceType, 3> rareTypes{
-                ResourceType::COPPER_ORE, ResourceType::CLAY, ResourceType::SAND};
-            for (const ResourceType resource : rareTypes)
+            DeterministicRandomStream stream(DomainSeed(globalSeed, 0xD3A0'5171u, provinceId));
+            std::vector<const ProvinceResourceDepositDefinition*> candidates;
+            for (const auto& deposit : definition.resourceDeposits)
+                candidates.push_back(&deposit);
+            const int selectedCount = homeProvince
+                ? static_cast<int>(candidates.size())
+                : std::min(static_cast<int>(candidates.size()),
+                           1 + static_cast<int>(stream.UniformBelow(3)));
+            for (int index = 0; index < selectedCount && !candidates.empty(); index++)
             {
-                const std::uint64_t domain =
-                    (static_cast<std::uint64_t>(provinceId) << 8) ^
-                    static_cast<std::uint64_t>(static_cast<int>(resource));
-                DeterministicRandomStream stream(DomainSeed(globalSeed, 0xD3A0517u, domain));
-                if (stream.UniformBelow(10000) < 500)
-                    parameters.naturalResourceTypes.push_back(resource);
+                int totalWeight = 0;
+                for (const auto* deposit : candidates)
+                    totalWeight += std::max(1, deposit->weight);
+                std::uint64_t pick = stream.UniformBelow(
+                    static_cast<std::uint64_t>(std::max(1, totalWeight)));
+                size_t selected = 0;
+                for (; selected < candidates.size(); selected++)
+                {
+                    const int weight = std::max(1, candidates[selected]->weight);
+                    if (pick < static_cast<std::uint64_t>(weight))
+                        break;
+                    pick -= static_cast<std::uint64_t>(weight);
+                }
+                selected = std::min(selected, candidates.size() - 1);
+                const auto* deposit = candidates[selected];
+                parameters.naturalResourceTypes.push_back(deposit->resource);
+                parameters.resourceDeposits.push_back({
+                    deposit->resource, SelectValue(deposit->richness, stream)});
+                candidates.erase(candidates.begin() + static_cast<std::ptrdiff_t>(selected));
             }
         }
+        else
+        {
+            auto addDeposit = [&](ResourceType resource, double richness)
+            {
+                parameters.naturalResourceTypes.push_back(resource);
+                parameters.resourceDeposits.push_back({resource, richness});
+            };
+
+            if (homeProvince)
+            {
+                addDeposit(ResourceType::WOOD, 1.0);
+                addDeposit(ResourceType::STONE, 1.0);
+                addDeposit(ResourceType::COAL, 1.0);
+                addDeposit(ResourceType::IRON_ORE, 1.0);
+            }
+            else
+            {
+                // Profiles are selected independently of topology and traits.
+                // Their broad bands intentionally create recognizable
+                // logistics trade-offs instead of three unrelated rare rolls.
+                DeterministicRandomStream profileStream(
+                    DomainSeed(globalSeed, 0xD3A0'5201u, provinceId));
+                const std::uint64_t profile = profileStream.UniformBelow(10000);
+                if (profile < 1800)
+                {
+                    addDeposit(ResourceType::STONE, 1.0);
+                    addDeposit(ResourceType::COAL, 1.25);
+                    addDeposit(ResourceType::IRON_ORE, 1.55);
+                }
+                else if (profile < 3800)
+                {
+                    addDeposit(ResourceType::WOOD, 1.0);
+                    addDeposit(ResourceType::STONE, 1.0);
+                    addDeposit(ResourceType::COAL, 1.0);
+                    addDeposit(ResourceType::IRON_ORE, 1.0);
+                }
+                else if (profile < 5500)
+                {
+                    addDeposit(ResourceType::WOOD, 1.0);
+                    addDeposit(ResourceType::STONE, 1.0);
+                    addDeposit(ResourceType::COAL, 1.30);
+                    addDeposit(ResourceType::IRON_ORE, 1.75);
+                }
+                else if (profile < 7200)
+                {
+                    addDeposit(ResourceType::WOOD, 1.0);
+                    addDeposit(ResourceType::STONE, 1.0);
+                    addDeposit(ResourceType::COAL, 1.0);
+                    addDeposit(ResourceType::IRON_ORE, 1.1);
+                    addDeposit(ResourceType::COPPER_ORE, 1.65);
+                }
+                else if (profile < 8800)
+                {
+                    addDeposit(ResourceType::WOOD, 1.0);
+                    addDeposit(ResourceType::STONE, 1.0);
+                    addDeposit(ResourceType::COAL, 1.0);
+                    addDeposit(ResourceType::IRON_ORE, 1.0);
+                    addDeposit(ResourceType::CLAY, 1.70);
+                }
+                else
+                {
+                    addDeposit(ResourceType::WOOD, 1.80);
+                    addDeposit(ResourceType::STONE, 0.85);
+                    addDeposit(ResourceType::COAL, 0.85);
+                    addDeposit(ResourceType::IRON_ORE, 0.85);
+                    if (profileStream.UniformBelow(100) < 35)
+                        addDeposit(ResourceType::SAND, 1.35);
+                }
+            }
+        }
+        std::sort(parameters.resourceDeposits.begin(), parameters.resourceDeposits.end(),
+                  [](const BuildableProvinceParameters::ResourceDeposit& left,
+                     const BuildableProvinceParameters::ResourceDeposit& right)
+                  {
+                      return static_cast<int>(left.resource) < static_cast<int>(right.resource);
+                  });
         std::sort(parameters.naturalResourceTypes.begin(),
                   parameters.naturalResourceTypes.end(),
                   [](ResourceType left, ResourceType right)
@@ -259,6 +389,42 @@ namespace
             case ProvinceKind::TreasureSite: return parameters.eventSiteWeight;
         }
         return 0;
+    }
+
+    const ProvinceDefinition* SelectDefinitionForArchetype(
+        ProvinceDefinitionArchetype archetype, ProvinceId provinceId,
+        std::uint32_t globalSeed)
+    {
+        std::vector<const ProvinceDefinition*> candidates;
+        for (const auto& [id, definition] : GetProvinceDefinitions())
+        {
+            (void)id;
+            if (definition.archetype == archetype && definition.generationWeight > 0)
+                candidates.push_back(&definition);
+        }
+        if (candidates.empty())
+            return nullptr;
+        std::sort(candidates.begin(), candidates.end(),
+                  [](const ProvinceDefinition* left, const ProvinceDefinition* right)
+                  {
+                      return left->id < right->id;
+                  });
+        int totalWeight = 0;
+        for (const auto* candidate : candidates)
+            totalWeight += candidate->generationWeight;
+        if (totalWeight <= 0)
+            return candidates.front();
+        DeterministicRandomStream stream(
+            DomainSeed(globalSeed, 0xD3F1'0001u, provinceId));
+        int pick = static_cast<int>(stream.UniformBelow(
+            static_cast<std::uint64_t>(totalWeight)));
+        for (const auto* candidate : candidates)
+        {
+            if (pick < candidate->generationWeight)
+                return candidate;
+            pick -= candidate->generationWeight;
+        }
+        return candidates.back();
     }
 }
 
@@ -700,6 +866,14 @@ GlobalMapView GlobalMap::BuildViewFor(PlayerId playerId) const
                 edge.routeTimeBasisPoints = static_cast<int>(
                     std::llround(current->traversalTimeMultiplier * 10000.0));
                 edge.incidentReductionBasisPoints = current->incidentChanceReductionBasisPoints;
+                edge.incidentRiskBasisPoints = QuoteRouteIncidentRisk({
+                    250,
+                    edge.lengthUnits,
+                    std::clamp(static_cast<int>(std::llround(
+                        10000.0 / std::max(0.25, current->traversalTimeMultiplier))),
+                        2500, 20000),
+                    edge.incidentReductionBasisPoints,
+                    10000}).negativeChanceBasisPoints;
             }
             if (next != nullptr)
             {
@@ -981,11 +1155,16 @@ GlobalMapGenerationResult GlobalMapGenerator::Generate(
         if (startPlayerIndex >= 0)
         {
             const PlayerId playerId = humanPlayers[static_cast<std::size_t>(startPlayerIndex)];
-            auto parametersForProvince = SelectBuildableParameters(
-                *buildableDefinition, id, parameters.seed, parameters.buildableWealthScale);
+            const auto* selectedDefinition = SelectDefinitionForArchetype(
+                ProvinceDefinitionArchetype::Buildable, id, parameters.seed);
+            auto parametersForProvince = selectedDefinition == nullptr ?
+                std::optional<BuildableProvinceParameters>{} : SelectBuildableParameters(
+                    *selectedDefinition, id, parameters.seed, parameters.buildableWealthScale);
             if (!parametersForProvince.has_value())
                 return invalid("unable to select starting province parameters");
-            AssignNaturalResourceProfile(*parametersForProvince, id, parameters.seed, true);
+            parametersForProvince->traitIds.clear();
+            AssignNaturalResourceProfile(*parametersForProvince, *selectedDefinition,
+                                         id, parameters.seed, true);
             auto province = std::make_unique<BuildableProvince>(id, position, playerId);
             province->SetParameters(std::move(*parametersForProvince));
             result.homeProvinceByPlayer[playerId] = id;
@@ -994,11 +1173,15 @@ GlobalMapGenerationResult GlobalMapGenerator::Generate(
         }
         else if (kinds[static_cast<std::size_t>(index)] == ProvinceKind::Buildable)
         {
-            auto parametersForProvince = SelectBuildableParameters(
-                *buildableDefinition, id, parameters.seed, parameters.buildableWealthScale);
+            const auto* selectedDefinition = SelectDefinitionForArchetype(
+                ProvinceDefinitionArchetype::Buildable, id, parameters.seed);
+            auto parametersForProvince = selectedDefinition == nullptr ?
+                std::optional<BuildableProvinceParameters>{} : SelectBuildableParameters(
+                    *selectedDefinition, id, parameters.seed, parameters.buildableWealthScale);
             if (!parametersForProvince.has_value())
                 return invalid("unable to select buildable province parameters");
-            AssignNaturalResourceProfile(*parametersForProvince, id, parameters.seed, false);
+            AssignNaturalResourceProfile(*parametersForProvince, *selectedDefinition,
+                                         id, parameters.seed, false);
             auto province = std::make_unique<BuildableProvince>(id, position);
             province->SetParameters(std::move(*parametersForProvince));
             if (!generatedMap.AddProvince(std::move(province)))
@@ -1007,27 +1190,40 @@ GlobalMapGenerationResult GlobalMapGenerator::Generate(
         else if (kinds[static_cast<std::size_t>(index)] == ProvinceKind::NeutralSettlement)
         {
             DeterministicRandomStream stream(DomainSeed(parameters.seed, 0xC17A'0003u, id));
+            const auto* selectedCityDefinition = SelectDefinitionForArchetype(
+                ProvinceDefinitionArchetype::NeutralCity, id, parameters.seed);
+            if (selectedCityDefinition == nullptr)
+                return invalid("unable to select neutral city definition");
             auto province = std::make_unique<NeutralCityProvince>(id, position,
-                                                                   cityDefinition->id);
-            province->SetWealthTier(ScaleInt(SelectInt(cityDefinition->cityWealth, stream),
+                                                                   selectedCityDefinition->id);
+            province->SetWealthTier(ScaleInt(SelectInt(selectedCityDefinition->cityWealth, stream),
                                               parameters.cityWealthScale));
-            InitializeCityState(*province, *cityDefinition, stream, parameters.cityWealthScale);
+            InitializeCityState(*province, *selectedCityDefinition, stream, parameters.cityWealthScale);
             if (!generatedMap.AddProvince(std::move(province)))
                 return invalid("unable to add neutral city province");
         }
         else if (kinds[static_cast<std::size_t>(index)] == ProvinceKind::BanditCamp)
         {
             DeterministicRandomStream stream(DomainSeed(parameters.seed, 0xB4AD'0004u, id));
-            auto province = std::make_unique<BanditProvince>(id, position, banditDefinition->id);
-            province->SetStrength(ScaleInt(SelectInt(banditDefinition->banditStrength, stream),
+            const auto* selectedBanditDefinition = SelectDefinitionForArchetype(
+                ProvinceDefinitionArchetype::BanditCamp, id, parameters.seed);
+            if (selectedBanditDefinition == nullptr)
+                return invalid("unable to select bandit definition");
+            auto province = std::make_unique<BanditProvince>(id, position, selectedBanditDefinition->id);
+            province->SetStrength(ScaleInt(SelectInt(selectedBanditDefinition->banditStrength, stream),
                                            parameters.banditStrengthScale));
-            province->SetLootTableId(banditDefinition->banditLootTableId);
-            province->SetRaidPressure(banditDefinition->banditRaidWeight);
-            if (auto futureParameters = SelectBuildableParameters(
-                    *buildableDefinition, id, parameters.seed, parameters.buildableWealthScale);
-                futureParameters.has_value())
+            province->SetLootTableId(selectedBanditDefinition->banditLootTableId);
+            province->SetRaidPressure(selectedBanditDefinition->banditRaidWeight);
+            const auto* selectedFutureDefinition = SelectDefinitionForArchetype(
+                ProvinceDefinitionArchetype::Buildable, id, parameters.seed);
+            auto futureParameters = selectedFutureDefinition == nullptr
+                ? std::optional<BuildableProvinceParameters>{}
+                : SelectBuildableParameters(
+                    *selectedFutureDefinition, id, parameters.seed, parameters.buildableWealthScale);
+            if (futureParameters.has_value())
             {
-                AssignNaturalResourceProfile(*futureParameters, id, parameters.seed, false);
+                AssignNaturalResourceProfile(*futureParameters, *selectedFutureDefinition,
+                                             id, parameters.seed, false);
                 province->SetFutureBuildableParameters(std::move(*futureParameters));
             }
             if (!generatedMap.AddProvince(std::move(province)))
@@ -1035,8 +1231,12 @@ GlobalMapGenerationResult GlobalMapGenerator::Generate(
         }
         else if (kinds[static_cast<std::size_t>(index)] == ProvinceKind::TreasureSite)
         {
+            const auto* selectedEventDefinition = SelectDefinitionForArchetype(
+                ProvinceDefinitionArchetype::EventSite, id, parameters.seed);
+            if (selectedEventDefinition == nullptr)
+                return invalid("unable to select event-site definition");
             auto province = std::make_unique<EventProvince>(id, position,
-                                                             eventDefinition->eventPoolId);
+                                                             selectedEventDefinition->eventPoolId);
             if (!generatedMap.AddProvince(std::move(province)))
                 return invalid("unable to add event province");
         }

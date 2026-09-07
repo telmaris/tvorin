@@ -201,16 +201,7 @@ float ProductionComponent::GetProgress(const Building& self) const
 {
     if (!started || cycleTime.GetBase() <= 0.0)
         return 0.0f;
-    // Bug fix (2026-07-12): this used to divide by cycleTime.GetBase() (the
-    // raw, unmodified cycle time), while Produce() decides the cycle is done
-    // when elapsed >= GetModifiedCycleTime(self) (tech/focus adjusted). Any
-    // active modifier on ProductionCycleTime made these two thresholds
-    // different: a speed-up modifier completed the cycle
-    // before the bar ever visually reached 100% (it jumped from some lower
-    // percentage straight to a reset 0%), while a slow-down modifier made the
-    // bar hit the 100% clamp and then visibly sit there, stalled, until the
-    // real (larger) modified cycle time finally elapsed — exactly the
-    // reported "production freezes for a moment right at 100%".
+    // Progress and completion must use the same modified cycle duration.
     double effective = GetModifiedCycleTime(self);
     if (effective <= 0.0)
         return 1.0f;

@@ -39,24 +39,14 @@ public:
 };
 class GuiController;
 
-// Implementations are split across thematic translation units:
-//   src/GuiController.cpp   - controller core, input routing, BasicMapViewSystem
-//   src/GuiMapWidgets.cpp   - map overlay widgets (selection/warning highlights)
-//   src/GuiHudPanels.cpp    - strategic HUD, statistics panel + StatsGuiSystem
-//   src/GuiResearchTree.cpp - research tree panel + Focus/Tech systems
-//   src/GuiBuildModes.cpp   - build/road/destroy interaction modes
-//   src/GuiCommon.cpp       - helpers shared by the TUs above (src/GuiInternal.h)
+// Implementations are split by feature across src/ui/Gui*.cpp.
 
 // Mutable camera drag state shared by map interaction systems.
 struct CameraMovement
 {
     bool isMoving = false;
-    // A3 (docs/work_plan_2026-07-13.md): in the default map view RMB does
-    // double duty as both the pan button and a click action (assign
-    // logistics receiver), so BeginCameraDrag/EndCameraDragWasClick (see
-    // GuiInternal.h) track cumulative screen displacement since the press to
-    // tell a real click (no drag) from a pan gesture. Unused by systems that
-    // only ever pan on RMB (no competing click action there).
+    // RMB both pans and assigns logistics targets; displacement distinguishes
+    // a click from a drag.
     Vec2i rmbPressScreenPos{-1, -1};
     bool rmbDragged = false;
 };
@@ -115,37 +105,16 @@ public:
     // Rebuilds widgets owned by this interaction mode after layout changes.
     virtual void UpdateUiWidgets(Vec2i) = 0;
 
-    // Called by GuiController::ChangeSystem when this system becomes/stops
-    // being the active one. actionMap dispatch (MakeAction) is naturally
-    // scoped already — it only ever looks in the *active* system's map — but
-    // InputEventSubscriber-based bindings (ETAP 4) register globally for the
-    // subscriber's whole lifetime, so a system that owns one (e.g. a panel
-    // with an ESC-close subscriber) must use these hooks to stop reacting
-    // while some other system is active. See BasicMapViewSystem::OnDeactivate.
+    // Globally registered input subscribers must be enabled and disabled here.
     virtual void OnActivate() {}
     virtual void OnDeactivate() {}
 
-    // Domain gate for ChangeSystem: a system that has preconditions (e.g.
-    // TechGuiSystem needs a completed University) overrides this. Keeps the
-    // controller itself free of any game-domain logic — it only manages
-    // transitions between systems (user-directed rework, 2026-07-14).
+    // Feature-specific transition preconditions belong to the target system.
     virtual bool CanActivate() { return true; }
 
     GuiController* owner{nullptr};
-    // Owning scene — hoisted to the base (2026-07-14): every interaction
-    // system needs SOME scene (at minimum for render/audioSystem, both
-    // declared on the Scene base itself), and the shared action wiring
-    // (WireCommonSystemActions) reads it uniformly regardless of which
-    // concrete scene type owns the controller. A4 (docs/work_plan_2026-07-13.md):
-    // typed as the generic Scene base rather than GameScene — the controller
-    // itself is scene-agnostic. Concrete game interaction systems (which need
-    // GameScene-specific members: game, SubmitLocalCommand, ...) redeclare
-    // their OWN same-named `GameScene* scene` member, which shadows this one
-    // within their scope — every existing `scene->game` etc. call site in
-    // those systems' .cpp files keeps compiling unchanged, since name lookup
-    // finds the nearer (derived) declaration first. See BasicMapViewSystem
-    // etc. below for the pattern; a menu-scene system would instead use this
-    // base member directly (or its own typed shadow of its own scene type).
+    // Generic owner used by shared rendering and action wiring. Gameplay
+    // systems also keep a typed GameScene pointer.
     Scene* scene{nullptr};
     std::map<std::string, std::function<void()>> actionMap;
 };
@@ -154,8 +123,7 @@ public:
 class GuiController
 {
 public:
-    // Creates interaction systems and attaches the controller to a scene
-    // (any Scene, not just GameScene — A4, docs/work_plan_2026-07-13.md).
+    // Creates interaction systems and attaches the controller to a scene.
     void Init(Scene *);
     // Updates the active system.
     void Update(double);
@@ -372,6 +340,7 @@ private:
                                   float scale) const;
     Rectangle ProvinceActionRect(Rectangle tooltip, std::size_t actionIndex) const;
     Rectangle ScoutCountButtonRect(Rectangle tooltip, bool increment) const;
+    Rectangle ScoutFoodButtonRect(Rectangle tooltip, bool increment) const;
     Rectangle ScoutConfirmButtonRect(Rectangle tooltip) const;
     Rectangle ScoutCancelButtonRect(Rectangle tooltip) const;
     Rectangle RouteTooltipRect(const GlobalMapView& view, const ProvinceEdgeView& selected,
@@ -419,8 +388,11 @@ private:
     ProvinceId operationOriginProvinceId{InvalidProvinceId};
     ProvinceId scoutSetupProvinceId{InvalidProvinceId};
     ProvinceId scoutPendingProvinceId{InvalidProvinceId};
+    std::uint64_t scoutPendingCommandId{0};
+    std::string scoutPendingFailureReason;
     int selectedScoutCount{1};
-    double scoutPendingUntil{0.0};
+    int scoutFoodDraft{0};
+    mutable int scoutMinimumFoodDraft{1};
     std::vector<TaskGroupId> selectedOperationTaskGroups;
     std::map<ResourceType, int> resourceTransferDraft;
     int destinationBarracksBuildingId{0};
@@ -537,10 +509,7 @@ private:
     std::vector<ResourceType> filterResources;
 };
 
-// Full-screen stockpile overview: everything the player's warehouse network
-// holds, aggregated. A building's own panel deliberately shows only that
-// building's contents (user request, 2026-07-25) — this is the global view,
-// and hovering a resource breaks the total down per warehouse.
+// Aggregated warehouse-network stockpile with per-warehouse hover details.
 class StockpilePanelWidget : public UiWidget
 {
 public:
@@ -683,8 +652,6 @@ public:
     // the moment another GuiSystem becomes active — see GuiSystem::OnDeactivate.
     void OnDeactivate() override;
 
-    // Shadows GuiSystem::scene with the concrete type this system actually
-    // needs (game, SubmitLocalCommand, ...) — A4, docs/work_plan_2026-07-13.md.
     GameScene* scene{nullptr};
     CameraMovement cameraMovement;
 
@@ -711,9 +678,6 @@ public:
     explicit BuildGuiSystem(GuiController* con);
     BuildGuiSystem() = delete;
 
-    // Shadows GuiSystem::scene (A4, docs/work_plan_2026-07-13.md) — public so
-    // the free WireCommonSystemActions template (GuiInternal.h) can read it;
-    // also inherited as-is by RoadBuildSystem below.
     GameScene* scene{nullptr};
 
     // Rebuilds build-mode widget list.
@@ -809,8 +773,6 @@ public:
     explicit DestroyGuiSystem(GuiController* con);
     DestroyGuiSystem() = delete;
 
-    // Shadows GuiSystem::scene (A4, docs/work_plan_2026-07-13.md) — public so
-    // the free WireCommonSystemActions template (GuiInternal.h) can read it.
     GameScene* scene{nullptr};
 
     void UpdateUiWidgets(Vec2i) override;
@@ -873,8 +835,6 @@ public:
     void Scroll();
 
     GameScene* gameScene{nullptr};
-    // Shadows GuiSystem::scene so shared debug actions receive the concrete
-    // gameplay scene type.
     GameScene* scene{nullptr};
 
 private:
@@ -899,8 +859,6 @@ public:
     explicit StatsGuiSystem(GuiController* con);
     StatsGuiSystem() = delete;
 
-    // Shadows GuiSystem::scene (A4, docs/work_plan_2026-07-13.md) — public so
-    // the free WireCommonSystemActions template (GuiInternal.h) can read it.
     GameScene* scene{nullptr};
 
     void UpdateUiWidgets(Vec2i) override;
@@ -933,8 +891,6 @@ public:
     explicit FocusGuiSystem(GuiController* con);
     FocusGuiSystem() = delete;
 
-    // Shadows GuiSystem::scene (A4, docs/work_plan_2026-07-13.md) — public so
-    // the free WireCommonSystemActions template (GuiInternal.h) can read it.
     GameScene* scene{nullptr};
 
     void UpdateUiWidgets(Vec2i) override;
@@ -967,8 +923,6 @@ public:
     explicit TechGuiSystem(GuiController* con);
     TechGuiSystem() = delete;
 
-    // Shadows GuiSystem::scene (A4, docs/work_plan_2026-07-13.md) — public so
-    // the free WireCommonSystemActions template (GuiInternal.h) can read it.
     GameScene* scene{nullptr};
 
     void UpdateUiWidgets(Vec2i) override;
@@ -1007,8 +961,6 @@ public:
     explicit RosterGuiSystem(GuiController* con);
     RosterGuiSystem() = delete;
 
-    // Shadows GuiSystem::scene (A4, docs/work_plan_2026-07-13.md) — public so
-    // the free WireCommonSystemActions template (GuiInternal.h) can read it.
     GameScene* scene{nullptr};
 
     void UpdateUiWidgets(Vec2i) override;
@@ -1044,8 +996,6 @@ public:
     explicit StockpileGuiSystem(GuiController* con);
     StockpileGuiSystem() = delete;
 
-    // Shadows GuiSystem::scene (A4, docs/work_plan_2026-07-13.md) — public so
-    // the free WireCommonSystemActions template (GuiInternal.h) can read it.
     GameScene* scene{nullptr};
 
     void UpdateUiWidgets(Vec2i) override;

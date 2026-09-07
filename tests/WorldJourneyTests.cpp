@@ -137,3 +137,26 @@ TEST(WorldJourneyTests, FinalLegIncidentConsumesOneScoutAndOnlyFailsAnEmptyParty
     EXPECT_EQ(system.ApplyScoutUnitLoss(id, 1), std::vector<int>({9}));
     EXPECT_EQ(system.GetJourneys().at(id).status, WorldJourneyStatus::Failed);
 }
+
+TEST(WorldJourneyTests, JourneyUnitLossUsesDeterministicRollForArmyPayloads)
+{
+    GlobalMap map = MakeJourneyMap();
+    WorldJourneySystem system;
+    WorldJourney journey;
+    journey.ownerId = 0;
+    journey.sourceProvinceId = 1;
+    journey.targetProvinceId = 2;
+    journey.legPlan = {{10}};
+    journey.kind = WorldJourneyKind::Attack;
+    journey.payload = ArmyParty{{7, 3, 11}};
+    const auto start = system.Start(journey, map, 0, WorldJourneyRules{10});
+    ASSERT_TRUE(start) << start.failureReason;
+    const auto id = system.GetJourneys().begin()->first;
+    const auto firstCasualty = system.ApplyJourneyUnitLoss(id, 1, 12345);
+    ASSERT_EQ(firstCasualty.size(), 1u);
+    const auto* survivors = std::get_if<ArmyParty>(&system.GetJourneys().at(id).payload);
+    ASSERT_NE(survivors, nullptr);
+    EXPECT_EQ(survivors->unitInstanceIds.size(), 2u);
+    EXPECT_EQ(system.ApplyJourneyUnitLoss(id, 2, 12345).size(), 2u);
+    EXPECT_EQ(system.GetJourneys().at(id).status, WorldJourneyStatus::Failed);
+}

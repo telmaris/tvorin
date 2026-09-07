@@ -35,7 +35,6 @@ namespace
     }
 }
 
-// Initializes GameWindow::LaunchGame.
 void GameWindow::LaunchGame()
 {
     // Keep presentation driven by the explicit frame cap in MainLoop. VSync
@@ -62,12 +61,10 @@ void GameWindow::LaunchGame()
     audio.SetMusicVolume(audioConfig.musicVolume);
     audio.SetSfxVolume(audioConfig.sfxVolume);
 
-    // Music themes — add supported audio files to assets/music/ to activate them.
-    audio.RegisterMusic("menu",      "assets/music/menu_theme.wav");
-    audio.RegisterMusic("gameplay",  "assets/music/game_theme_ambient.wav");
-    audio.RegisterMusic("gameplay_ambient_1", "assets/music/game_ambient_1.wav");
+    audio.RegisterMusic("menu",      "assets/music/menu_theme.ogg");
+    audio.RegisterMusic("gameplay",  "assets/music/game_theme_ambient.ogg");
+    audio.RegisterMusic("gameplay_ambient_1", "assets/music/game_ambient_1.ogg");
     audio.RegisterMusic("gameplay_ambient_2", "assets/music/game_ambient_2.ogg");
-    audio.RegisterMusic("battle",    "assets/music/battle_theme.ogg");
     audio.RegisterMusicRotation("gameplay_rotation",
                                 {"gameplay", "gameplay_ambient_1", "gameplay_ambient_2"});
 
@@ -79,14 +76,11 @@ void GameWindow::LaunchGame()
     audio.PreloadMusic("gameplay_ambient_1");
     audio.PreloadMusic("gameplay_ambient_2");
 
-    // Sound effects — add .wav/.ogg files to assets/audio/sfx/ to activate them.
     audio.RegisterSound("click",        "assets/sfx/mouse_click.wav");
     audio.RegisterSound("build",        "assets/sfx/button_clicked.mp3");
     audio.RegisterSound("notification", "assets/sfx/notification.mp3");
     audio.RegisterSound("error",        "assets/sfx/error.wav");
     audio.RegisterSound("research",     "assets/sfx/research_ready.mp3");
-    audio.RegisterSound("destroy",      "assets/sfx/destroy.wav");
-    audio.RegisterSound("recruit",      "assets/sfx/recruit.wav");
 
     AddScene<StudioSplashScene>("StudioSplashScene");
     AddScene<MainMenuScene>("MainScene");
@@ -144,7 +138,6 @@ void GameWindow::ShutdownRenderers()
     }
 }
 
-// Handles the requested event or transfer.
 void GameWindow::HandleEvent(std::shared_ptr<Event> e)
 {
     Log::Msg(tag, e->msgName, " received!");
@@ -183,7 +176,6 @@ void GameWindow::HandleEvent(std::shared_ptr<Event> e)
         ApplyBorderlessMonitorWindow();
 }
 
-// Initializes GameWindow::MainLoop.
 void GameWindow::MainLoop()
 {
     SetTargetFPS(150);
@@ -365,7 +357,6 @@ void GameWindow::UpdateSceneTransition(float dt)
     SetSceneTransitionOverlayAlpha(transitionAlpha);
 }
 
-// Advances UpdateWindowSize for one frame or simulation tick.
 void GameWindow::UpdateWindowSize()
 {
     // UI anchors and mouse coordinates are expressed in logical screen

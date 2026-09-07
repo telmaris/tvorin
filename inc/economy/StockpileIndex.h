@@ -44,7 +44,7 @@ struct StockpileTotals
 // Derived state, never stored: every query reads Player::storages live, so
 // there is no cache to invalidate and nothing to serialize (same approach as
 // ConstructionQueue). All ordering is by building id, never by Building*, so
-// results are identical across hosts — see docs/tech_debt.md #6.
+// results are identical across hosts.
 class StockpileIndex
 {
 public:

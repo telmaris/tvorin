@@ -5,13 +5,7 @@
 // which direction counts as an improvement, and whether a given modifier is a
 // bonus or a penalty.
 //
-// Shared rather than copied because getting this wrong is silent and visible:
-// if "which way is better" drifts between the game's research panel and
-// tools/tech-tree-editor, a nerf renders green in one and red in the other.
-// It already drifted once (WorkerCapacity, 2026-07-26) across three copies.
-//
-// Pure functions over BalanceStat / BalanceModifier — no Player, no GameScene —
-// so the standalone tools can link this directly.
+// Centralized so every UI presents bonuses and penalties consistently.
 
 #include "economy/BalanceModifiers.h"
 #include "economy/BalanceStats.h"

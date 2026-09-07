@@ -3,21 +3,18 @@
 #include "core/Log.h"
 
 #include <algorithm>
+#include <cmath>
 
 namespace
 {
     constexpr const char* unitDataPath = "assets/data/units.rtsdata";
 
-    // Initializes ParseBuildingType. Mirrors economy/BuildingConfig.cpp's copy —
-    // duplicated rather than shared, consistent with the existing (pre-ETAP-3)
-    // convention of a small per-file parser helper.
     BuildingType ParseBuildingType(const std::string& value)
     {
         if (value == "Barracks") return BuildingType::Barracks;
         return BuildingType::Barracks;
     }
 
-    // Initializes ParseResourceType. Mirrors economy/BuildingConfig.cpp's copy.
     ResourceType ParseResourceType(const std::string& value)
     {
         if (value == "WOOD") return ResourceType::WOOD;
@@ -65,7 +62,6 @@ namespace
         return ResourceType::Null;
     }
 
-    // Initializes ParseUnit.
     UnitDefinition ParseUnit(const std::vector<std::vector<std::string>>& lines, size_t& index)
     {
         UnitDefinition definition;
@@ -108,8 +104,6 @@ namespace
             }
             else if (command == "attack_range" && tokens.size() >= 2)
                 definition.attackRange = RtsDataDoubleOr(tokens[1]);
-            else if (command == "movement" && tokens.size() >= 2)
-                definition.movementType = tokens[1] == "flying" ? MovementType::Flying : MovementType::Ground;
             else if (command == "can_target_flying" && tokens.size() >= 2)
                 definition.canTargetFlying = RtsDataIntOr(tokens[1]) != 0;
             else if (command == "cavalry" && tokens.size() >= 2)
@@ -118,12 +112,6 @@ namespace
                 definition.antiCavalryMultiplier = RtsDataDoubleOr(tokens[1]);
             else if (command == "area_targets" && tokens.size() >= 2)
                 definition.areaTargets = std::max(1, RtsDataIntOr(tokens[1]));
-            else if (command == "collider_radius" && tokens.size() >= 2)
-                definition.colliderRadius = RtsDataDoubleOr(tokens[1]);
-            else if (command == "ability" && tokens.size() >= 2)
-                definition.abilities.push_back(tokens[1]);
-            else if (command == "equipment_slot" && tokens.size() >= 2)
-                definition.equipmentSlots.push_back(tokens[1]);
             else if (command == "recruit_building" && tokens.size() >= 2)
                 definition.recruitBuilding = ParseBuildingType(tokens[1]);
             else if (command == "requires_tech" && tokens.size() >= 2)
@@ -134,6 +122,11 @@ namespace
                 definition.manpowerCost = RtsDataDoubleOr(tokens[1]);
             else if (command == "garrison_food_upkeep_per_minute" && tokens.size() >= 2)
                 definition.garrisonFoodUpkeepPerMinute = std::max(0.0, RtsDataDoubleOr(tokens[1]));
+            else if (command == "expedition_food_per_100_distance" && tokens.size() >= 2)
+                definition.expeditionFoodPer100Distance = RtsDataDoubleOr(tokens[1]);
+            else if (command == "expedition_equipment" && tokens.size() >= 3)
+                definition.expeditionEquipment.push_back(
+                    {ParseResourceType(tokens[1]), RtsDataIntOr(tokens[2])});
             else if (command == "cost" && tokens.size() >= 3)
                 definition.cost.push_back({ParseResourceType(tokens[1]), RtsDataIntOr(tokens[2])});
         }
@@ -150,7 +143,14 @@ namespace
                 continue;
 
             UnitDefinition definition = ParseUnit(lines, i);
-            if (!definition.IsValid())
+            if (!definition.IsValid() || !std::isfinite(definition.expeditionFoodPer100Distance) ||
+                definition.expeditionFoodPer100Distance < 0.0 ||
+                std::any_of(definition.expeditionEquipment.begin(),
+                            definition.expeditionEquipment.end(),
+                            [](const UnitCostEntry& entry)
+                            {
+                                return entry.type == ResourceType::Null || entry.amount <= 0;
+                            }))
             {
                 Log::Msg("[UnitCatalog]", "Rejected invalid unit definition: ",
                          definition.id.empty() ? "<missing id>" : definition.id);

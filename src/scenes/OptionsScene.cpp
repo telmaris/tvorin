@@ -1,6 +1,5 @@
 #include "scenes/Scenes.h"
 
-// Initializes OptionsScene::OptionsScene.
 OptionsScene::OptionsScene()
 {
     menuBackground.ChangePositionAnchor({0.0f, 0.0f});
@@ -53,7 +52,6 @@ OptionsScene::OptionsScene()
     logisticsOverlayCheckBox.ChangeSizeAnchor(Vec2f{0.50f, 0.048f});
 }
 
-// Advances this object's state for one frame.
 void OptionsScene::Update(double dt)
 {
     ProcessGuiInput(dt);
@@ -133,7 +131,6 @@ void OptionsScene::OnActivated()
     }
 }
 
-// Handles the UI action represented by OnBackPressed.
 void OptionsScene::OnBackPressed()
 {
     auto msg = std::make_shared<ChangeSceneEvent>();
@@ -143,7 +140,6 @@ void OptionsScene::OnBackPressed()
     broker->Broadcast(msg);
 }
 
-// Handles the requested event or transfer.
 void OptionsScene::HandleEvent(std::shared_ptr<Event> e)
 {
     auto ptr = std::dynamic_pointer_cast<WindowSizeChangedEvent>(e);

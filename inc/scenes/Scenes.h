@@ -552,11 +552,7 @@ class ControlsScene : public Scene, public IGuiHandler
 
 class GameMenuScene;
 
-// Single-system interaction mode for GameMenuScene (A4 pilot,
-// docs/work_plan_2026-07-13.md): establishes the GuiController pattern for a
-// menu scene that only ever has one screen — nothing to switch between, so
-// this system's whole job is to surface the owning scene's VBox and route
-// "esc" to OnBackPressed, the same shape GameScene uses for its 8 modes.
+// Routes the in-game menu through the same controller contract as gameplay.
 class MenuNavSystem : public GuiSystem
 {
 public:
@@ -566,8 +562,6 @@ public:
     void Update(double dt) override;
     void UpdateUiWidgets(Vec2i size) override;
 
-    // Shadows GuiSystem::scene (Scene*) with the concrete scene this system
-    // actually needs, same pattern as GameScene's interaction systems.
     GameMenuScene* menuScene{nullptr};
 };
 
@@ -581,11 +575,7 @@ class GameMenuScene : public Scene, public IGuiHandler
         void Update(double dt) override;
         // Handles resize and navigation events.
         void HandleEvent(std::shared_ptr<Event>) override;
-        // Routes input through this scene's own GuiController + MenuNavSystem
-        // (A4 pilot, docs/work_plan_2026-07-13.md) — same shape as GameScene,
-        // even though there's only one system. The IGuiHandler input gate
-        // (reset centrally on every scene activation) still wraps this call,
-        // so the old ESC ping-pong class of bug stays fixed at the source.
+        // Routes input through this scene's GuiController and input gate.
         void HandleGuiInput(double dt) override { inputs.HandleInputs(); }
 
         // Returns to gameplay.

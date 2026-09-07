@@ -23,24 +23,28 @@ void PopulationComponent::Update(Building& self, double dt)
     if (self.owner == nullptr)
         return;
 
-    RequestSupply(self, ResourceType::FOOD_PROVISIONS);
-    if (settlementLevel >= 2)
-        RequestSupply(self, ResourceType::HOUSEHOLD_GOODS);
-    if (settlementLevel >= 3)
-        RequestSupply(self, ResourceType::URBAN_GOODS);
+    for (const auto& rule : levelSupplyRules[std::clamp(settlementLevel, 1, 3)])
+        RequestSupply(self, rule.resource);
 
     bool hasBufferedFood = !foodBuffer.buffer.empty();
     bool hasIncomingFood = CountIncomingResources(&self, ResourceType::FOOD_PROVISIONS) > 0;
     if (!hasBufferedFood && !hasIncomingFood)
     {
-        double dropRate = 0.08 / std::max(0.45, foodSupplyLevel);
-        foodSupplyLevel = std::max(0.0, foodSupplyLevel - dropRate * dt);
+        const double decaySeconds = std::isfinite(foodShortageDecaySeconds) &&
+                                    foodShortageDecaySeconds > 0.0
+            ? foodShortageDecaySeconds : 180.0;
+        foodSupplyLevel = std::max(0.0, foodSupplyLevel -
+            std::max(0.0, dt) / decaySeconds);
     }
 
-    auto consumeSupply = [&](ResourceType type, double& supplyLevel)
+    auto consumeSupply = [&](ResourceType type, double& supplyLevel, int packageCount)
     {
         ResourceBuffer* buffer = GetSupplyBuffer(type);
-        int needed = GetSupplyUpkeep(type);
+        const VillageSupplyRuleDefinition* rule = FindSupplyRule(type);
+        const int packageAmount = !hasAssignedResidents
+            ? GetSupplyUpkeep(type)
+            : rule != nullptr ? rule->packageAmount : GetSupplyUpkeep(type);
+        int needed = std::max(0, packageCount * packageAmount);
         if (buffer != nullptr && static_cast<int>(buffer->buffer.size()) >= needed)
         {
             for (int i = 0; i < needed; i++)
@@ -49,16 +53,49 @@ void PopulationComponent::Update(Building& self, double dt)
                 if (ProvinceEconomy* economy = GetLocalEconomy(self); economy != nullptr)
                     economy->economyTelemetry.RecordConsumption(type);
             }
-            supplyLevel = std::min(1.0, supplyLevel + 0.45);
+            supplyLevel = std::min(1.0, supplyLevel + 0.45 * std::max(1, packageCount));
         }
         else
         {
-            supplyLevel = std::max(0.0, supplyLevel - foodSupplyDropPerMissedUpkeep);
+            if (type != ResourceType::FOOD_PROVISIONS)
+                supplyLevel = std::max(0.0, supplyLevel -
+                    nonFoodSupplyDropPerMissedUpkeep * std::max(1, packageCount));
         }
     };
 
+    if (hasAssignedResidents)
+    {
+        auto updateDataDrivenSupply = [&](ResourceType type, double& supplyLevel)
+        {
+            const auto* rule = FindSupplyRule(type);
+            if (rule == nullptr)
+            {
+                supplyDebt[type] = 0.0;
+                return;
+            }
+
+            const double consumptionPerMinute = GetSupplyPackagesPerMinute(self, type);
+            if (!(consumptionPerMinute > 0.0) || !std::isfinite(consumptionPerMinute))
+                return;
+
+            double& debt = supplyDebt[type];
+            debt += consumptionPerMinute * std::max(0.0, dt) / 60.0;
+            const int due = std::min(10000, static_cast<int>(std::floor(debt + 1e-9)));
+            if (due <= 0)
+                return;
+            debt -= due;
+            consumeSupply(type, supplyLevel, due);
+        };
+
+        updateDataDrivenSupply(ResourceType::FOOD_PROVISIONS, foodSupplyLevel);
+        updateDataDrivenSupply(ResourceType::HOUSEHOLD_GOODS, householdSupplyLevel);
+        updateDataDrivenSupply(ResourceType::URBAN_GOODS, urbanSupplyLevel);
+    }
+
     auto updateSupplyUpkeep = [&](ResourceType type, double& supplyLevel, double& timer)
     {
+        if (hasAssignedResidents)
+            return;
         if (!RequiresSupply(type))
         {
             timer = 0.0;
@@ -77,7 +114,7 @@ void PopulationComponent::Update(Building& self, double dt)
         while (timer + thresholdEpsilon >= effectiveInterval)
         {
             timer = std::max(0.0, timer - effectiveInterval);
-            consumeSupply(type, supplyLevel);
+            consumeSupply(type, supplyLevel, 1);
         }
     };
 
@@ -95,7 +132,11 @@ void PopulationComponent::Update(Building& self, double dt)
 
     double efficiency = GetManpowerProductivity();
     double modRate = self.owner->ResolveStat(manpowerRate, &self);
-    self.owner->AddManpower(modRate * efficiency * dt);
+    ProvinceEconomy* economy = GetLocalEconomy(self);
+    if (economy != nullptr && self.owner->homeProvinceId != InvalidProvinceId)
+        self.owner->AddManpower(*economy, modRate * efficiency * dt);
+    else
+        self.owner->AddManpower(modRate * efficiency * dt);
     self.activeTime += dt * efficiency;
 }
 
@@ -152,12 +193,25 @@ void PopulationComponent::SetSettlementLevel(int level)
     populationCap = levelPopulationCaps[settlementLevel];
     manpowerRate = levelManpowerRates[settlementLevel];
 
-    // Keep exactly one upkeep payment plus one local reserve. The starting
-    // village therefore requests only two packages, while upgraded
-    // settlements can still hold a complete higher-tier upkeep payment.
-    foodBuffer.bufferSize = GetSupplyUpkeep(ResourceType::FOOD_PROVISIONS) + 1;
-    while (static_cast<int>(foodBuffer.buffer.size()) > foodBuffer.bufferSize)
-        foodBuffer.FreeResource();
+    // Keep one complete payment plus one local reserve for every active
+    // data-defined stream. The physical buffers remain small and deterministic
+    // even when resident counts make the rate dynamic.
+    for (ResourceType type : {ResourceType::FOOD_PROVISIONS,
+                              ResourceType::HOUSEHOLD_GOODS,
+                              ResourceType::URBAN_GOODS})
+    {
+        ResourceBuffer* buffer = GetSupplyBuffer(type);
+        if (buffer == nullptr)
+            continue;
+        // Keep the legacy physical reserve size for unassigned/old saves.
+        // Campaign villages use the data-driven resident rate for actual
+        // consumption; the larger reserve is harmless and preserves existing
+        // save fixtures until the next allocation tick.
+        const int capacity = RequiresSupply(type) ? GetSupplyUpkeep(type) + 1 : 0;
+        buffer->bufferSize = std::max(0, capacity);
+        while (static_cast<int>(buffer->buffer.size()) > buffer->bufferSize)
+            buffer->FreeResource();
+    }
 }
 
 int PopulationComponent::GetActivePopulationCap() const
@@ -177,23 +231,34 @@ int PopulationComponent::GetActiveSettlementLevel() const
 
 bool PopulationComponent::RequiresSupply(ResourceType type) const
 {
-    if (type == ResourceType::FOOD_PROVISIONS)
-        return true;
-    if (type == ResourceType::HOUSEHOLD_GOODS)
-        return settlementLevel >= 2;
-    if (type == ResourceType::URBAN_GOODS)
-        return settlementLevel >= 3;
-    return false;
+    if (!hasAssignedResidents)
+    {
+        if (type == ResourceType::FOOD_PROVISIONS)
+            return true;
+        if (type == ResourceType::HOUSEHOLD_GOODS)
+            return settlementLevel >= 2;
+        if (type == ResourceType::URBAN_GOODS)
+            return settlementLevel >= 3;
+        return false;
+    }
+    return FindSupplyRule(type) != nullptr;
 }
 
 int PopulationComponent::GetSupplyUpkeep(ResourceType type) const
 {
-    if (type == ResourceType::FOOD_PROVISIONS)
-        return settlementLevel == 1 ? 1 : settlementLevel == 2 ? 3 : 10;
-    if (type == ResourceType::HOUSEHOLD_GOODS)
-        return settlementLevel == 2 ? 1 : settlementLevel >= 3 ? 3 : 0;
-    if (type == ResourceType::URBAN_GOODS)
-        return settlementLevel >= 3 ? 1 : 0;
+    if (!hasAssignedResidents)
+    {
+        if (type == ResourceType::FOOD_PROVISIONS)
+            return settlementLevel == 1 ? 1 : settlementLevel == 2 ? 3 : 10;
+        if (type == ResourceType::HOUSEHOLD_GOODS)
+            return settlementLevel == 2 ? 1 : settlementLevel >= 3 ? 3 : 0;
+        if (type == ResourceType::URBAN_GOODS)
+            return settlementLevel >= 3 ? 1 : 0;
+        return 0;
+    }
+    const auto* rule = FindSupplyRule(type);
+    if (rule != nullptr)
+        return rule->packageAmount;
     return 0;
 }
 
@@ -209,6 +274,14 @@ double PopulationComponent::GetEffectiveSupplyUpkeepInterval(
         : 1.0;
     if (consumptionMultiplier <= 0.0)
         return std::numeric_limits<double>::infinity();
+
+    if (hasAssignedResidents)
+    {
+        const double packagesPerMinute = GetSupplyPackagesPerMinute(self, type);
+        return packagesPerMinute > 0.0
+            ? 60.0 / packagesPerMinute
+            : std::numeric_limits<double>::infinity();
+    }
 
     // A multiplier describes consumption, not speed. Therefore a -10%
     // modifier (0.9) lengthens 60 s to 66.666... s and yields exactly
@@ -230,4 +303,49 @@ const ResourceBuffer* PopulationComponent::GetSupplyBuffer(ResourceType type) co
     if (type == ResourceType::HOUSEHOLD_GOODS) return &householdGoodsBuffer;
     if (type == ResourceType::URBAN_GOODS) return &urbanGoodsBuffer;
     return nullptr;
+}
+
+const VillageSupplyRuleDefinition* PopulationComponent::FindSupplyRule(ResourceType type) const
+{
+    const auto& rules = levelSupplyRules[std::clamp(settlementLevel, 1, 3)];
+    const auto it = std::find_if(rules.begin(), rules.end(),
+        [type](const VillageSupplyRuleDefinition& rule) { return rule.resource == type; });
+    return it == rules.end() ? nullptr : &*it;
+}
+
+double PopulationComponent::GetSupplyPackagesPerMinute(const Building& self, ResourceType type) const
+{
+    const auto* rule = FindSupplyRule(type);
+    if (rule == nullptr || rule->intervalSeconds <= 0.0 || rule->residentsPerPackage <= 0.0)
+        return 0.0;
+
+    const double baseRate = assignedResidents / rule->residentsPerPackage *
+                            static_cast<double>(rule->packageAmount) *
+                            (60.0 / rule->intervalSeconds);
+    const double multiplier = self.owner != nullptr
+        ? self.owner->ModifyBalanceForBuilding(
+            BalanceStat::VillageSupplyConsumption, 1.0, &self, type)
+        : 1.0;
+    return std::max(0.0, baseRate * multiplier);
+}
+
+std::vector<PopulationComponent::SupplyConsumptionView>
+PopulationComponent::GetSupplyConsumptionViews(const Building& self) const
+{
+    std::vector<SupplyConsumptionView> views;
+    const auto& rules = levelSupplyRules[std::clamp(settlementLevel, 1, 3)];
+    for (const auto& rule : rules)
+    {
+        const ResourceBuffer* buffer = GetSupplyBuffer(rule.resource);
+        SupplyConsumptionView view;
+        view.resource = rule.resource;
+        view.packageAmount = rule.packageAmount;
+        view.packagesPerMinute = GetSupplyPackagesPerMinute(self, rule.resource);
+        view.storedPackages = buffer == nullptr ? 0 :
+            static_cast<int>(buffer->buffer.size()) / std::max(1, rule.packageAmount);
+        view.supplyLevel = rule.resource == ResourceType::FOOD_PROVISIONS ? foodSupplyLevel :
+            rule.resource == ResourceType::HOUSEHOLD_GOODS ? householdSupplyLevel : urbanSupplyLevel;
+        views.push_back(view);
+    }
+    return views;
 }

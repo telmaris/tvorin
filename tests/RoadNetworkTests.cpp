@@ -9,8 +9,8 @@
 
 namespace
 {
-    // Creates a rectangular player-owned grass map for pathing tests.
-    void FillOwnedMap(TileMap& map, Player* owner, int width = 10, int height = 6)
+    // Creates a rectangular grass map for pathing tests.
+    void FillGrassMap(TileMap& map, int width = 10, int height = 6)
     {
         map.params.sizeX = width;
         map.params.sizeY = height;
@@ -19,7 +19,6 @@ namespace
         for (int i = 0; i < width * height; i++)
         {
             Tile tile{i};
-            tile.owner = owner;
             tile.tileType = TileType::GRASS;
             map.tilemap.push_back(std::move(tile));
         }
@@ -39,28 +38,13 @@ namespace
         return placed;
     }
 
-    // Bare grass map with every Tile::owner left at its default (nullptr) —
-    // matches what a freshly generated map actually looks like today (the
-    // territory system that used to populate Tile::owner was removed in the
-    // Tower Defense pivot, ETAP 1). Deliberately the opposite of
-    // FillOwnedMap/PlaceAndRegister above, which exist only as test-only
-    // shortcuts and must not be relied on to prove production code works.
-    void FillUnownedMap(TileMap& map, int width = 10, int height = 6)
-    {
-        map.params.sizeX = width;
-        map.params.sizeY = height;
-        map.tilemap.clear();
-        map.tilemap.reserve(width * height);
-        for (int i = 0; i < width * height; i++)
-            map.tilemap.emplace_back(i);
-    }
 }
 
 TEST(RoadNetworkTests, CalculatesPathAcrossRoadTilesBetweenBuildingFootprints)
 {
     TileMap map;
     Player player{0, map};
-    FillOwnedMap(map, &player);
+    FillGrassMap(map);
     RoadNetwork network{map};
 
     auto* source = PlaceAndRegister<StorageBuilding>(map, network, &player, {0, 1}, 1);
@@ -103,7 +87,7 @@ TEST(RoadNetworkTests, WeightedRoutingAvoidsCongestedShortRouteAndReturnsAfterTt
 {
     TileMap map;
     Player player{0, map};
-    FillOwnedMap(map, &player, 14, 8);
+    FillGrassMap(map, 14, 8);
     RoadNetwork network{map};
 
     auto* source = PlaceAndRegister<StorageBuilding>(map, network, &player, {0, 1}, 1);
@@ -144,7 +128,7 @@ TEST(RoadNetworkTests, ExplicitCostInvalidationDropsRouteCachedBeforeRoadSpeedCh
 {
     TileMap map;
     Player player{0, map};
-    FillOwnedMap(map, &player, 14, 8);
+    FillGrassMap(map, 14, 8);
     RoadNetwork network{map};
 
     auto* source = PlaceAndRegister<StorageBuilding>(map, network, &player, {0, 1}, 1);
@@ -180,7 +164,7 @@ TEST(RoadNetworkTests, ReturnsEmptyPathWhenRoadConnectionIsBroken)
 {
     TileMap map;
     Player player{0, map};
-    FillOwnedMap(map, &player);
+    FillGrassMap(map);
     RoadNetwork network{map};
 
     auto* source = PlaceAndRegister<StorageBuilding>(map, network, &player, {0, 1}, 1);
@@ -197,7 +181,7 @@ TEST(RoadNetworkTests, BeginTransportQueuesResourceOnSourceWhenPathAndCapacityEx
 {
     TileMap map;
     Player player{0, map};
-    FillOwnedMap(map, &player);
+    FillGrassMap(map);
     RoadNetwork network{map};
 
     auto* source = PlaceAndRegister<StorageBuilding>(map, network, &player, {0, 1}, 1);
@@ -254,7 +238,7 @@ TEST(RoadNetworkTests, DispatchDelayIsBalanceModifiableForBuildingAndResource)
 {
     TileMap map;
     Player player{0, map};
-    FillOwnedMap(map, &player);
+    FillGrassMap(map);
     RoadNetwork network{map};
 
     auto* source = PlaceAndRegister<StorageBuilding>(map, network, &player, {0, 1}, 1);
@@ -305,7 +289,7 @@ TEST(RoadNetworkTests, DispatchDelaySerializesResourcesCreatedInTheSameTick)
 {
     TileMap map;
     Player player{0, map};
-    FillOwnedMap(map, &player);
+    FillGrassMap(map);
     RoadNetwork network{map};
 
     auto* source = PlaceAndRegister<StorageBuilding>(map, network, &player, {0, 1}, 1);
@@ -347,7 +331,7 @@ TEST(RoadNetworkTests, ReadyBlockedShipmentDoesNotBlockTheNextSourceLoader)
 {
     TileMap map;
     Player player{0, map};
-    FillOwnedMap(map, &player, 12, 8);
+    FillGrassMap(map, 12, 8);
     RoadNetwork network{map};
 
     auto* source = PlaceAndRegister<StorageBuilding>(map, network, &player, {0, 1}, 1);
@@ -419,7 +403,7 @@ TEST(RoadNetworkTests, PrioritizedRoadAdmissionWinsAcrossConvergingSources)
 {
     TileMap map;
     Player player{0, map};
-    FillOwnedMap(map, &player, 12, 8);
+    FillGrassMap(map, 12, 8);
     RoadNetwork network{map};
 
     auto* ordinarySource = PlaceAndRegister<StorageBuilding>(map, network, &player, {0, 1}, 1);
@@ -499,7 +483,7 @@ TEST(RoadNetworkTests, ProjectsInFlightResourceForRenderingWithoutPointers)
 {
     TileMap map;
     Player player{7, map};
-    FillOwnedMap(map, &player);
+    FillGrassMap(map);
     RoadNetwork network{map};
 
     auto* source = PlaceAndRegister<StorageBuilding>(map, network, &player, {0, 1}, 1);
@@ -562,7 +546,7 @@ TEST(RoadNetworkTests, RoadCapacityLimitsEntryAndQueuesOverflowAtSource)
 {
     TileMap map;
     Player player{0, map};
-    FillOwnedMap(map, &player);
+    FillGrassMap(map);
     RoadNetwork network{map};
 
     auto* source = PlaceAndRegister<StorageBuilding>(map, network, &player, {0, 1}, 1);
@@ -597,7 +581,7 @@ TEST(RoadNetworkTests, OpposingFullRoadSegmentsSwapToBreakDeadlock)
 {
     TileMap map;
     Player player{0, map};
-    FillOwnedMap(map, &player);
+    FillGrassMap(map);
     RoadNetwork network{map};
 
     auto* leftStorage = PlaceAndRegister<StorageBuilding>(map, network, &player, {0, 1}, 1);
@@ -656,7 +640,7 @@ TEST(RoadNetworkTests, BeginTransportRejectsFullDestination)
 {
     TileMap map;
     Player player{0, map};
-    FillOwnedMap(map, &player);
+    FillGrassMap(map);
     RoadNetwork network{map};
 
     auto* source = PlaceAndRegister<StorageBuilding>(map, network, &player, {0, 1}, 1);
@@ -676,18 +660,13 @@ TEST(RoadNetworkTests, BeginTransportRejectsFullDestination)
     destination->storage.buffers[ResourceType::WOOD].Clear();
 }
 
-// Replaces the old "path leaves owner territory" scenario: individual tile
-// ownership (Tile::owner) was removed with the territory system in the Tower
-// Defense pivot (ETAP 1) and Transportable::Update no longer reads it — the
-// analogous real-world event is a road segment on the path changing hands
-// (e.g. a future building-capture mechanic), which flips the Road building's
-// own `owner` field.
+// A route becomes invalid when one of its road buildings changes owner.
 TEST(RoadNetworkTests, TransportableCancelsWhenPathRoadChangesOwner)
 {
     TileMap map;
     Player player{0, map};
     Player enemy{1, map};
-    FillOwnedMap(map, &player);
+    FillGrassMap(map);
     RoadNetwork network{map};
 
     auto* source = PlaceAndRegister<StorageBuilding>(map, network, &player, {0, 1}, 1);
@@ -723,18 +702,11 @@ TEST(RoadNetworkTests, TransportableCancelsWhenPathRoadChangesOwner)
     roadA->owner = &player;
 }
 
-// Regression test for the P0 audit finding (docs/post_pivot_audit_2026-07-12.md,
-// T1): every other test in this file builds its world through FillOwnedMap,
-// which manually stamps Tile::owner on every tile — a shortcut nothing in
-// production does since the territory system was removed (ETAP 1). That
-// shortcut is exactly why these tests kept passing while real games had
-// completely dead logistics. This test instead uses the actual production
-// placement path (Player::Build<T>, the same call GameCommand execution and
-// AI both use) on a bare map where Tile::owner is never touched.
+// Exercise the production placement path rather than the test helper.
 TEST(RoadNetworkTests, ProductionPlacementFindsPathWithoutTileOwnership)
 {
     TileMap map;
-    FillUnownedMap(map);
+    FillGrassMap(map);
     Player player{0, map};
 
     auto* source = player.Build<StorageBuilding>(Vec2i{0, 1}, false);
@@ -762,7 +734,7 @@ TEST(RoadNetworkTests, ProductionPlacementFindsPathWithoutTileOwnership)
 TEST(RoadNetworkTests, StorageTransportDeliversResourceOverRealPlacementPath)
 {
     TileMap map;
-    FillUnownedMap(map);
+    FillGrassMap(map);
     Player player{0, map};
 
     auto* source = dynamic_cast<StorageBuilding*>(player.Build<StorageBuilding>(Vec2i{0, 1}, false));

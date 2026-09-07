@@ -124,8 +124,6 @@ void GuiController::MakeAction(std::string action)
 BasicMapViewSystem::BasicMapViewSystem(GuiController* con)
     : GuiSystem(con)
 {
-    // A4 (docs/work_plan_2026-07-13.md): shadows GuiSystem::scene (Scene*)
-    // with the concrete GameScene* this system actually needs.
     scene = dynamic_cast<GameScene*>(owner->scene);
 
     WireCommonSystemActions(*this, cameraMovement);
@@ -192,7 +190,6 @@ void BasicMapViewSystem::OnDeactivate()
     ClearBuildingSelection();
 }
 
-// Advances this object's state for one frame.
 void BasicMapViewSystem::Update(double dt)
 {
     if (!researchPanel.researchRequested)
@@ -361,18 +358,8 @@ void BasicMapViewSystem::RosterPressed()
 // Centers the camera on the local headquarters.
 void BasicMapViewSystem::CenterOnHeadquartersPressed()
 {
-    Building* headquarters = FindLocalHeadquarters(scene);
-    if (headquarters == nullptr)
-        return;
-
-    Vec2i anchor = scene->game->GetTileMap().GetCoordsFromId(headquarters->positionId);
-    Vec2i footprint = headquarters->GetFootprint();
-    Vec2f hqWorldCenter{
-        static_cast<float>((anchor.x + footprint.x * 0.5f) * TILE_SIZE),
-        static_cast<float>((anchor.y + footprint.y * 0.5f) * TILE_SIZE)};
-    ApplyStrategicHudCameraPadding(scene);
-    scene->render.CenterCameraOnWorld(hqWorldCenter, GetMapSize(scene));
-    Log::Msg("[Input]", "space pressed - camera centered on headquarters");
+    if (CenterCameraOnActiveProvinceHeadquarters(scene))
+        Log::Msg("[Input]", "space pressed - camera centered on headquarters");
 }
 
 // Handles map selection and panel interactions.
@@ -438,12 +425,7 @@ void BasicMapViewSystem::LmbReleased()
 {
 }
 
-// A3 (docs/work_plan_2026-07-13.md): RMB does double duty in the default map
-// view — a press+drag pans the camera (matching every other GUI mode, which
-// already pan on plain RMB press since they have no competing click action),
-// while a press+release with no meaningful drag still assigns a logistics
-// receiver, exactly as before. The actual receiver assignment is deferred to
-// RmbReleased so it can check whether the gesture turned out to be a drag.
+// Right-drag pans; a click assigns a logistics receiver on release.
 void BasicMapViewSystem::RmbPressed()
 {
     auto mousePos = GetMousePosition();

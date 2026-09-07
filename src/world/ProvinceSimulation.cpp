@@ -89,6 +89,50 @@ void ProvinceEconomy::Update(Player& player, double dt, std::uint64_t authoritat
             return a != nullptr;
         return a->id < b->id;
     });
+
+    const bool isCampaignPopulation = player.homeProvinceId != InvalidProvinceId;
+    if (isCampaignPopulation)
+    {
+        if (!population.initialized)
+        {
+            // Migrate the legacy global pool exactly once for the home
+            // province. Later-conquered provinces start with their own empty
+            // local pool and can grow it through their villages.
+            if (player.homeProvinceId == provinceId)
+            {
+                population.availableManpower = player.strategicResources.Get(
+                    StrategicResourceType::Manpower);
+                player.strategicResources.Set(StrategicResourceType::Manpower, 0.0);
+            }
+            population.initialized = true;
+        }
+
+        std::vector<Building*> villagesForAllocation;
+        std::vector<double> capacities;
+        for (Building* building : ordered)
+        {
+            if (building == nullptr || building->owner != &player ||
+                building->IsUnderConstruction())
+                continue;
+            auto* village = building->GetComponent<PopulationComponent>();
+            if (village == nullptr)
+                continue;
+            villagesForAllocation.push_back(building);
+            capacities.push_back(static_cast<double>(player.ResolveStat(
+                village->populationCap, building)));
+        }
+
+        const ProvincePopulationView view = BuildProvincePopulationView(*this, player);
+        const auto residents = AllocateProvinceVillageResidents(
+            view.currentPopulation, capacities);
+        for (size_t i = 0; i < villagesForAllocation.size(); i++)
+        {
+            auto* village = villagesForAllocation[i]->GetComponent<PopulationComponent>();
+            village->assignedResidents = residents[i];
+            village->hasAssignedResidents = true;
+        }
+    }
+
     for (Building* building : ordered)
     {
         if (building == nullptr || building->owner != &player)

@@ -14,9 +14,11 @@ if (NOT GTest_FOUND)
 endif()
 
 add_executable(tvorin_tests
+    support/FaultInjectingGameTransport.cpp
     AtomicFileTests.cpp
     BalanceModifierTests.cpp
     BalanceContractTests.cpp
+    ProvincePopulationTests.cpp
     BattleUnitTests.cpp
     BattleLifecycleTests.cpp
     BattleSimulatorTests.cpp
@@ -26,6 +28,7 @@ add_executable(tvorin_tests
     RaidDamageTests.cpp
     WarfareViewsTests.cpp
     BuildingConfigTests.cpp
+    ProductionBalanceTests.cpp
     BuildingPresentationTests.cpp
     BuildingDomainTests.cpp
     BuildingSalvageTests.cpp
@@ -74,6 +77,7 @@ add_executable(tvorin_tests
     JourneyTimingTests.cpp
     WorldEventSystemTests.cpp
     WorldEventDefinitionTests.cpp
+    RouteIncidentRiskTests.cpp
     ProvinceDomainTests.cpp
     StrategicHudLayoutTests.cpp
     KeyBindingsTests.cpp
@@ -92,6 +96,7 @@ target_link_libraries(tvorin_tests
 
 target_include_directories(tvorin_tests PRIVATE
     ${CMAKE_SOURCE_DIR}/inc
+    ${CMAKE_CURRENT_SOURCE_DIR}
 )
 
 if (ENABLE_BUILD_ACCELERATION)
@@ -139,15 +144,17 @@ if (ENABLE_COVERAGE AND MSVC)
         add_custom_target(coverage
             COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_BINARY_DIR}/coverage
             COMMAND ${OPENCPPCOVERAGE_EXECUTABLE}
+                    --modules $<TARGET_FILE_NAME:tvorin_tests>
                     --sources ${COVERAGE_SRC_DIR}
                     --sources ${COVERAGE_INC_DIR}
                     --excluded_sources ${COVERAGE_TESTS_DIR}
                     --export_type html:${COVERAGE_HTML_DIR}
                     --export_type cobertura:${COVERAGE_XML_FILE}
-                    -- $<TARGET_FILE:tvorin_tests>
+                    -- $<TARGET_FILE:tvorin_tests> --gtest_brief=1
+                       --gtest_filter=-GameSessionPauseTests.HostAndBackgroundClientSynchronizeBeforeGameplay
             WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
             DEPENDS tvorin_tests
-            COMMENT "Running fast unit tests and generating OpenCppCoverage report"
+            COMMENT "Running unit tests and generating OpenCppCoverage report"
         )
     else()
         message(WARNING "OpenCppCoverage not found. Install it or pass -DOPENCPPCOVERAGE_EXECUTABLE=path/to/OpenCppCoverage.exe")

@@ -1,6 +1,7 @@
 #include "core/GameWorld.h"
 #include "core/GameSession.h"
 #include "economy/StockpileIndex.h"
+#include "world/ExpeditionQuote.h"
 
 #include <gtest/gtest.h>
 
@@ -185,4 +186,35 @@ TEST(ScoutExpeditionTests, SnapshotKeepsScoutActionForReachableUnknownProvince)
     ASSERT_NE(target, snapshot.globalMapView.nodes.end());
     EXPECT_EQ(target->knowledge, ProvinceKnowledgeLevel::ReachableUnknown);
     EXPECT_TRUE(target->canScout);
+}
+
+TEST(ScoutExpeditionTests, QuoteUsesUnitDataAndAddsFoodOperationBonus)
+{
+    GlobalMap map;
+    ASSERT_TRUE(map.AddProvince(std::make_unique<BuildableProvince>(
+        1, Vec2i{0, 0}, 0)));
+    ASSERT_TRUE(map.AddProvince(std::make_unique<StaticProvince>(
+        2, ProvinceKind::NeutralSettlement, Vec2i{1, 0})));
+    ASSERT_TRUE(map.AddConnection(1, 2, 100));
+
+    UnitRoster roster;
+    BattleUnit scout(1, 0, "scout");
+    ASSERT_TRUE(UnitAssignmentService::AssignReserve(scout, 1, 7));
+    roster.AddUnit(std::move(scout));
+
+    const auto minimum = ExpeditionQuoteService::Quote(
+        nullptr, ExpeditionRole::Scout, 0, 1, 2, {1}, roster, map, {}, true);
+    ASSERT_TRUE(minimum.allowed) << minimum.reason;
+    EXPECT_EQ(minimum.loadout.GetMinimum(ResourceType::FOOD_PROVISIONS), 1);
+
+    ExpeditionLoadout extraFood;
+    extraFood.resources = {{ResourceType::FOOD_PROVISIONS, 2}};
+    const auto boosted = ExpeditionQuoteService::Quote(
+        nullptr, ExpeditionRole::Scout, 0, 1, 2, {1}, roster, map,
+        extraFood, false);
+    ASSERT_TRUE(boosted.allowed) << boosted.reason;
+    EXPECT_EQ(boosted.loadout.supplyRatioBasisPoints, 20000);
+    ASSERT_EQ(boosted.loadout.modifiers.size(), 1u);
+    EXPECT_EQ(boosted.loadout.modifiers.front().multiplierBasisPoints, 12500);
+    EXPECT_LT(boosted.travel.totalDurationTicks, minimum.travel.totalDurationTicks);
 }

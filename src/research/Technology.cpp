@@ -1,6 +1,7 @@
 #include "research/Technology.h"
 #include "data/RtsDataFile.h"
 #include "core/Log.h"
+#include "economy/BalanceStatCatalog.h"
 
 #include <algorithm>
 #include <cctype>
@@ -18,56 +19,6 @@ namespace
                tag == "expansion" ||
                tag == "military" ||
                tag == "construction";
-    }
-
-    // Converts text to a balance stat identifier.
-    BalanceStat ParseBalanceStat(const std::string& value)
-    {
-        if (value == "BuildTime") return BalanceStat::BuildTime;
-        if (value == "BuildCost") return BalanceStat::BuildCost;
-        if (value == "ProductionCycleTime") return BalanceStat::ProductionCycleTime;
-        if (value == "ProductionOutputAmount") return BalanceStat::ProductionOutputAmount;
-        if (value == "WorkerCapacity") return BalanceStat::WorkerCapacity;
-        if (value == "TransportTime") return BalanceStat::TransportTime;
-        if (value == "TransportDispatchDelay") return BalanceStat::TransportDispatchDelay;
-        if (value == "RoadCapacity") return BalanceStat::RoadCapacity;
-        if (value == "RoadSpeed") return BalanceStat::RoadSpeed;
-        if (value == "ManpowerRate") return BalanceStat::ManpowerRate;
-        if (value == "PopulationCap") return BalanceStat::PopulationCap;
-        if (value == "VillageSupplyConsumption") return BalanceStat::VillageSupplyConsumption;
-        if (value == "BuilderAmount") return BalanceStat::BuilderAmount;
-        if (value == "UnitHp") return BalanceStat::UnitHp;
-        if (value == "UnitFieldAttack") return BalanceStat::UnitFieldAttack;
-        if (value == "UnitSiegePower") return BalanceStat::UnitSiegePower;
-        if (value == "UnitArmor") return BalanceStat::UnitArmor;
-        if (value == "UnitMoveSpeed") return BalanceStat::UnitMoveSpeed;
-        if (value == "UnitAttackSpeed") return BalanceStat::UnitAttackSpeed;
-        if (value == "UnitRecruitTime") return BalanceStat::UnitRecruitTime;
-        if (value == "UnitRecruitManpowerCost") return BalanceStat::UnitRecruitManpowerCost;
-        if (value == "ProvinceFortification") return BalanceStat::ProvinceFortification;
-        if (value == "ProvinceDefense") return BalanceStat::ProvinceDefense;
-        if (value == "ProvinceCounterattack") return BalanceStat::ProvinceCounterattack;
-        if (value == "ConquestSpoilsFraction") return BalanceStat::ConquestSpoilsFraction;
-        if (value == "ProvinceDefensePower") return BalanceStat::ProvinceDefensePower;
-        if (value == "ProvinceDefenseCoverage") return BalanceStat::ProvinceDefenseCoverage;
-        if (value == "ProvinceDefenseReadiness") return BalanceStat::ProvinceDefenseReadiness;
-        if (value == "ProvinceDefenseSupplyUse") return BalanceStat::ProvinceDefenseSupplyUse;
-        if (value == "RouteTravelSpeed") return BalanceStat::RouteTravelSpeed;
-        if (value == "RouteIncidentChance") return BalanceStat::RouteIncidentChance;
-        if (value == "TradeExchangeRate") return BalanceStat::TradeExchangeRate;
-        if (value == "TradeScoreGain") return BalanceStat::TradeScoreGain;
-        if (value == "BattleAttack") return BalanceStat::BattleAttack;
-        if (value == "BattleCasualtyRate") return BalanceStat::BattleCasualtyRate;
-        if (value == "BattleDuration") return BalanceStat::BattleDuration;
-        if (value == "GarrisonCapacity") return BalanceStat::GarrisonCapacity;
-        if (value == "GarrisonFoodUpkeep") return BalanceStat::GarrisonFoodUpkeep;
-        if (value == "RaidBuildingDestructionChance") return BalanceStat::RaidBuildingDestructionChance;
-        if (value == "RaidStockLossFraction") return BalanceStat::RaidStockLossFraction;
-        if (value == "ProvinceEventChance") return BalanceStat::ProvinceEventChance;
-        if (value == "ProvinceEventWeight") return BalanceStat::ProvinceEventWeight;
-        if (value == "ProvinceEventDuration") return BalanceStat::ProvinceEventDuration;
-        if (value == "ColonizationDuration") return BalanceStat::ColonizationDuration;
-        return BalanceStat::BuildTime;
     }
 
     void AddTag(std::vector<std::string>& tags, std::string tag)
@@ -414,9 +365,6 @@ namespace
                 16.0,
                 {"forestry"},
                 {{ResourceType::PAPER, 12}, {ResourceType::STONE, 30}},
-                // TD(etap-1): the HitPoints modifiers this tech used to grant HQ/defensive
-                // buildings were dropped with TerritoryComponent; HQ defense returns as a
-                // dedicated HqComponent stat in ETAP 6.
                 {},
                 {},
                 "Core Sciences",
@@ -507,8 +455,6 @@ namespace
                 12.0,
                 {"frontier_settlement"},
                 {{ResourceType::PAPER, 8}, {ResourceType::FOOD_PROVISIONS, 8}},
-                // TD(etap-1): garrison/recruitment-time modifiers dropped with
-                // GarrisonComponent/RecruitmentComponent; recruitment bonuses return in ETAP 3.
                 {}},
             TechnologyDefinition{
                 "academic_patronage",
@@ -528,7 +474,9 @@ namespace
     BalanceModifier ParseModifier(const std::vector<std::string>& tokens, const std::string& techId)
     {
         BalanceModifier modifier;
-        modifier.stat = tokens.size() > 1 ? ParseBalanceStat(tokens[1]) : BalanceStat::BuildTime;
+        modifier.stat = tokens.size() > 1
+            ? TryParseBalanceStat(tokens[1]).value_or(BalanceStat::Count)
+            : BalanceStat::Count;
         modifier.scope = BalanceModifierScope::Global();
         modifier.source = "tech:" + techId;
 

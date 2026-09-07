@@ -161,7 +161,7 @@ struct TextureAtlas
     void LoadTextureAtlas(const char* path, Vec2i tileSize = {TILE_SIZE, TILE_SIZE});
     // Returns source rectangle for a tile id, clamped to atlas bounds.
     Rectangle GetRectFromId(int id);
-    // Registers an animation clip under an id (ETAP 5.2).
+    // Registers an animation clip under an id.
     void RegisterAnimation(int clipId, const AnimationClip& clip);
     // Returns the clip for an id, or a default single-frame clip if unregistered.
     AnimationClip GetAnimation(int clipId) const;
@@ -283,16 +283,19 @@ class Renderer
     // terrain layer and additive blending are active so neighbouring halos
     // merge behind the rocks without darkening the terrain albedo.
     void DrawResourceGroundGlow(int resourceOverlayTextureId, Vec2f pos);
-    // Draws one atlas tile, resolving the frame from an animation clip and elapsed time (ETAP 5.3).
+    // Draws one atlas tile, resolving the frame from an animation clip and elapsed time.
     void DrawAtlasTile(int atlas, int clipId, Vec2f pos, float elapsedTime);
     // Same, stretched to a target world size.
     void DrawAtlasTile(int atlas, int clipId, Vec2f pos, Vec2f drawSize, float elapsedTime);
     // Loads a standalone building texture for a building type.
     void LoadBuildingTexture(BuildingType, const std::string&);
+    // Registers a completed-upgrade visual. The same data-driven mechanism
+    // supports standalone building sprites and road autotile atlases.
+    void LoadBuildingUpgradeTexture(BuildingType, int upgradeLevel, const std::string&);
     // Returns the first source frame for an animated texture, or the full
     // texture for a static building sprite.
     Rectangle GetBuildingTextureFirstFrameSource(BuildingType) const;
-    // Registers an animation clip for a standalone building texture (ETAP 5.4).
+    // Registers an animation clip for a standalone building texture.
     // Frames are read as a horizontal strip inside the loaded texture (frame
     // width = texture width / frameCount). Types with no registered clip (or
     // frameCount==1) keep drawing the full texture — fully backward compatible.
@@ -305,18 +308,29 @@ class Renderer
     // Draws a building snapshot with its standalone texture.
     void DrawBuildingTexture(BuildingType type, Vec2i footprint, Vec2f pos, Color tint = WHITE,
                              Color ownerColor = WHITE, bool applyTeamColor = false);
+    // Same, selecting the highest authored visual override at or below
+    // `visualLevel`. This is the generic upgrade-texture path for every
+    // building type; callers without upgrade state keep using the overload
+    // above and therefore render level 1.
+    void DrawBuildingTexture(BuildingType type, Vec2i footprint, Vec2f pos, int visualLevel,
+                             Color tint = WHITE, Color ownerColor = WHITE,
+                             bool applyTeamColor = false);
     // Draws one road-like tile using the four-neighbour connection mask.
     // Mask bits are West=1, East=2, North=4 and South=8. Road cells occupy
     // the first sixteen entries of atlas 19.
     // Road-only cells can use atlas 145, which contains three 16-cell variants
     // stacked in rows; the selected variant is derived from the tile position.
-    void DrawRoadTexture(BuildingType type, Vec2f pos, int connectionMask, Color tint = WHITE);
+    void DrawRoadTexture(BuildingType type, int visualLevel, Vec2f pos, int connectionMask,
+                         Color tint = WHITE);
     // Draws pointer-free in-flight resource views on the currently active
     // dynamic layer. The caller owns BeginLayer/EndLayer.
     void DrawShipments(const std::vector<ShipmentRenderState>& shipments, Vec2i mapSize);
     // Same, picking the frame from the type's registered animation clip and elapsed time.
     void DrawBuildingTexture(BuildingType type, Vec2i footprint, Vec2f pos, Color tint, float elapsedTime,
                              Color ownerColor = WHITE, bool applyTeamColor = false);
+    void DrawBuildingTexture(BuildingType type, Vec2i footprint, Vec2f pos, int visualLevel,
+                             Color tint, float elapsedTime, Color ownerColor = WHITE,
+                             bool applyTeamColor = false);
     // Draws terrain, territory and buildings from an immutable game snapshot.
     void DrawSnapshot(const GameSnapshot& snapshot);
     // Converts OS screen coordinates to fixed render coordinates.
@@ -353,6 +367,7 @@ class Renderer
     CanvasLayer postProcessedWorld;
     std::map<int, TextureAtlas> atlasMap;
     std::map<BuildingType, tvorin::ui::TextureHandle> buildingTextures;
+    std::map<std::pair<BuildingType, int>, tvorin::ui::TextureHandle> buildingUpgradeTextures;
     std::map<BuildingType, AnimationClip> buildingAnimations;
     // White radial alpha mask shared by additive lights and soft fog revealers.
     tvorin::ui::TextureHandle radialLightMask{};

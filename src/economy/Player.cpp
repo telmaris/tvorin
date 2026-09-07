@@ -5,8 +5,10 @@
 #include "simulation/MapGenerator.h"
 #include "economy/BuildingConfig.h"
 #include "research/Technology.h"
+#include "world/ProvinceDefinition.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 
 namespace
@@ -57,6 +59,19 @@ void Player::BindProvince(ProvinceId provinceId, ProvinceSimulation& province)
 {
     if (provinceId == InvalidProvinceId)
         provinceId = province.GetProvinceId();
+
+    ProvinceEconomy& economy = province.GetEconomy();
+    if (homeProvinceId != InvalidProvinceId && !economy.population.initialized)
+    {
+        if (homeProvinceId == provinceId)
+        {
+            economy.population.availableManpower = strategicResources.Get(
+                StrategicResourceType::Manpower);
+            strategicResources.Set(StrategicResourceType::Manpower, 0.0);
+        }
+        economy.population.initialized = true;
+    }
+
     boundProvinces[provinceId] = &province;
     if (boundProvince == nullptr || activeProvinceId == InvalidProvinceId ||
         activeProvinceId == provinceId)
@@ -65,6 +80,7 @@ void Player::BindProvince(ProvinceId provinceId, ProvinceSimulation& province)
         activeProvinceId = provinceId;
     }
     province.BindPlayer(*this);
+    RefreshProvinceTraitModifiers();
 }
 
 TileMap* Player::GetTileMap() const
@@ -310,11 +326,7 @@ double Player::GetFoodProductivity(const ProvinceEconomy& economy) const
     return villageCount > 0 ? productivity / villageCount : 1.0;
 }
 
-// T6 (docs/post_pivot_audit_2026-07-12.md): raw food supply ratio (0-100%,
-// no productivity floor) averaged across every village — distinct from
-// GetFoodProductivity()'s worker-productivity average (0.3 + 0.7*ratio),
-// which is what actually scales production and shouldn't be shown as if it
-// were the literal supply number.
+// Raw food supply ratio, without the worker-productivity floor.
 double Player::GetFoodSupplyRatio() const
 {
     const ProvinceEconomy* economy = GetProvinceEconomy();
@@ -450,6 +462,7 @@ void Player::RefreshTechnologyModifiers()
     balanceModifiers.ClearSourcePrefix("focus:");
     technologies.CollectModifiers(balanceModifiers);
     focuses.CollectModifiers(balanceModifiers);
+    RefreshProvinceTraitModifiers();
     for (const auto& [provinceId, simulation] : boundProvinces)
         if (simulation != nullptr && simulation->GetEconomy().roadNetwork != nullptr)
         {
@@ -511,10 +524,94 @@ double Player::AddManpower(double amount)
     return added;
 }
 
+void Player::RefreshProvinceTraitModifiers()
+{
+    balanceModifiers.ClearSourcePrefix("province-trait:");
+    for (const auto& [provinceId, simulation] : boundProvinces)
+    {
+        if (simulation == nullptr)
+            continue;
+        for (const auto& traitId : simulation->GetEconomy().traitIds)
+        {
+            // Trait IDs are selected runtime data. The owning province's
+            // definition is resolved by scanning the catalog, which keeps the
+            // simulation independent from GlobalMap pointers.
+            const ProvinceTraitDefinition* trait = nullptr;
+            for (const auto& [definitionId, candidate] : GetProvinceDefinitions())
+            {
+                (void)definitionId;
+                const auto it = std::find_if(candidate.traits.begin(), candidate.traits.end(),
+                    [&traitId](const ProvinceTraitDefinition& value) { return value.id == traitId; });
+                if (it != candidate.traits.end())
+                {
+                    trait = &*it;
+                    break;
+                }
+            }
+            if (trait == nullptr)
+                continue;
+            for (const auto& effect : trait->effects)
+            {
+                if (effect.target != ProvinceEffectTarget::SelfProvince)
+                    continue;
+                BalanceModifier modifier;
+                modifier.stat = effect.stat;
+                modifier.additive = effect.additive;
+                modifier.multiplier = effect.multiplier;
+                modifier.scope = BalanceModifierScope::Global();
+                modifier.scope.provinceId = provinceId;
+                modifier.source = "province-trait:" + std::to_string(provinceId) + ":" + traitId;
+                ResourceType resource = ResourceType::Null;
+                std::string condition = effect.condition;
+                std::transform(condition.begin(), condition.end(), condition.begin(),
+                    [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+                if (TryParseResourceType(condition, resource) && resource != ResourceType::Null)
+                    modifier.resourceType = resource;
+                balanceModifiers.AddModifier(std::move(modifier));
+            }
+        }
+    }
+}
+
+double Player::AddManpower(ProvinceEconomy& economy, double amount)
+{
+    if (amount <= 0.0)
+        return 0.0;
+    economy.population.initialized = true;
+    const ProvincePopulationView view = BuildProvincePopulationView(economy, *this);
+    const double room = std::max(0.0,
+        static_cast<double>(view.populationCap) - view.currentPopulation);
+    const double added = std::min(amount, room);
+    economy.population.availableManpower += added;
+    return added;
+}
+
+bool Player::ConsumeManpower(ProvinceEconomy& economy, double amount)
+{
+    // Keep direct legacy callers/save fixtures compatible during the migration
+    // to province-local manpower. A live campaign keeps this global pool at
+    // zero; if an old caller replenishes it, absorb it exactly once here.
+    if (homeProvinceId != InvalidProvinceId && economy.provinceId == homeProvinceId &&
+        strategicResources.Get(StrategicResourceType::Manpower) > 0.0)
+    {
+        economy.population.availableManpower += strategicResources.Get(
+            StrategicResourceType::Manpower);
+        strategicResources.Set(StrategicResourceType::Manpower, 0.0);
+    }
+    if (amount < 0.0 || economy.population.availableManpower + 1e-9 < amount)
+        return false;
+    economy.population.availableManpower = std::max(0.0,
+        economy.population.availableManpower - amount);
+    return true;
+}
+
 int Player::AutoAssignWorkers(Building* building)
 {
     if (building == nullptr || building->owner != this)
         return 0;
+
+    if (homeProvinceId != InvalidProvinceId && building->GetProvinceEconomy() != nullptr)
+        return AutoAssignWorkers(*building->GetProvinceEconomy(), building);
 
     auto* workers = building->GetComponent<WorkerComponent>();
     if (workers == nullptr)
@@ -530,6 +627,33 @@ int Player::AutoAssignWorkers(Building* building)
     strategicResources.Add(StrategicResourceType::Workers, assigned);
     workers->assigned += assigned;
     return assigned;
+}
+
+int Player::AutoAssignWorkers(ProvinceEconomy& economy, Building* building)
+{
+    if (building == nullptr || building->owner != this)
+        return 0;
+    auto* workers = building->GetComponent<WorkerComponent>();
+    if (workers == nullptr)
+        return 0;
+
+    const int needed = std::max(0, building->GetWorkerCapacity() - workers->assigned);
+    const int available = static_cast<int>(std::floor(
+        std::max(0.0, economy.population.availableManpower)));
+    const int assigned = std::min(needed, available);
+    if (assigned <= 0)
+        return 0;
+
+    economy.population.availableManpower -= assigned;
+    workers->assigned += assigned;
+    return assigned;
+}
+
+ProvincePopulationView Player::GetProvincePopulationView(ProvinceId provinceId) const
+{
+    const ProvinceEconomy* economy = GetProvinceEconomy(provinceId);
+    return economy == nullptr ? ProvincePopulationView{} :
+        BuildProvincePopulationView(*economy, *this);
 }
 
 bool Player::TryPayBuildCost(const std::vector<ResourceAmountDefinition>& costs)
@@ -684,8 +808,6 @@ ResourceFlowSnapshot PlayerEconomyTelemetry::BuildSnapshot(Player& player, doubl
     const ProvinceEconomy* economy = player.GetProvinceEconomy();
     return economy != nullptr ? economy->economyTelemetry.BuildSnapshot(time) : ResourceFlowSnapshot{};
 }
-
-// ─── ETAP 10: Strategic building registries ──────────────────────────────────
 
 void Player::RegisterBuilding(Building* building)
 {

@@ -1,7 +1,6 @@
 #include "scenes/Scenes.h"
 #include "scenes/SceneUtils.h"
 
-// Serializes current runtime state.
 SaveGameScene::SaveGameScene()
 {
     backButton.ChangeText("Back");
@@ -39,7 +38,6 @@ SaveGameScene::SaveGameScene()
     cancelOverwriteButton.UpdateSize({GetScreenWidth(), GetScreenHeight()});
 }
 
-// Advances this object's state for one frame.
 void SaveGameScene::Update(double dt)
 {
     ProcessGuiInput(dt);
@@ -49,7 +47,6 @@ void SaveGameScene::Update(double dt)
         render.Draw({&backButton, &saveName, &newSaveButton, &saveButtons}, dt);
 }
 
-// Handles the UI action represented by OnBackPressed.
 void SaveGameScene::OnBackPressed()
 {
     auto msg = std::make_shared<ChangeSceneEvent>();
@@ -59,7 +56,6 @@ void SaveGameScene::OnBackPressed()
     broker->Broadcast(msg);
 }
 
-// Handles the UI action represented by OnSavePressed.
 void SaveGameScene::OnSavePressed(std::string save)
 {
     pendingOverwriteSave = save;
@@ -67,13 +63,11 @@ void SaveGameScene::OnSavePressed(std::string save)
     confirmOverwriteButton.ChangeText("Overwrite " + save);
 }
 
-// Handles the UI action represented by OnNewSavePressed.
 void SaveGameScene::OnNewSavePressed()
 {
     std::string requestedName = SanitizeSaveName(saveName.GetText());
     if (SaveExists(requestedName))
     {
-        // Handles the UI action represented by OnSavePressed.
         OnSavePressed(requestedName);
         return;
     }
@@ -85,7 +79,6 @@ void SaveGameScene::OnNewSavePressed()
     overwriteConfirmationVisible = false;
 }
 
-// Handles the UI action represented by OnConfirmOverwrite.
 void SaveGameScene::OnConfirmOverwrite()
 {
     if (pendingOverwriteSave.empty())
@@ -99,25 +92,20 @@ void SaveGameScene::OnConfirmOverwrite()
     overwriteConfirmationVisible = false;
 }
 
-// Handles the UI action represented by OnCancelOverwrite.
 void SaveGameScene::OnCancelOverwrite()
 {
     pendingOverwriteSave.clear();
     overwriteConfirmationVisible = false;
 }
 
-// Loads the requested data into runtime state.
 void SaveGameScene::LoadSaves()
 {
-    // Initializes PopulateSaveButtons.
     PopulateSaveButtons(saveButtons, [this](std::string saveName)
     {
-        // Handles the UI action represented by OnSavePressed.
         OnSavePressed(saveName);
     });
 }
 
-// Handles the requested event or transfer.
 void SaveGameScene::HandleEvent(std::shared_ptr<Event> e)
 {
     auto ptr = std::dynamic_pointer_cast<WindowSizeChangedEvent>(e);

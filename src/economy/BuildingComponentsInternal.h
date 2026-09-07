@@ -3,10 +3,7 @@
 
 #include "economy/Building.h"
 
-// Private helpers shared by two or more BuildingComponents translation units
-// (LogisticsComponent.cpp, StorageComponent.cpp, PopulationComponent.cpp).
-// Not part of the public inc/ API — implementation detail of the component
-// split (ETAP 8.2), same role as src/ui/GuiInternal.h for the GUI split.
+// Private helpers shared by building-component translation units.
 
 // Counts resource units already in transit toward `target` (so callers don't
 // over-request capacity that's already spoken for).

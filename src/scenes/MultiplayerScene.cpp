@@ -306,7 +306,6 @@ MultiplayerScene::MultiplayerScene()
     RefreshMultiplayerLabels();
 }
 
-// Advances this object's state for one frame.
 void MultiplayerScene::Update(double dt)
 {
     ProcessGuiInput(dt);
@@ -391,7 +390,6 @@ void MultiplayerScene::Update(double dt)
         MaybeBroadcastSettingsChange("Game settings updated.");
 }
 
-// Handles the requested event or transfer.
 void MultiplayerScene::HandleEvent(std::shared_ptr<Event> e)
 {
     auto ptr = std::dynamic_pointer_cast<WindowSizeChangedEvent>(e);
@@ -424,7 +422,6 @@ void MultiplayerScene::HandleEvent(std::shared_ptr<Event> e)
     }
 }
 
-// Handles the UI action represented by OnBackPressed.
 void MultiplayerScene::OnBackPressed()
 {
     if (connectingToLobby)
@@ -453,7 +450,6 @@ void MultiplayerScene::OnBackPressed()
     broker->Broadcast(msg);
 }
 
-// Handles the UI action represented by OnHostPressed.
 void MultiplayerScene::OnHostPressed()
 {
     ResetLobby();
@@ -470,7 +466,6 @@ void MultiplayerScene::OnHostPressed()
     Log::Msg("[Lobby]", "Host lobby opened: ", lobbySessionName, " port=", lobbyPort);
 }
 
-// Handles the UI action represented by OnJoinPressed.
 void MultiplayerScene::OnJoinPressed()
 {
     ResetLobby();
@@ -490,7 +485,6 @@ void MultiplayerScene::OnJoinPressed()
     Log::Msg("[Lobby]", "Client lobby join requested: ", lobbyAddress, ":", lobbyPort, " session=", lobbySessionName);
 }
 
-// Handles the UI action represented by OnStartPressed.
 void MultiplayerScene::OnStartPressed()
 {
     if (!lobbyActive || !isLobbyHost || lobbyTransport == nullptr)
@@ -516,14 +510,12 @@ void MultiplayerScene::OnStartPressed()
     broker->Broadcast(msg);
 }
 
-// Handles the UI action represented by OnGameSettingsPressed.
 void MultiplayerScene::OnGameSettingsPressed()
 {
     if (isLobbyHost)
         showGameSettings = true;
 }
 
-// Handles the UI action represented by OnCloseGameSettingsPressed.
 void MultiplayerScene::OnCloseGameSettingsPressed()
 {
     showGameSettings = false;
@@ -531,7 +523,6 @@ void MultiplayerScene::OnCloseGameSettingsPressed()
     MaybeBroadcastSettingsChange("Game settings updated.");
 }
 
-// Handles the UI action represented by OnMultiplayerSizePressed.
 void MultiplayerScene::OnMultiplayerSizePressed()
 {
     int next = (static_cast<int>(lobbySizePreset) + 1) % 4;
@@ -567,7 +558,6 @@ void MultiplayerScene::OnMultiplayerGlobalValueScalesPressed()
     MaybeBroadcastSettingsChange("Global province value scales updated.");
 }
 
-// Handles the UI action represented by OnSendChatPressed.
 void MultiplayerScene::OnSendChatPressed()
 {
     if (!lobbyActive || lobbyTransport == nullptr)

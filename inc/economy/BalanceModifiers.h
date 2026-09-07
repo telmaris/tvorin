@@ -92,8 +92,7 @@ struct BalanceModifierContext
     std::optional<Vec2i> position;
     std::optional<int> buildingId;
     std::optional<int> positionId;
-    // TD(etap-3): unit-definition id (e.g. "swordsman") for BattleUnit stat
-    // queries. Empty for every non-unit context.
+    // Empty for non-unit modifier queries.
     std::string unitDefId;
     ProvinceId provinceId{InvalidProvinceId};
 };
@@ -112,9 +111,7 @@ struct BalanceModifier
     // category of context.resourceType via ResourceCategoryOf(). Placed last so
     // existing positional BalanceModifier{...} aggregate initializers still work.
     std::optional<ResourceCategory> resourceCategory;
-    // TD(etap-3): restricts a Unit* stat modifier to one unit definition (e.g. a
-    // tech that only speeds up archers), mirroring how `buildingType` restricts
-    // a modifier to one building type. Unset = applies to every unit.
+    // Restricts a unit modifier to one definition. Unset applies to every unit.
     std::optional<std::string> unitDefId;
 
     bool AppliesTo(const BalanceModifierContext& context) const

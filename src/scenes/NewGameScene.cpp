@@ -17,7 +17,6 @@ namespace
         static_cast<float>(MaximumProvinceCount - MinimumProvinceCount);
 }
 
-// Initializes NewGameScene::NewGameScene.
 NewGameScene::NewGameScene()
 {
     menuBackground.ChangePositionAnchor({0.0f, 0.0f});
@@ -152,7 +151,6 @@ NewGameScene::NewGameScene()
     debugMode.UpdateSize(windowSize);
 }
 
-// Advances this object's state for one frame.
 void NewGameScene::Update(double dt)
 {
     ProcessGuiInput(dt);
@@ -170,7 +168,6 @@ void NewGameScene::Update(double dt)
     render.Draw(widgets, dt);
 }
 
-// Handles the UI action represented by OnBackPressed.
 void NewGameScene::OnBackPressed()
 {
     auto msg = std::make_shared<ChangeSceneEvent>();
@@ -180,7 +177,6 @@ void NewGameScene::OnBackPressed()
     broker->Broadcast(msg);
 }
 
-// Handles the UI action represented by OnStartPressed.
 void NewGameScene::OnStartPressed()
 {
     auto msg = std::make_shared<NewGameEvent>();
@@ -258,7 +254,6 @@ void NewGameScene::ApplySinglePlayerParameters(MapParameters& params)
     params.aiDifficulty = 0;
 }
 
-// Handles the UI action represented by OnSizePressed.
 void NewGameScene::OnSizePressed()
 {
     int next = (static_cast<int>(selectedSize) + 1) % 4;
@@ -266,7 +261,6 @@ void NewGameScene::OnSizePressed()
     RefreshOptionLabels();
 }
 
-// Initializes NewGameScene::RefreshOptionLabels.
 void NewGameScene::RefreshOptionLabels()
 {
     sizeButton.ChangeText("Map size: " + MapSizeName(selectedSize));
@@ -298,7 +292,6 @@ void NewGameScene::RefreshOptionLabels()
         ? "Global map fog of war: On" : "Global map fog of war: Off");
 }
 
-// Handles the requested event or transfer.
 void NewGameScene::HandleEvent(std::shared_ptr<Event> e)
 {
     auto ptr = std::dynamic_pointer_cast<WindowSizeChangedEvent>(e);

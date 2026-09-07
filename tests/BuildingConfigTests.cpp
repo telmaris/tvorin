@@ -82,6 +82,8 @@ TEST(BuildingConfigTests, RoadUpgradeTiersExposeCapacityAndTransportSpeedEffects
         });
 
     ASSERT_NE(levelTwo, road.upgradeLevels.end());
+    EXPECT_EQ(levelTwo->visualTexturePath,
+              "assets/textures/roads/generated/roads_level2_stone_autotile_3x4_64px.png");
     EXPECT_TRUE(std::any_of(levelTwo->modifiers.begin(), levelTwo->modifiers.end(),
         [](const BalanceModifier& modifier)
         {
@@ -92,6 +94,15 @@ TEST(BuildingConfigTests, RoadUpgradeTiersExposeCapacityAndTransportSpeedEffects
         {
             return modifier.stat == BalanceStat::RoadSpeed && modifier.multiplier > 1.0;
         }));
+
+    const auto levelThree = std::find_if(road.upgradeLevels.begin(), road.upgradeLevels.end(),
+        [](const BuildingUpgradeLevelDefinition& level)
+        {
+            return level.level == 3;
+        });
+    ASSERT_NE(levelThree, road.upgradeLevels.end());
+    EXPECT_EQ(levelThree->visualTexturePath,
+              "assets/textures/roads/generated/roads_level3_paved_autotile_3x4_64px.png");
 }
 
 TEST(BuildingConfigTests, WeaponAndMetalBuildingsUseRequestedDefaultRecipes)
@@ -109,7 +120,7 @@ TEST(BuildingConfigTests, WeaponAndMetalBuildingsUseRequestedDefaultRecipes)
     EXPECT_EQ(bowyer.recipes.front().production.outputs.front().type, ResourceType::ARROWS);
 }
 
-TEST(BuildingConfigTests, InnProducesThreeFoodProvisionsPerCycle)
+TEST(BuildingConfigTests, InnProducesTwoFoodProvisionsPerCycle)
 {
     const auto& inn = GetBuildingDefinition(BuildingType::Inn);
     auto food = std::find_if(inn.production.outputs.begin(), inn.production.outputs.end(),
@@ -118,7 +129,7 @@ TEST(BuildingConfigTests, InnProducesThreeFoodProvisionsPerCycle)
             return output.type == ResourceType::FOOD_PROVISIONS;
         });
     ASSERT_NE(food, inn.production.outputs.end());
-    EXPECT_EQ(food->amount, 3);
+    EXPECT_EQ(food->amount, 2);
 }
 
 TEST(BuildingConfigTests, TerrainSpecificProductionCanBeFound)
@@ -201,7 +212,7 @@ building Road
 end
 building Village
     build_category food
-    village manpower_rate 0.4 population_cap 120 upkeep_interval 9 food_package_upkeep 2
+    village manpower_rate 0.4 population_cap 120 upkeep_interval 9 food_package_upkeep 2 food_shortage_decay_seconds 180
     upgrade level 2 population_cap 360 manpower_rate 0.9 cost WOOD 5 build_time 3
 end
 )DATA");
@@ -250,12 +261,43 @@ end
     EXPECT_DOUBLE_EQ(village.village.manpowerRate, 0.4);
     EXPECT_EQ(village.village.populationCap, 120);
     EXPECT_DOUBLE_EQ(village.village.foodPackageUpkeep, 2.0);
+    EXPECT_DOUBLE_EQ(village.village.foodShortageDecaySeconds, 180.0);
     ASSERT_EQ(village.upgradeLevels.size(), 1u);
     EXPECT_EQ(village.upgradeLevels[0].level, 2);
     ASSERT_TRUE(village.upgradeLevels[0].populationCap.has_value());
     EXPECT_EQ(*village.upgradeLevels[0].populationCap, 360);
     ASSERT_TRUE(village.upgradeLevels[0].manpowerRate.has_value());
     EXPECT_DOUBLE_EQ(*village.upgradeLevels[0].manpowerRate, 0.9);
+}
+
+TEST(BuildingConfigTests, VillageFoodShortageDecayRequiresFinitePositiveSeconds)
+{
+    const auto write = [](const std::string& value)
+    {
+        const auto path = std::filesystem::temp_directory_path() /
+                          "rts_village_food_decay_fixture.rtsdata";
+        std::ofstream file(path);
+        file << "building Village\n"
+                "    build_category food\n"
+             << "    village food_shortage_decay_seconds " << value << "\n"
+                "end\n";
+        file.close();
+        return path;
+    };
+
+    const auto validPath = write("180");
+    const auto valid = LoadBuildingDefinitionsFromFile(validPath.string());
+    std::error_code ignored;
+    std::filesystem::remove(validPath, ignored);
+    ASSERT_EQ(valid.size(), 1u);
+    EXPECT_DOUBLE_EQ(valid.front().village.foodShortageDecaySeconds, 180.0);
+
+    for (const std::string value : {"0", "-1", "nan", "inf"})
+    {
+        const auto invalidPath = write(value);
+        EXPECT_THROW(LoadBuildingDefinitionsFromFile(invalidPath.string()), std::runtime_error);
+        std::filesystem::remove(invalidPath, ignored);
+    }
 }
 
 TEST(BuildingConfigTests, BuildableBuildingsHaveExactlyOneDataDrivenBuildCategory)

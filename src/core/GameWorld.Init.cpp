@@ -17,6 +17,18 @@ namespace
     constexpr int kMaxStartingVillageRoadTiles = 30;
     constexpr int kMaxWorldLayoutAttempts = 8;
 
+    void ApplyProvinceResourceProfile(MapParameters& mapParameters,
+                                      const BuildableProvinceParameters& provinceParameters)
+    {
+        if (provinceParameters.resourceDeposits.empty())
+            return;
+        std::vector<ResourceProfileDeposit> deposits;
+        deposits.reserve(provinceParameters.resourceDeposits.size());
+        for (const auto& deposit : provinceParameters.resourceDeposits)
+            deposits.push_back({deposit.resource, static_cast<float>(deposit.richness)});
+        MapGenerator::ApplyResourceProfile(mapParameters, deposits);
+    }
+
     const char* LayoutFailureName(WorldLayoutFailure failure)
     {
         switch (failure)
@@ -30,10 +42,7 @@ namespace
         return "InternalError";
     }
 
-    // B5 (docs/work_plan_2026-07-13.md): deterministic reseed for a
-    // regeneration retry — same inputs always produce the same sequence of
-    // attempts, so a retried world is still fully reproducible from the
-    // original seed.
+    // Retries remain reproducible from the original seed.
     unsigned int PerturbSeedForRetry(unsigned int seed, int attempt)
     {
         return seed ^ (0xB5297A4Du * (static_cast<unsigned int>(attempt) + 1));
@@ -497,7 +506,6 @@ GameWorld::WorldLayoutResult GameWorld::GenerateWorldLayout(TileMap& targetMap,
     return result;
 }
 
-// Creates and registers the requested runtime object.
 Player* GameWorld::CreatePlayer(int id, PlayerControllerType controllerType, const std::string& name,
                                 Color color, TileMap& map)
 {
@@ -527,7 +535,6 @@ Player* GameWorld::CreatePlayer(int id, PlayerControllerType controllerType, con
     return ptr;
 }
 
-// Creates and registers the requested runtime object.
 Vec2i GameWorld::CreateStartingHq(Player* player, Vec2i hqAnchor, unsigned int seed, TileMap& map)
 {
     if (player == nullptr)
@@ -544,7 +551,6 @@ Vec2i GameWorld::CreateStartingHq(Player* player, Vec2i hqAnchor, unsigned int s
     return hqAnchor;
 }
 
-// Creates and registers the requested runtime object.
 void GameWorld::CreateStartingVillageAndResources(Player* player, Vec2i hqAnchor,
                                                   unsigned int seed, TileMap& map)
 {
@@ -797,6 +803,7 @@ bool GameWorld::InitWorld(std::string name, Renderer* r,
     if (!homeProvince->GetParameters().naturalResourceTypes.empty())
         MapGenerator::FilterResourcePatchesForProfile(
             localMapParams, homeProvince->GetParameters().naturalResourceTypes);
+    ApplyProvinceResourceProfile(localMapParams, homeProvince->GetParameters());
     TileMap& primaryMap = homeProvince->CreateSimulation().GetTileMap();
     reportProgress(0.14f, "Generating terrain and starting area");
     WorldLayoutResult layout = GenerateWorldLayout(primaryMap, localMapParams, playerCount);
@@ -923,6 +930,7 @@ bool GameWorld::InitMultiplayerWorld(std::string name, Renderer* r,
     if (!hostProvince->GetParameters().naturalResourceTypes.empty())
         MapGenerator::FilterResourcePatchesForProfile(
             primaryMapParams, hostProvince->GetParameters().naturalResourceTypes);
+    ApplyProvinceResourceProfile(primaryMapParams, hostProvince->GetParameters());
     TileMap& primaryMap = hostProvince->CreateSimulation().GetTileMap();
     reportProgress(0.14f, "Generating peaceful terrain and starting areas");
     WorldLayoutResult layout = GenerateWorldLayout(primaryMap, primaryMapParams, 1);
@@ -977,6 +985,7 @@ bool GameWorld::InitMultiplayerWorld(std::string name, Renderer* r,
             if (!province->GetParameters().naturalResourceTypes.empty())
                 MapGenerator::FilterResourcePatchesForProfile(
                     localParams, province->GetParameters().naturalResourceTypes);
+            ApplyProvinceResourceProfile(localParams, province->GetParameters());
             const WorldLayoutResult localLayout = GenerateWorldLayout(
                 simulation.GetTileMap(), localParams, 1);
             if (!localLayout.success)
@@ -1083,4 +1092,3 @@ void GameWorld::AttachPresentation(Renderer* renderer)
     render->camera.rotation = 0.0f;
     render->CenterCameraOnWorld(center, {localMap.params.sizeX, localMap.params.sizeY});
 }
-

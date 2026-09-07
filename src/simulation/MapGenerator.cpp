@@ -65,7 +65,6 @@ namespace
     }
 }
 
-// Initializes MapGenerator::GenerateTileMap.
 void MapGenerator::GenerateTileMap(TileMap& tilemap, MapParameters& params)
 {
     int presetSize = SizeFromPreset(params.sizePreset);
@@ -122,7 +121,6 @@ void MapGenerator::GenerateBiomes(TileMap& tilemap, const MapParameters& params,
     }
 }
 
-// Initializes MapGenerator::SizeFromPreset.
 int MapGenerator::SizeFromPreset(MapSizePreset preset)
 {
     switch (preset)
@@ -188,8 +186,7 @@ namespace
     }
 }
 
-// Deterministically places `playerCount` HQ anchors on an n-gon (B1,
-// docs/work_plan_2026-07-13.md): the nominal radius is chosen so adjacent
+// Deterministically places `playerCount` HQ anchors on an n-gon. The radius makes adjacent
 // ring vertices clear minSafeDistance by construction (chord = 2R sin(pi/n),
 // the smallest chord in a regular polygon — every non-adjacent pair is
 // therefore automatically farther apart), then a handful of deterministic
@@ -233,7 +230,6 @@ std::vector<Vec2i> MapGenerator::PickHeadquartersAnchors(const MapParameters& pa
     return BuildRingLayout(mapCenter, footprint, params, playerCount, radius, rotation, 0.0, fallbackRng);
 }
 
-// Initializes MapGenerator::GenerateResourcePatches.
 void MapGenerator::GenerateResourcePatches(TileMap& tilemap, const MapParameters& params, std::mt19937& rng)
 {
     constexpr double referenceMapArea = 401.0 * 401.0;
@@ -295,23 +291,44 @@ void MapGenerator::FilterResourcePatchesForProfile(
         params.resourcePatches.end());
 }
 
-// B3 rework (docs/work_plan_2026-07-13.md + user follow-up 2026-07-14):
-// clean, rounded/oval deposits (Factorio-style). Shape = ellipse (randomized
-// eccentricity + rotation) with a smooth low-frequency wobble on its boundary
-// radius — a single simply-connected, gently undulating oval.
+void MapGenerator::ApplyResourceProfile(
+    MapParameters& params, const std::vector<ResourceProfileDeposit>& deposits)
+{
+    std::map<ResourceType, float> richnessByResource;
+    for (const auto& deposit : deposits)
+    {
+        if (deposit.resource == ResourceType::Null ||
+            !std::isfinite(deposit.richnessScale) || deposit.richnessScale <= 0.0f)
+            continue;
+        richnessByResource[deposit.resource] = std::clamp(
+            deposit.richnessScale, 0.10f, 4.0f);
+    }
+
+    std::vector<ResourceType> resources;
+    resources.reserve(richnessByResource.size());
+    for (const auto& [resource, scale] : richnessByResource)
+    {
+        (void)scale;
+        resources.push_back(resource);
+    }
+    FilterResourcePatchesForProfile(params, resources);
+    for (auto& patch : params.resourcePatches)
+    {
+        const ResourceType resource = ResourceTypeFromTileType(patch.type);
+        const auto it = richnessByResource.find(resource);
+        if (it != richnessByResource.end())
+            patch.richnessScale = std::clamp(patch.richnessScale * it->second,
+                                             0.10f, 4.0f);
+    }
+}
+
+// Produces rounded resource deposits as ellipses with randomized
+// eccentricity and rotation, plus a smooth low-frequency boundary wobble.
 //
-// The 2026-07-14 follow-up fixed WHY patches still looked jagged after the
-// first ellipse version: the biome gate used to be applied PER TILE while
-// painting, so a clean oval got clipped along the noisy value-noise biome
-// border it straddled — producing exactly the "poszarpane bryły" the shape
-// rework was supposed to remove. The biome constraint now applies to the
-// patch CENTER only (deterministic re-draws until an allowed biome is hit),
-// and the whole oval is painted regardless of what biome its outer tiles
-// touch — geographic placement is preserved, the silhouette stays clean.
+// The biome constraint applies only to the patch center so noisy biome borders
+// do not clip the oval.
 // Small patches additionally scale the wobble down: on a radius-2 deposit a
 // full-amplitude wobble is just integer-rounding teeth, not an organic edge.
-//
-// Initializes MapGenerator::GeneratePatch.
 void MapGenerator::GeneratePatch(TileMap& tilemap, const ResourcePatchParameters& patch, std::mt19937& rng)
 {
     if (patch.patchCount <= 0 || patch.maxRadius <= 0)
@@ -468,7 +485,6 @@ void MapGenerator::RefreshResourceOverlayEdges(TileMap& tilemap, std::mt19937& r
     }
 }
 
-// Initializes MapGenerator::PrepareStartingArea.
 void MapGenerator::PrepareStartingArea(TileMap& tilemap, Vec2i hqAnchor, std::mt19937& rng)
 {
     Vec2i hqFootprint = HeadquartersFootprint();

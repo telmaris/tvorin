@@ -89,7 +89,8 @@ bool BattleLifecycleSystem::StartProvinceAttack(
     Player& attacker, ProvinceId sourceProvinceId, ProvinceId targetProvinceId,
     const std::vector<int>& unitInstanceIds, GlobalMap& map, WorldJourneySystem& journeys,
     const std::map<PlayerId, Player*>& players, std::uint64_t currentTick,
-    BattleSeed campaignSeed, BattleId& createdId, std::string& failureReason)
+    BattleSeed campaignSeed, BattleId& createdId, std::string& failureReason,
+    ExpeditionLoadout expeditionLoadout, JourneySpeedProfile speedProfile)
 {
     PruneBattleHistory(battles, reports);
     createdId = InvalidBattleId;
@@ -179,6 +180,7 @@ bool BattleLifecycleSystem::StartProvinceAttack(
     for (const ProvinceConnectionId connectionId : path)
         journey.legPlan.push_back({connectionId});
     journey.payload = ArmyParty{std::vector<int>(unitInstanceIds.begin(), unitInstanceIds.end())};
+    journey.loadout = std::move(expeditionLoadout);
     std::sort(std::get<ArmyParty>(journey.payload).unitInstanceIds.begin(),
               std::get<ArmyParty>(journey.payload).unitInstanceIds.end());
     std::string journeyFailure;
@@ -200,6 +202,12 @@ bool BattleLifecycleSystem::StartProvinceAttack(
     }
     journeyRules.speedProfile.moverSpeedBasisPoints = static_cast<int>(std::llround(
         slowestMoveSpeed * JourneyTiming::BasisPoints));
+    if (speedProfile.operationSpeedBasisPoints > 0)
+    {
+        journeyRules.speedProfile = speedProfile;
+        journeyRules.speedProfile.moverSpeedBasisPoints = static_cast<int>(std::llround(
+            slowestMoveSpeed * JourneyTiming::BasisPoints));
+    }
     const WorldJourneyStartResult start = journeys.Start(
         std::move(journey), map, currentTick, journeyRules);
     if (!start)
@@ -478,9 +486,11 @@ void BattleLifecycleSystem::ResolveRaid(BattleInstance& battle, GlobalMap& map,
 
 void BattleLifecycleSystem::Update(GlobalMap& map, WorldJourneySystem& journeys,
                                    const std::map<PlayerId, Player*>& players,
-                                   std::uint64_t currentTick, BattleSeed campaignSeed)
+                                   std::uint64_t currentTick, BattleSeed campaignSeed,
+                                   bool advanceJourneys)
 {
-    journeys.Update(map, currentTick);
+    if (advanceJourneys)
+        journeys.Update(map, currentTick);
     for (auto& [battleId, battle] : battles)
     {
         (void)battleId;
@@ -493,8 +503,18 @@ void BattleLifecycleSystem::Update(GlobalMap& map, WorldJourneySystem& journeys,
             if (battle.journeyId != event.journeyId ||
                 battle.status != BattleLifecycleStatus::InTransit)
                 continue;
-            if (!event.journeySucceeded)
+            const auto journeyIt = journeys.GetJourneys().find(battle.journeyId);
+            if (!event.journeySucceeded || journeyIt == journeys.GetJourneys().end() ||
+                journeyIt->second.status != WorldJourneyStatus::Succeeded)
                 continue;
+            if (const auto* army = std::get_if<ArmyParty>(&journeyIt->second.payload))
+                battle.attackerUnitIds = army->unitInstanceIds;
+            if (battle.attackerUnitIds.empty())
+            {
+                battle.status = BattleLifecycleStatus::Failed;
+                ReleaseAttackerUnits(battle, players, battle.sourceProvinceId);
+                continue;
+            }
             const auto attackerIt = players.find(battle.attackerId);
             if (attackerIt == players.end() || attackerIt->second == nullptr)
             {

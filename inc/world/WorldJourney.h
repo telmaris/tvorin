@@ -2,6 +2,7 @@
 #define WORLD_JOURNEY_H
 
 #include "data/Resource.h"
+#include "world/Expedition.h"
 #include "world/GlobalMap.h"
 #include "world/JourneyTiming.h"
 #include "world/WorldIds.h"
@@ -72,6 +73,7 @@ struct WorldJourney
     std::uint64_t legCompletionTick{0};
     std::uint64_t deterministicAttemptCounter{0};
     WorldJourneyRules rules{};
+    ExpeditionLoadout loadout{};
     WorldJourneyPayload payload{ScoutParty{}};
 };
 
@@ -107,11 +109,14 @@ public:
     // journey fails only when the last assigned scout is lost; sending a
     // larger party therefore provides real redundancy against route events.
     std::vector<int> ApplyScoutUnitLoss(WorldJourneyId journeyId, int amount);
+    std::vector<int> ApplyJourneyUnitLoss(WorldJourneyId journeyId, int amount,
+                                          std::uint64_t outcomeRoll = 0);
     bool MarkAwaitingUnload(WorldJourneyId journeyId);
     bool Cancel(WorldJourneyId journeyId);
     const std::map<WorldJourneyId, WorldJourney>& GetJourneys() const { return journeys; }
     std::map<WorldJourneyId, WorldJourney>& GetJourneysForAuthority() { return journeys; }
     std::vector<JourneyLegCompleted> ConsumeLegEvents();
+    const std::vector<JourneyLegCompleted>& GetPendingLegEvents() const { return legEvents; }
     // Battle lifecycle consumes only its own journey events. Other payload
     // handlers (scouting, trade and colonization) can consume their events
     // afterwards without losing a completion notification.

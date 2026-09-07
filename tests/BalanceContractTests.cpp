@@ -1,3 +1,4 @@
+#include "economy/BalanceStatCatalog.h"
 #include "economy/BalanceStatDisplay.h"
 #include "research/Technology.h"
 
@@ -5,6 +6,7 @@
 
 #include <filesystem>
 #include <fstream>
+#include <set>
 
 TEST(BalanceContractTests, NewStatsHaveStableParserAndDisplayContracts)
 {
@@ -47,4 +49,22 @@ TEST(BalanceContractTests, ShippedTechAndFocusAssetsUseNewStats)
             foundFocus |= modifier.stat == BalanceStat::GarrisonCapacity;
     EXPECT_TRUE(foundTech);
     EXPECT_TRUE(foundFocus);
+}
+
+TEST(BalanceContractTests, CatalogRoundTripsEveryGameplayStatAndExcludesSentinel)
+{
+    const auto& catalog = GetBalanceStatCatalog();
+    ASSERT_EQ(catalog.size(), static_cast<std::size_t>(BalanceStat::Count));
+    std::set<std::string> names;
+    for (const auto& entry : catalog)
+    {
+        ASSERT_NE(entry.serializedName, nullptr);
+        EXPECT_TRUE(names.insert(entry.serializedName).second);
+        const auto parsed = TryParseBalanceStat(entry.serializedName);
+        ASSERT_TRUE(parsed.has_value());
+        EXPECT_EQ(*parsed, entry.value);
+        EXPECT_NE(FindBalanceStatCatalogEntry(entry.value), nullptr);
+    }
+    EXPECT_FALSE(TryParseBalanceStat("Count").has_value());
+    EXPECT_EQ(FindBalanceStatCatalogEntry(BalanceStat::Count), nullptr);
 }

@@ -6,6 +6,7 @@
 #include "economy/ConstructionQueue.h"
 #include "economy/PlayerDataTracker.h"
 #include "economy/PlayerEconomy.h"
+#include "economy/ProvincePopulation.h"
 #include "simulation/MapGenerator.h"
 #include "simulation/RoadNetwork.h"
 #include "world/WorldIds.h"
@@ -36,6 +37,8 @@ struct ProvinceEconomy
     ConstructionQueue construction;
     PlayerEconomyTelemetry economyTelemetry;
     FogOfWarState fogOfWar;
+    ProvincePopulationState population;
+    std::vector<std::string> traitIds;
 
     ProvinceEconomy() = default;
     ProvinceEconomy(ProvinceId id, PlayerId owner);
@@ -43,6 +46,7 @@ struct ProvinceEconomy
     ProvinceEconomy& operator=(const ProvinceEconomy&) = delete;
 
     void BindOwner(Player& player);
+    void SetTraitIds(std::vector<std::string> value) { traitIds = std::move(value); }
     void BindTileMap(TileMap& map);
     void RegisterBuilding(Building* building);
     void UnregisterBuilding(Building* building);

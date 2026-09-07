@@ -84,7 +84,7 @@ enum class ResourceType : uint8_t
     LEATHER_ARMOR = 36,
     IRON_ARMOR = 37,
 
-    // Resource & world expansion (see docs/resource_world_design.md).
+    // Additional world resources.
     // Raw deposits:
     TIN_ORE = 38,
     SAND = 39,
@@ -552,12 +552,10 @@ class ResourceBuffer
 
         // Adds a resource pointer when there is free capacity.
         void AddResource(Resource* res);
-        // Removes and returns one resource pointer when available.
         std::pair<bool, Resource*> GetResource();
         
         // Allocates one resource instance and stores it in this buffer.
         void GenerateResource(ResourceType type);
-        // Releases one stored owned resource instance.
         void FreeResource();
         // Releases all stored owned resource instances.
         void Clear();

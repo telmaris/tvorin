@@ -54,6 +54,7 @@ struct GameCommand
     static constexpr std::size_t MaxUnitInstanceIds = 32;
     static constexpr std::size_t MaxTaskGroupIds = 32;
     static constexpr std::size_t MaxResourceCargoTypes = 16;
+    static constexpr std::size_t MaxExpeditionLoadoutTypes = 16;
     // Local commands carry provinceId explicitly. Global commands use their
     // own province and expedition fields; no ID is packed into a tile field.
     static constexpr int WireVersion = SerializationVersion::GameCommandVersion;
@@ -239,7 +240,8 @@ struct GameCommand
 
     static GameCommand StartScoutExpedition(PlayerId playerId, ProvinceId sourceProvinceId,
                                             ProvinceId targetProvinceId,
-                                            std::vector<int> unitInstanceIds)
+                                            std::vector<int> unitInstanceIds,
+                                            ExpeditionLoadout loadout = {})
     {
         GameCommand command;
         command.playerId = playerId;
@@ -248,6 +250,7 @@ struct GameCommand
         command.targetProvinceId = targetProvinceId;
         command.expeditionRole = ExpeditionRole::Scout;
         command.unitInstanceIds = std::move(unitInstanceIds);
+        command.expeditionLoadout = std::move(loadout);
         return command;
     }
 
@@ -276,7 +279,8 @@ struct GameCommand
 
     static GameCommand StartProvinceAttack(PlayerId playerId, ProvinceId sourceProvinceId,
                                            ProvinceId targetProvinceId,
-                                           std::vector<int> unitInstanceIds)
+                                           std::vector<int> unitInstanceIds,
+                                           ExpeditionLoadout loadout = {})
     {
         GameCommand command;
         command.playerId = playerId;
@@ -285,12 +289,14 @@ struct GameCommand
         command.type = GameCommandType::StartProvinceAttack;
         command.expeditionRole = ExpeditionRole::Garrison;
         command.unitInstanceIds = std::move(unitInstanceIds);
+        command.expeditionLoadout = std::move(loadout);
         return command;
     }
 
     static GameCommand StartProvinceAttackWithTaskGroups(
         PlayerId playerId, ProvinceId sourceProvinceId, ProvinceId targetProvinceId,
-        std::vector<TaskGroupId> taskGroupIds)
+        std::vector<TaskGroupId> taskGroupIds,
+        ExpeditionLoadout loadout = {})
     {
         GameCommand command;
         command.playerId = playerId;
@@ -299,6 +305,7 @@ struct GameCommand
         command.type = GameCommandType::StartProvinceAttack;
         command.expeditionRole = ExpeditionRole::Garrison;
         command.taskGroupIds = std::move(taskGroupIds);
+        command.expeditionLoadout = std::move(loadout);
         return command;
     }
 
@@ -489,6 +496,17 @@ struct GameCommand
         ar << static_cast<int>(unitInstanceIds.size());
         for (int unitInstanceId : unitInstanceIds)
             ar << unitInstanceId;
+        ar << static_cast<int>(expeditionLoadout.resources.size());
+        for (const auto& entry : expeditionLoadout.resources)
+            ar << static_cast<int>(entry.type) << entry.amount;
+        ar << static_cast<int>(expeditionLoadout.minimumResources.size());
+        for (const auto& entry : expeditionLoadout.minimumResources)
+            ar << static_cast<int>(entry.type) << entry.amount;
+        ar << expeditionLoadout.supplyRatioBasisPoints
+           << static_cast<int>(expeditionLoadout.modifiers.size());
+        for (const auto& modifier : expeditionLoadout.modifiers)
+            ar << static_cast<int>(modifier.stat) << modifier.multiplierBasisPoints
+               << modifier.source;
         return ar.GetString();
     }
 
@@ -653,6 +671,71 @@ struct GameCommand
         if (std::adjacent_find(sortedUnitIds.begin(), sortedUnitIds.end()) != sortedUnitIds.end() ||
             std::any_of(sortedUnitIds.begin(), sortedUnitIds.end(), [](int id) { return id <= 0; }))
             return false;
+
+        const auto commandType = static_cast<GameCommandType>(type);
+        int loadoutCount = 0;
+        int minimumCount = 0;
+        int modifierCount = 0;
+        ar >> loadoutCount;
+        if (!ar.IsValid() || loadoutCount < 0 ||
+            loadoutCount > static_cast<int>(MaxExpeditionLoadoutTypes) ||
+            (commandType != GameCommandType::StartScoutExpedition &&
+             commandType != GameCommandType::StartProvinceAttack && loadoutCount != 0))
+            return false;
+        parsed.expeditionLoadout.resources.resize(static_cast<std::size_t>(loadoutCount));
+        for (auto& entry : parsed.expeditionLoadout.resources)
+        {
+            int resource = 0;
+            ar >> resource >> entry.amount;
+            if (!ar.IsValid() || resource < 0 ||
+                resource > static_cast<int>(ResourceType::CATAPULT) || entry.amount <= 0)
+                return false;
+            entry.type = static_cast<ResourceType>(resource);
+        }
+        ar >> minimumCount;
+        if (!ar.IsValid() || minimumCount < 0 ||
+            minimumCount > static_cast<int>(MaxExpeditionLoadoutTypes) ||
+            (loadoutCount == 0 && minimumCount != 0))
+            return false;
+        parsed.expeditionLoadout.minimumResources.resize(static_cast<std::size_t>(minimumCount));
+        for (auto& entry : parsed.expeditionLoadout.minimumResources)
+        {
+            int resource = 0;
+            ar >> resource >> entry.amount;
+            if (!ar.IsValid() || resource < 0 ||
+                resource > static_cast<int>(ResourceType::CATAPULT) || entry.amount <= 0)
+                return false;
+            entry.type = static_cast<ResourceType>(resource);
+        }
+        ar >> parsed.expeditionLoadout.supplyRatioBasisPoints >> modifierCount;
+        if (!ar.IsValid() || parsed.expeditionLoadout.supplyRatioBasisPoints < 10000 ||
+            parsed.expeditionLoadout.supplyRatioBasisPoints > 20000 || modifierCount < 0 ||
+            modifierCount > static_cast<int>(MaxExpeditionLoadoutTypes) ||
+            (loadoutCount == 0 && (parsed.expeditionLoadout.supplyRatioBasisPoints != 10000 ||
+                                   modifierCount != 0)))
+            return false;
+        parsed.expeditionLoadout.modifiers.resize(static_cast<std::size_t>(modifierCount));
+        for (auto& modifier : parsed.expeditionLoadout.modifiers)
+        {
+            int stat = 0;
+            ar >> stat >> modifier.multiplierBasisPoints >> modifier.source;
+            if (!ar.IsValid() || stat < 0 || stat >= static_cast<int>(BalanceStat::Count) ||
+                modifier.multiplierBasisPoints <= 0 || modifier.multiplierBasisPoints > 20000 ||
+                modifier.source.size() > 128)
+                return false;
+            modifier.stat = static_cast<BalanceStat>(stat);
+        }
+        const auto sortedUniqueResources = [](const std::vector<ResourceAmount>& values)
+        {
+            for (std::size_t index = 1; index < values.size(); ++index)
+                if (static_cast<int>(values[index - 1].type) >=
+                    static_cast<int>(values[index].type))
+                    return false;
+            return true;
+        };
+        if (!sortedUniqueResources(parsed.expeditionLoadout.resources) ||
+            !sortedUniqueResources(parsed.expeditionLoadout.minimumResources))
+            return false;
         if (!ar.AtEnd())
             return false;
         command = std::move(parsed);
@@ -682,6 +765,7 @@ struct GameCommand
     TaskGroupId taskGroupId{InvalidTaskGroupId};
     std::vector<TaskGroupId> taskGroupIds;
     std::vector<ResourceAmount> resourceCargo;
+    ExpeditionLoadout expeditionLoadout;
     int destinationBarracksId{0};
     int raidStrength{0};
     std::vector<int> unitInstanceIds;

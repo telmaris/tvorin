@@ -1,6 +1,7 @@
 #include "world/ProvinceDefinition.h"
 
 #include "data/RtsDataFile.h"
+#include "economy/BalanceStatCatalog.h"
 
 #include <algorithm>
 #include <cmath>
@@ -42,51 +43,7 @@ namespace
 
     std::optional<BalanceStat> ParseBalanceStatName(const std::string& value)
     {
-        if (value == "BuildTime") return BalanceStat::BuildTime;
-        if (value == "BuildCost") return BalanceStat::BuildCost;
-        if (value == "ProductionCycleTime") return BalanceStat::ProductionCycleTime;
-        if (value == "ProductionOutputAmount") return BalanceStat::ProductionOutputAmount;
-        if (value == "WorkerCapacity") return BalanceStat::WorkerCapacity;
-        if (value == "TransportTime") return BalanceStat::TransportTime;
-        if (value == "RoadCapacity") return BalanceStat::RoadCapacity;
-        if (value == "RoadSpeed") return BalanceStat::RoadSpeed;
-        if (value == "ManpowerRate") return BalanceStat::ManpowerRate;
-        if (value == "PopulationCap") return BalanceStat::PopulationCap;
-        if (value == "BuilderAmount") return BalanceStat::BuilderAmount;
-        if (value == "UnitHp") return BalanceStat::UnitHp;
-        if (value == "UnitFieldAttack") return BalanceStat::UnitFieldAttack;
-        if (value == "UnitSiegePower") return BalanceStat::UnitSiegePower;
-        if (value == "UnitArmor") return BalanceStat::UnitArmor;
-        if (value == "UnitMoveSpeed") return BalanceStat::UnitMoveSpeed;
-        if (value == "UnitAttackSpeed") return BalanceStat::UnitAttackSpeed;
-        if (value == "UnitRecruitTime") return BalanceStat::UnitRecruitTime;
-        if (value == "UnitRecruitManpowerCost") return BalanceStat::UnitRecruitManpowerCost;
-        if (value == "ProvinceFortification") return BalanceStat::ProvinceFortification;
-        if (value == "ProvinceDefense") return BalanceStat::ProvinceDefense;
-        if (value == "ProvinceCounterattack") return BalanceStat::ProvinceCounterattack;
-        if (value == "ConquestSpoilsFraction") return BalanceStat::ConquestSpoilsFraction;
-        if (value == "ProvinceDefensePower") return BalanceStat::ProvinceDefensePower;
-        if (value == "ProvinceDefenseCoverage") return BalanceStat::ProvinceDefenseCoverage;
-        if (value == "ProvinceDefenseReadiness") return BalanceStat::ProvinceDefenseReadiness;
-        if (value == "ProvinceDefenseSupplyUse") return BalanceStat::ProvinceDefenseSupplyUse;
-        if (value == "TransportDispatchDelay") return BalanceStat::TransportDispatchDelay;
-        if (value == "VillageSupplyConsumption") return BalanceStat::VillageSupplyConsumption;
-        if (value == "RouteTravelSpeed") return BalanceStat::RouteTravelSpeed;
-        if (value == "RouteIncidentChance") return BalanceStat::RouteIncidentChance;
-        if (value == "TradeExchangeRate") return BalanceStat::TradeExchangeRate;
-        if (value == "TradeScoreGain") return BalanceStat::TradeScoreGain;
-        if (value == "BattleAttack") return BalanceStat::BattleAttack;
-        if (value == "BattleCasualtyRate") return BalanceStat::BattleCasualtyRate;
-        if (value == "BattleDuration") return BalanceStat::BattleDuration;
-        if (value == "GarrisonCapacity") return BalanceStat::GarrisonCapacity;
-        if (value == "GarrisonFoodUpkeep") return BalanceStat::GarrisonFoodUpkeep;
-        if (value == "RaidBuildingDestructionChance") return BalanceStat::RaidBuildingDestructionChance;
-        if (value == "RaidStockLossFraction") return BalanceStat::RaidStockLossFraction;
-        if (value == "ProvinceEventChance") return BalanceStat::ProvinceEventChance;
-        if (value == "ProvinceEventWeight") return BalanceStat::ProvinceEventWeight;
-        if (value == "ProvinceEventDuration") return BalanceStat::ProvinceEventDuration;
-        if (value == "ColonizationDuration") return BalanceStat::ColonizationDuration;
-        return std::nullopt;
+        return TryParseBalanceStat(value);
     }
 
     bool ParseInt(const RtsDataLine& tokens, std::size_t index, int& value)
@@ -148,12 +105,24 @@ namespace
         if (!IsValid(definition.cityWealth) || !IsValid(definition.banditStrength) ||
             definition.banditRaidWeight < 0)
             report("integer range is invalid");
+        if (definition.traitCount.has_value() &&
+            (!IsValid(*definition.traitCount) || definition.traitCount->min < 0 ||
+             definition.traitCount->max > static_cast<int>(definition.traits.size())))
+            report("trait_count range is invalid");
+        for (const auto& deposit : definition.resourceDeposits)
+        {
+            if (deposit.resource == ResourceType::Null || !IsValid(deposit.richness) ||
+                deposit.weight <= 0)
+                report("resource deposit is invalid");
+        }
 
         std::set<std::string> traitIds;
         for (const auto& trait : definition.traits)
         {
             if (trait.id.empty() || !traitIds.insert(trait.id).second)
                 report("trait ID is empty or duplicated");
+            if (trait.weight <= 0)
+                report("trait weight must be positive");
             for (const auto& effect : trait.effects)
             {
                 if (!std::isfinite(effect.additive) || !std::isfinite(effect.multiplier) ||
@@ -290,6 +259,14 @@ ProvinceDefinitionCatalogLoadResult LoadProvinceDefinitionCatalog(const std::str
             if (!ParseInt(tokens, 1, definition.generationWeight))
                 error(line, "weight must be an integer");
         }
+        else if (tokens[0] == "trait_count")
+        {
+            ProvinceIntRange range;
+            if (duplicateField(line, tokens[0]) || !ParseIntRange(tokens, range))
+                error(line, "trait_count requires two integers in ascending order");
+            else
+                definition.traitCount = range;
+        }
         else if (tokens[0] == "size_x")
         {
             if (duplicateField(line, tokens[0]) || !ParseIntRange(tokens, definition.sizeX))
@@ -319,6 +296,25 @@ ProvinceDefinitionCatalogLoadResult LoadProvinceDefinitionCatalog(const std::str
         {
             if (duplicateField(line, tokens[0]) || !ParseValueRange(tokens, definition.resourceRichness))
                 error(line, "resource_richness requires two finite non-negative numbers");
+        }
+        else if (tokens[0] == "deposit")
+        {
+            if (tokens.size() != 5)
+            {
+                error(line, "deposit requires resource, two richness values and weight");
+                continue;
+            }
+            ResourceType resource = ResourceType::Null;
+            ProvinceValueRange richness;
+            int weight = 0;
+            if (!TryParseResourceType(tokens[1], resource) || resource == ResourceType::Null ||
+                !ParseDouble(tokens, 2, richness.min) || !ParseDouble(tokens, 3, richness.max) ||
+                !ParseInt(tokens, 4, weight) || !IsValid(richness) || weight <= 0)
+            {
+                error(line, "deposit has invalid resource, richness range or weight");
+                continue;
+            }
+            definition.resourceDeposits.push_back({resource, richness, weight});
         }
         else if (tokens[0] == "water_amount" || tokens[0] == "mountain_amount" ||
                  tokens[0] == "ruggedness")
@@ -402,7 +398,7 @@ ProvinceDefinitionCatalogLoadResult LoadProvinceDefinitionCatalog(const std::str
         }
         else if (tokens[0] == "trait")
         {
-            if (tokens.size() < 2 || tokens.size() > 3 || tokens[1].empty())
+            if (tokens.size() < 2 || tokens.size() > 4 || tokens[1].empty())
             {
                 error(line, "trait requires an ID and optional display name");
                 activeTrait = nullptr;
@@ -415,7 +411,16 @@ ProvinceDefinitionCatalogLoadResult LoadProvinceDefinitionCatalog(const std::str
                 activeTrait = nullptr;
                 continue;
             }
-            definition.traits.push_back({tokens[1], tokens.size() == 3 ? tokens[2] : tokens[1], {}});
+            ProvinceTraitDefinition trait;
+            trait.id = tokens[1];
+            trait.displayName = tokens.size() >= 3 ? tokens[2] : tokens[1];
+            if (tokens.size() == 4 && !ParseInt(tokens, 3, trait.weight))
+            {
+                error(line, "trait weight must be an integer");
+                activeTrait = nullptr;
+                continue;
+            }
+            definition.traits.push_back(std::move(trait));
             activeTrait = &definition.traits.back();
         }
         else if (tokens[0] == "effect")

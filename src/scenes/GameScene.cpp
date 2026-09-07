@@ -102,9 +102,18 @@ namespace
 
         for (const BuildingDefinition& definition : buildingDefinitions)
         {
-            if (configuredTypes.contains(definition.type) || definition.texturePath.empty())
-                continue;
-            renderer.LoadBuildingTexture(definition.type, definition.texturePath);
+            // Base artwork may come from textures.rtsdata or the legacy path,
+            // while completed upgrade visuals are always authored directly in
+            // the building definition and loaded independently below.
+            if (!configuredTypes.contains(definition.type) && !definition.texturePath.empty())
+                renderer.LoadBuildingTexture(definition.type, definition.texturePath);
+
+            for (const BuildingUpgradeLevelDefinition& level : definition.upgradeLevels)
+            {
+                if (!level.visualTexturePath.empty())
+                    renderer.LoadBuildingUpgradeTexture(definition.type, level.level,
+                                                        level.visualTexturePath);
+            }
         }
     }
 }
@@ -125,7 +134,6 @@ bool InputProcessor::IsActionPressed(int action)
     return result;
 }
 
-// Returns whether this condition is currently true.
 bool InputProcessor::IsActionReleased(int action)
 {
     bool result = false;
@@ -140,7 +148,6 @@ bool InputProcessor::IsActionReleased(int action)
     return result;
 }
 
-// Returns whether this condition is currently true.
 bool InputProcessor::IsActionDown(int action)
 {
     bool result = false;
@@ -155,7 +162,6 @@ bool InputProcessor::IsActionDown(int action)
     return result;
 }
 
-// Initializes GameScene::GameScene.
 GameScene::GameScene()
 {
     render.InitializeWorldLayers();
@@ -514,7 +520,6 @@ void GameScene::HandleRenderDebugInput()
     }
 }
 
-// Advances this object's state for one frame.
 void GameScene::Update(double dt)
 {
     if (game == nullptr || runtimeLoop == nullptr)
@@ -581,15 +586,9 @@ void GameScene::Update(double dt)
                 case GameCommandType::BuildBuilding:
                     audioSystem->PlaySound("build");
                     break;
-                case GameCommandType::DestroyBuilding:
-                    audioSystem->PlaySound("destroy");
-                    break;
                 case GameCommandType::StartFocus:
                 case GameCommandType::StartTechnologyResearch:
                     audioSystem->PlaySound("research");
-                    break;
-                case GameCommandType::RecruitUnit:
-                    audioSystem->PlaySound("recruit");
                     break;
                 default:
                     break;
@@ -608,7 +607,6 @@ void GameScene::Update(double dt)
 }
 
 
-// Handles the requested event or transfer.
 void GameScene::HandleEvent(std::shared_ptr<Event> e)
 {
     auto ptr = std::dynamic_pointer_cast<WindowSizeChangedEvent>(e);
@@ -700,7 +698,6 @@ void GameScene::AdoptPreparedSession(std::unique_ptr<IGameSession> session,
                                        DefaultMusicCrossfadeSeconds);
 }
 
-// Loads the requested data into runtime state.
 bool GameScene::LoadGame(std::string name)
 {
     std::string saveName = SanitizeSaveName(name);
@@ -736,7 +733,6 @@ bool GameScene::LoadGame(std::string name)
     }
 }
 
-// Serializes current runtime state.
 bool GameScene::SaveGame(std::string saveName)
 {
     if (game == nullptr)

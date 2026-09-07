@@ -82,6 +82,12 @@ public:
     Vec2f sizeAnchor{0.2f, 0.1f};
 };
 
+enum class UiButtonTone
+{
+    Neutral,
+    Danger
+};
+
 // Clickable UI button with optional normal and hover textures.
 class UiButton : public UiWidget
 {
@@ -101,6 +107,15 @@ public:
         drawText = shouldDraw;
     }
 
+    void SetTone(UiButtonTone value);
+    UiButtonTone GetTone() const { return tone; }
+
+    // All template buttons keep the same pixel frame. This tint changes only
+    // its authored frame texture, so semantic colors never replace the chrome
+    // with a procedural rectangle.
+    void SetFrameTint(Color value) { frameTint = value; }
+    Color GetFrameTint() const { return frameTint; }
+
     // Executes the assigned click callback.
     virtual void OnClick()
     {
@@ -111,6 +126,8 @@ public:
     std::string text{"Default button text"};
     std::function<void()> func;
     bool drawText{true};
+    UiButtonTone tone{UiButtonTone::Neutral};
+    Color frameTint{WHITE};
 };
 
 // Boolean toggle widget.
@@ -589,7 +606,7 @@ class GuiPanel : public UiWidget
         // Scrolls generic panel content when a panel section overflows.
         void ScrollContent(float wheel);
 
-        // Clips subsequent draws to a content rectangle (ETAP 6.1). Pair with
+        // Clips subsequent draws to a content rectangle. Pair with
         // EndContentClip(); nesting is not supported (raylib scissor is a
         // single active rect, not a stack).
         void BeginContentClip(Rectangle contentArea);
@@ -616,7 +633,7 @@ class GuiPanel : public UiWidget
     public:
         std::string text{"Gui Panel"};
         Building* building{nullptr};
-        // TD(etap-8): set by the owning GuiSystem (mirrors selectedBuildingWidget.scene
+        // Set by the owning GuiSystem (mirrors selectedBuildingWidget.scene
         // etc. — see BasicMapViewSystem's constructor) so panel content that submits a
         // command (recruitment) can call scene->SubmitLocalCommand without ever
         // mutating simulation state directly.
@@ -647,7 +664,7 @@ class GuiPanel : public UiWidget
         bool presentationConnectivityKnown{false};
         bool presentationRoadDisconnected{false};
 
-        // ESC closes this panel (ETAP 6.1): the wrapped subscriber
+        // ESC closes this panel: the wrapped subscriber
         // (de)registers itself with InputManager via RAII, so a panel that
         // goes out of scope also stops listening for free. It stays
         // registered for the panel's entire lifetime though — not just while

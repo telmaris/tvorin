@@ -108,8 +108,6 @@ namespace
             HashInt(state, tile.terrainTextureId);
             HashInt(state, tile.resourceOverlayTextureId);
             HashInt(state, tile.resourceRichness);
-            HashInt(state, tile.ownerId != InvalidPlayerId
-            ? tile.ownerId : (tile.owner != nullptr ? tile.owner->id : InvalidPlayerId));
             const auto* building = tile.GetBuilding();
             HashInt(state, building != nullptr ? building->id : 0);
             HashValue(state, building != nullptr ? building->provinceId : InvalidProvinceId);
@@ -167,6 +165,12 @@ std::uint64_t GameWorld::BuildChecksum() const
             HashValue(state, parameters.naturalResourceTypes.size());
             for (const ResourceType resource : parameters.naturalResourceTypes)
                 HashInt(state, static_cast<int>(resource));
+            HashValue(state, parameters.resourceDeposits.size());
+            for (const auto& deposit : parameters.resourceDeposits)
+            {
+                HashInt(state, static_cast<int>(deposit.resource));
+                HashDouble(state, deposit.richness);
+            }
         }
         else if (const auto* city = dynamic_cast<const NeutralCityProvince*>(province); city != nullptr)
         {
@@ -225,6 +229,12 @@ std::uint64_t GameWorld::BuildChecksum() const
             HashValue(state, future.naturalResourceTypes.size());
             for (const ResourceType resource : future.naturalResourceTypes)
                 HashInt(state, static_cast<int>(resource));
+            HashValue(state, future.resourceDeposits.size());
+            for (const auto& deposit : future.resourceDeposits)
+            {
+                HashInt(state, static_cast<int>(deposit.resource));
+                HashDouble(state, deposit.richness);
+            }
         }
         else if (const auto* event = dynamic_cast<const EventProvince*>(province); event != nullptr)
         {
@@ -331,6 +341,26 @@ std::uint64_t GameWorld::BuildChecksum() const
             HashInt(state, leg.routeLevelAtStart);
             HashInt(state, leg.incidentReductionBasisPoints);
             HashValue(state, leg.durationTicks);
+        }
+        HashValue(state, journey.loadout.resources.size());
+        for (const auto& resource : journey.loadout.resources)
+        {
+            HashInt(state, static_cast<int>(resource.type));
+            HashInt(state, resource.amount);
+        }
+        HashValue(state, journey.loadout.minimumResources.size());
+        for (const auto& resource : journey.loadout.minimumResources)
+        {
+            HashInt(state, static_cast<int>(resource.type));
+            HashInt(state, resource.amount);
+        }
+        HashInt(state, journey.loadout.supplyRatioBasisPoints);
+        HashValue(state, journey.loadout.modifiers.size());
+        for (const auto& modifier : journey.loadout.modifiers)
+        {
+            HashInt(state, static_cast<int>(modifier.stat));
+            HashInt(state, modifier.multiplierBasisPoints);
+            HashString(state, modifier.source);
         }
         std::visit([&](const auto& payload)
         {
@@ -447,16 +477,19 @@ std::uint64_t GameWorld::BuildChecksum() const
     }
 
     HashValue(state, eventSystem.GetNextInstanceId());
-    HashValue(state, eventSystem.GetCadenceStates().size());
-    for (const auto& [provinceId, definitions] : eventSystem.GetCadenceStates())
+    const auto& schedulerStates = eventSystem.GetPeriodicScheduler().GetStates();
+    HashValue(state, schedulerStates.size());
+    for (const auto& [playerId, schedulerState] : schedulerStates)
     {
-        HashValue(state, provinceId);
-        HashValue(state, definitions.size());
-        for (const auto& [definitionId, cadence] : definitions)
+        HashInt(state, playerId);
+        HashValue(state, schedulerState.nextCheckTick);
+        HashValue(state, schedulerState.nextAllowedEventTick);
+        HashValue(state, schedulerState.attemptCounter);
+        HashValue(state, schedulerState.definitionCooldownUntil.size());
+        for (const auto& [definitionId, cooldownUntil] : schedulerState.definitionCooldownUntil)
         {
             HashString(state, definitionId);
-            HashValue(state, cadence.nextCheckTick);
-            HashValue(state, cadence.attemptCounter);
+            HashValue(state, cooldownUntil);
         }
     }
     HashValue(state, eventSystem.GetInstances().size());
@@ -543,6 +576,8 @@ std::uint64_t GameWorld::BuildChecksum() const
         for (const auto& [provinceId, economy] : provinceEconomies)
         {
             HashValue(hash, provinceId);
+            HashInt(hash, economy->population.initialized ? 1 : 0);
+            HashDouble(hash, economy->population.availableManpower);
             HashInt(hash, economy->dataTracker.CountBuildings(BuildingType::Headquarters));
             HashValue(hash, static_cast<std::uint64_t>(economy->dataTracker.buildings.size()));
 
@@ -612,6 +647,14 @@ std::uint64_t GameWorld::BuildChecksum() const
                 HashInt(hash, static_cast<int>(population->householdGoodsBuffer.buffer.size()));
                 HashDouble(hash, population->urbanSupplyLevel);
                 HashInt(hash, static_cast<int>(population->urbanGoodsBuffer.buffer.size()));
+                HashDouble(hash, population->assignedResidents);
+                HashInt(hash, population->hasAssignedResidents ? 1 : 0);
+                HashValue(hash, population->supplyDebt.size());
+                for (const auto& [resource, debt] : population->supplyDebt)
+                {
+                    HashInt(hash, static_cast<int>(resource));
+                    HashDouble(hash, debt);
+                }
             }
             if (const auto* recruitment = building->GetComponent<RecruitmentComponent>(); recruitment != nullptr)
             {

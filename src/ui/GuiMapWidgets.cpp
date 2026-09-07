@@ -419,6 +419,17 @@ void BuildingHoverTooltipWidget::Update(double dt)
         if (hovered->GetWorkerCapacity() > 0)
             lines.push_back("Workers: " + std::to_string(hovered->GetAssignedWorkers()) +
                             " / " + std::to_string(hovered->GetWorkerCapacity()));
+
+        if (hovered->buildingType == BuildingType::Village)
+        {
+            const VillagePresentationView village = BuildVillagePresentationView(*hovered);
+            lines.push_back("Residents: " + std::to_string(static_cast<int>(std::round(village.inhabitants))) +
+                            " / " + std::to_string(village.populationCap));
+            for (const auto& supply : village.supplies)
+                lines.push_back(ResourceDisplayName(supply.resource) + ": " +
+                                std::to_string(static_cast<int>(std::round(supply.packagesPerMinute))) +
+                                " packages / min");
+        }
     }
 
     const int visibleTitleResources = std::min(3, static_cast<int>(titleResources.size()));

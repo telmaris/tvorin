@@ -3,6 +3,7 @@
 
 #include "data/Resource.h"
 #include "core/Stat.h"
+#include "economy/VillageSupplyRule.h"
 
 #include <array>
 #include <bitset>
@@ -307,6 +308,15 @@ struct LocalResourceBufferComponent : IBuildingComponent
 // Manpower generation and food-supply tracking for Village buildings.
 struct PopulationComponent : IBuildingComponent
 {
+    struct SupplyConsumptionView
+    {
+        ResourceType resource{ResourceType::Null};
+        int packageAmount{0};
+        double packagesPerMinute{0.0};
+        int storedPackages{0};
+        double supplyLevel{0.0};
+    };
+
     Stat<double> manpowerRate{BalanceStat::ManpowerRate, 5.0};
     Stat<int> populationCap{BalanceStat::PopulationCap, 1000};
     int settlementLevel{1};
@@ -315,6 +325,7 @@ struct PopulationComponent : IBuildingComponent
     // previous level.
     std::array<int, 4> levelPopulationCaps{};
     std::array<double, 4> levelManpowerRates{};
+    std::array<std::vector<VillageSupplyRuleDefinition>, 4> levelSupplyRules;
     // Per-resource upkeep progress. `upkeepTimer` remains the food timer to
     // preserve the pre-v33 save field and tests that tune Village cadence.
     double upkeepTimer{0.0};
@@ -322,9 +333,10 @@ struct PopulationComponent : IBuildingComponent
     double urbanUpkeepTimer{0.0};
     double upkeepInterval{10.0};
     double foodPackageUpkeep{1.0};
+    double foodShortageDecaySeconds{180.0};
     bool hasFood{true};
     double foodSupplyLevel{1.0};
-    double foodSupplyDropPerMissedUpkeep{0.25};
+    double nonFoodSupplyDropPerMissedUpkeep{0.25};
     // One package covers the next upkeep payment; one more is the village's
     // only local reserve, so a fresh village never monopolizes food logistics.
     ResourceBuffer foodBuffer{ResourceType::FOOD_PROVISIONS, 2};
@@ -332,6 +344,9 @@ struct PopulationComponent : IBuildingComponent
     ResourceBuffer urbanGoodsBuffer{ResourceType::URBAN_GOODS, 3};
     double householdSupplyLevel{1.0};
     double urbanSupplyLevel{1.0};
+    double assignedResidents{0.0};
+    bool hasAssignedResidents{false};
+    std::map<ResourceType, double> supplyDebt;
 
     BuildingCapability GetCapability() const override { return BuildingCapability::Population; }
     void Update(Building& self, double dt) override;
@@ -349,6 +364,9 @@ struct PopulationComponent : IBuildingComponent
     ResourceBuffer* GetSupplyBuffer(ResourceType type);
     const ResourceBuffer* GetSupplyBuffer(ResourceType type) const;
     int RequestSupply(Building& self, ResourceType type);
+    const VillageSupplyRuleDefinition* FindSupplyRule(ResourceType type) const;
+    double GetSupplyPackagesPerMinute(const Building& self, ResourceType type) const;
+    std::vector<SupplyConsumptionView> GetSupplyConsumptionViews(const Building& self) const;
 };
 
 // --- RecruitmentComponent ---
@@ -366,20 +384,8 @@ struct RecruitmentQueueEntry
     bool resourcesReady{true};
 };
 
-// Recruitment queue for a unit-producing building (Barracks; future
-// Stables/Workshop are only new UnitDefinition::recruitBuilding
-// values, no new component). User request (docs/work_plan_2026-07-13.md,
-// 2026-07-15 + TODO #1 2026-07-16): an order joins the queue immediately on
-// click (as long as manpower allows), tagged "waiting for resources" if its
-// cost isn't already sitting in this building's own local resource buffer.
-// Update() then works the queue in strict FIFO order: entries flip
-// resourcesReady (consuming their cost) as deliveries land — even behind a
-// training front entry — while only the FIRST waiting entry requests its
-// shortfall from the road network, net of what's already in flight, so the
-// building orders exactly one unit's cost at a time and never stockpiles.
-// The timed build runs only for the front entry once it's resourcesReady.
-// On completion the finished unit is added to the owning player's
-// UnitRoster in state InRoster.
+// Strict FIFO recruitment queue. Only the first resource-starved entry requests
+// deliveries; later entries may reserve resources but cannot start training.
 struct RecruitmentComponent : IBuildingComponent
 {
     std::deque<RecruitmentQueueEntry> queue;

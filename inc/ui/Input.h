@@ -52,8 +52,6 @@ struct InputProcessor
     inline void Init(GuiController*);
     // Assigns a minimal binding set for single-screen menu scenes: ESC + LMB
     // only (scroll needs no binding — HandleInputs polls the wheel directly).
-    // None of the gameplay hotkeys (Q/R/D/E/S/F/T/U/F10/space) apply outside
-    // GameScene (A4 pilot, docs/work_plan_2026-07-13.md).
     inline void InitMenu(GuiController*);
     // Dispatches currently active input actions to the controller.
     void HandleInputs();

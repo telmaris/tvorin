@@ -1,7 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
 
-# Version: single source of truth is the repository-root VERSION file.
-# Reconfigure automatically whenever it changes (e.g. after a build-time patch bump).
+# VERSION is the single source of truth for configure-time and runtime metadata.
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/VERSION")
 file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/VERSION" TVORIN_VERSION_RAW LIMIT_COUNT 1)
 string(STRIP "${TVORIN_VERSION_RAW}" TVORIN_VERSION)
@@ -16,7 +15,6 @@ configure_file(
     "${CMAKE_CURRENT_SOURCE_DIR}/cmake/Version.h.in"
     "${CMAKE_BINARY_DIR}/generated/Version.h"
     @ONLY)
-include_directories("${CMAKE_BINARY_DIR}/generated")
 message(STATUS "Tvorin version: ${TVORIN_VERSION}")
 
 include(FetchContent)
@@ -27,7 +25,6 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 option(ENABLE_COVERAGE "Enable coverage reporting for unit tests" OFF)
 option(BUILD_TESTING "Build unit tests" OFF)
-option(BUILD_TOOLS "Build developer data editors" ON)
 include(CTest)
 
 if (NOT MSVC)
@@ -75,11 +72,7 @@ if (raygui_INCLUDE_DIR)
     target_include_directories(game PUBLIC "${raygui_INCLUDE_DIR}")
 endif()
 
-include_directories(inc)
-
-# Shared production code used by the game and the asset editors. Keeping these
-# translation units in one target prevents parser and UI behavior from drifting
-# between the runtime and the tools.
+# Data parsing and domain code shared by the game and the CI validator.
 add_library(rts_data STATIC
     src/core/CheckedStateReader.cpp
     src/platform/AtomicFile.cpp
@@ -87,6 +80,7 @@ add_library(rts_data STATIC
     src/data/Resource.cpp
     src/data/Equipment.cpp
     src/data/TextureConfig.cpp
+    src/economy/BalanceStatCatalog.cpp
     src/world/ProvinceDefinition.cpp
     src/world/ColonizationDefinition.cpp
     src/world/ProvinceConnection.cpp
@@ -101,9 +95,10 @@ add_library(rts_ui_common STATIC
     src/ui/UiText.cpp
     src/ui/UiWidgets.cpp)
 target_include_directories(rts_ui_common PUBLIC "${CMAKE_SOURCE_DIR}/inc")
-target_link_libraries(rts_ui_common PUBLIC raylib)
+target_link_libraries(rts_ui_common PUBLIC raylib rts_data)
 
 add_subdirectory(src)
+target_include_directories(game PUBLIC "${CMAKE_SOURCE_DIR}/inc")
 
 option(ENABLE_BUILD_ACCELERATION "Enable parallel MSVC compilation and precompiled standard-library headers" ON)
 if (ENABLE_BUILD_ACCELERATION)
@@ -153,6 +148,7 @@ if (ENABLE_COVERAGE)
 endif()
 
 add_executable(tvorin src/main.cpp)
+target_include_directories(tvorin PRIVATE "${CMAKE_BINARY_DIR}/generated")
 target_link_libraries(game PUBLIC raylib rts_data rts_ui_common)
 target_link_libraries(tvorin game Threads::Threads)
 
@@ -180,10 +176,5 @@ add_custom_command(TARGET tvorin POST_BUILD
 
 if (BUILD_TESTING)
     add_subdirectory(tests)
-endif()
-
-if (BUILD_TOOLS)
     add_subdirectory(tools/data-validator)
-    add_subdirectory(tools/tech-tree-editor)
-    add_subdirectory(tools/texture-editor)
 endif()

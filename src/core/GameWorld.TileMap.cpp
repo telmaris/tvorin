@@ -10,7 +10,6 @@
 
 using namespace GameWorldInternal;
 
-// Creates and registers the requested runtime object.
 void Tile::CreateBuilding(std::unique_ptr<Building> &&bld,
                           std::optional<TileType> matchedTerrain)
 {
@@ -43,7 +42,6 @@ Tile &TileMap::GetTile(int id)
     return tilemap[id];
 }
 
-// Updates the requested state value.
 void TileMap::SetTile(int id, Tile &&tile)
 {
     tilemap[id] = std::move(tile);
@@ -104,7 +102,6 @@ void TileMap::BuildOnTile(int id, Player *player, std::unique_ptr<Building> &&bu
     }
 }
 
-// Initializes TileMap::DestroyBuildingAt.
 void TileMap::DestroyBuildingAt(int id)
 {
     if (id < 0 || id >= tilemap.size())
@@ -216,9 +213,14 @@ void TileMap::DestroyBuildingAt(int id)
     {
         if (owner != nullptr && workers->assigned > 0)
         {
-            double workerPool = owner->strategicResources.Get(StrategicResourceType::Workers);
-            owner->strategicResources.Set(StrategicResourceType::Workers, workerPool - workers->assigned);
-            owner->strategicResources.Add(StrategicResourceType::Manpower, workers->assigned);
+            if (economy != nullptr && owner->homeProvinceId != InvalidProvinceId)
+                economy->population.availableManpower += workers->assigned;
+            else
+            {
+                double workerPool = owner->strategicResources.Get(StrategicResourceType::Workers);
+                owner->strategicResources.Set(StrategicResourceType::Workers, workerPool - workers->assigned);
+                owner->strategicResources.Add(StrategicResourceType::Manpower, workers->assigned);
+            }
             workers->assigned = 0;
         }
     }
@@ -236,7 +238,6 @@ void TileMap::DestroyBuildingAt(int id)
     buildingsDirty = true;
 }
 
-// Initializes TileMap::PlaceLoadedBuilding.
 Building* TileMap::PlaceLoadedBuilding(int id, Player *player, std::unique_ptr<Building> &&building)
 {
     if (id < 0 || id >= tilemap.size() || building == nullptr)
@@ -277,7 +278,6 @@ Building* TileMap::PlaceLoadedBuilding(int id, Player *player, std::unique_ptr<B
     return placed;
 }
 
-// Advances UpdateBuildings for one frame or simulation tick.
 void TileMap::UpdateBuildings(double dt)
 {
     for(auto& tile : tilemap)
@@ -343,20 +343,17 @@ Vec2i TileMap::GetCoordsFromId(int id) const
     return Vec2i{id % params.sizeX, id / params.sizeX};
 }
 
-// Returns whether this condition is currently true.
 bool TileMap::IsInside(Vec2i coords) const
 {
     return coords.x >= 0 && coords.x < params.sizeX &&
            coords.y >= 0 && coords.y < params.sizeY;
 }
 
-// Returns whether this condition is currently true.
 bool TileMap::IsInsideFootprint(Vec2i anchor, Vec2i footprint) const
 {
     return IsInside(anchor) && IsInside({anchor.x + footprint.x - 1, anchor.y + footprint.y - 1});
 }
 
-// Returns whether this condition is currently true.
 bool TileMap::CanBuildFootprint(Vec2i anchor, Vec2i footprint, Player* player, BuildingType type) const
 {
     if (!IsInsideFootprint(anchor, footprint))
@@ -433,13 +430,11 @@ TerrainPlacementEvaluation TileMap::EvaluateTerrainPlacement(
     return result;
 }
 
-// Returns whether this condition is currently true.
 bool TileMap::HasRequiredTerrainForBuilding(BuildingType type, Vec2i anchor, Vec2i footprint, int minimumTiles) const
 {
     return EvaluateTerrainPlacement(type, anchor, footprint, minimumTiles).valid;
 }
 
-// Returns whether this condition is currently true.
 bool TileMap::CanPlaceBuilding(BuildingType type, Vec2i anchor, Vec2i footprint, Player* player) const
 {
     if (!CanBuildFootprint(anchor, footprint, player, type))
@@ -599,7 +594,6 @@ int TileMap::GetRoadTextureId(Vec2i pos) const
     return roadAtlasBaseId + GetRoadAutotileMask(pos);
 }
 
-// Initializes TileMap::RefreshRoadTilesAround.
 void TileMap::RefreshRoadTilesAround(Vec2i pos)
 {
     for (int y = -1; y <= 1; y++)
@@ -618,7 +612,6 @@ void TileMap::RefreshRoadTilesAround(Vec2i pos)
     buildingsDirty = true;
 }
 
-// Finds the best matching runtime object.
 Building* TileMap::FindNearestStorage(Building* source, Player* player)
 {
     if (source == nullptr || player == nullptr)
@@ -693,7 +686,6 @@ Building* TileMap::FindDefaultStorage(Building* source, Player* player)
     return best;
 }
 
-// Initializes TileMap::ConnectReceiver.
 void TileMap::ConnectReceiver(Building* source, Building* receiver, bool alternative)
 {
     if (source == nullptr || receiver == nullptr || source == receiver)
@@ -749,7 +741,6 @@ void TileMap::ConnectReceiver(Building* source, Building* receiver, bool alterna
     }
 }
 
-// Initializes TileMap::AutoConnectBuilding.
 void TileMap::AutoConnectBuilding(Building* building)
 {
     if (building == nullptr || building->owner == nullptr)
@@ -759,14 +750,8 @@ void TileMap::AutoConnectBuilding(Building* building)
                               building->buildingType == BuildingType::StorageBuilding;
     if (isStorageHub)
     {
-        // OPTIMIZATION: tracked buildings (ETAP 10 registry) instead of a full
-        // tilemap scan. Sorted by
-        // id (not the set's native pointer order) because this loop's
-        // outcome — which building wins a receiver/supplier slot — is
-        // simulation-visible and must be identical across processes/hosts;
-        // GetTrackedBuildings() orders by Building* (heap address), which is
-        // NOT deterministic across separately-constructed GameWorld
-        // instances (found via a flaky lockstep-determinism test).
+        // Pointer order differs between processes. Sort by stable building id
+        // because the first matching receiver affects simulation state.
         const ProvinceEconomy* economy = building->provinceEconomy;
         if (economy == nullptr)
             return;
@@ -780,12 +765,7 @@ void TileMap::AutoConnectBuilding(Building* building)
 
             for (const auto& output : other->GetOutputBufferViews())
             {
-                // T3 fix (docs/post_pivot_audit_2026-07-12.md): only wire the
-                // new warehouse/HQ as a receiver only for types it can
-                // actually accept. Without this check, building one next
-                // to a producer of an unrelated resource silently hijacked
-                // that producer's receiver, blocking its real fallback
-                // delivery to the nearest storage.
+                // An incompatible hub must not replace a producer's valid receiver.
                 if (!building->CanAcceptResource(output.type))
                     continue;
 
@@ -840,4 +820,3 @@ void TileMap::AutoConnectBuilding(Building* building)
             building->SetSupplier(input.type, storage);
     }
 }
-

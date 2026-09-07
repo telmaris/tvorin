@@ -6,6 +6,7 @@
 
 #include <cstdint>
 #include <map>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -50,7 +51,15 @@ struct ProvinceTraitDefinition
 {
     std::string id;
     std::string displayName;
+    int weight{1};
     std::vector<ProvinceEffectDefinition> effects;
+};
+
+struct ProvinceResourceDepositDefinition
+{
+    ResourceType resource{ResourceType::Null};
+    ProvinceValueRange richness{0.0, 1.0};
+    int weight{1};
 };
 
 // Immutable definition data. Runtime province instances store selected values
@@ -84,6 +93,8 @@ struct ProvinceDefinition
 
     std::string eventPoolId;
     std::vector<ProvinceTraitDefinition> traits;
+    std::optional<ProvinceIntRange> traitCount;
+    std::vector<ProvinceResourceDepositDefinition> resourceDeposits;
 
     ProvinceKind Kind() const;
 };

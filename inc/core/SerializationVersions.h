@@ -6,11 +6,11 @@
 // literals in individual message/state classes.
 struct SerializationVersion
 {
-    static constexpr int GameCommandVersion = 27; // authoritative debug raid command
+    static constexpr int GameCommandVersion = 28; // expedition loadout
     static constexpr int GameCommandResultVersion = 4;
     static constexpr int GameServerFrameVersion = 1;
-    static constexpr int GameSnapshotVersion = 28; // raid-start event effect
-    static constexpr int GameWorldSaveVersion = 57; // raid-start event effect
+    static constexpr int GameSnapshotVersion = 31; // remove unused tile ownership
+    static constexpr int GameWorldSaveVersion = 61; // remove unused tile ownership
 };
 
 #endif

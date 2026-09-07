@@ -1,30 +1,51 @@
-# Dependencies (source and built artifacts — only committed files: deps/raygui/raygui.h)
-deps/raylib/
-deps/raylib-src/
+# Local dependencies
+/deps/raylib/
+/deps/raylib-src/
 
-# Build output
-build/
-build-debug/
-build-test/
-build-tests/
-build-tests-coverage/
-dist/
-test-results/
-
-# Coverage artifacts
-LastCoverageResults.log
+# Build, test and coverage output
+/build*/
+/dist/
+/test-results/
+/coverage/
+**/build/
 *.gcda
 *.gcno
+*.gcov
+coverage.xml
 
-# Game runtime
-saves/
-logs/
+# Runtime and developer-local state
+/config/
+/logs/
+/saves/
+/screenshots/
+/tmp/
+/.claude/
 
-# IDE / editor
-.vs/
-*.user
+# Local project notes and retired developer tools
+/docs/
+/AGENTS.md
+/CLAUDE.md
+/TODO.md
+/tools/tech-tree-editor/
+/tools/texture-editor/
+
+# Local Windows wrappers; maintained PowerShell entry points live in scripts/
+*.bat
+
+# IDE and OS metadata
+/.vs/
+/.vscode/
+/.idea/
 *.suo
+*.user
+*.VC.db
+*.VC.VC.opendb
+.DS_Store
+Thumbs.db
+Desktop.ini
 
-# Misc
+# Logs, backups and temporary files
 *.log
 *.bak
+*.tmp
+*.swp

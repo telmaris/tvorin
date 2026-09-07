@@ -194,10 +194,7 @@ namespace
                 ? " for {resource}" : " producing {resource}")
                 << ResourceDisplayName(modifier.resourceType.value()) << "{/resource}";
         }
-        // T5 (docs/post_pivot_audit_2026-07-12.md): unit-scoped and
-        // category-scoped modifiers previously showed no hint they were
-        // filtered at all — e.g. a "+1 HP for archers" tech looked identical
-        // to a global one.
+        // Surface modifier scope so filtered bonuses do not look global.
         if (modifier.unitDefId.has_value())
         {
             const UnitDefinition* unitDef = FindUnitDefinition(modifier.unitDefId.value());
@@ -724,7 +721,6 @@ void ResearchTreePanelWidget::AdjustTreeZoom(Vec2i point, float wheel)
 FocusGuiSystem::FocusGuiSystem(GuiController* con)
     : GuiSystem(con)
 {
-    // A4 (docs/work_plan_2026-07-13.md): shadows GuiSystem::scene (Scene*).
     scene = dynamic_cast<GameScene*>(owner->scene);
 
     WireCommonSystemActions(*this, cameraMovement);
@@ -866,7 +862,6 @@ void FocusGuiSystem::Scroll()
 TechGuiSystem::TechGuiSystem(GuiController* con)
     : GuiSystem(con)
 {
-    // A4 (docs/work_plan_2026-07-13.md): shadows GuiSystem::scene (Scene*).
     scene = dynamic_cast<GameScene*>(owner->scene);
 
     WireCommonSystemActions(*this, cameraMovement);

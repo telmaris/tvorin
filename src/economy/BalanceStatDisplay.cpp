@@ -1,90 +1,18 @@
 #include "economy/BalanceStatDisplay.h"
+#include "economy/BalanceStatCatalog.h"
 
 #include <cmath>
 
 const char* BalanceStatLabel(BalanceStat stat)
 {
-    switch (stat)
-    {
-        case BalanceStat::BuildTime: return "Build time";
-        case BalanceStat::BuildCost: return "Build cost";
-        case BalanceStat::ProductionCycleTime: return "Production cycle time";
-        case BalanceStat::ProductionOutputAmount: return "Production output";
-        case BalanceStat::WorkerCapacity: return "Worker capacity";
-        case BalanceStat::TransportTime: return "Transport time";
-        case BalanceStat::TransportDispatchDelay: return "Cargo dispatch delay";
-        case BalanceStat::RoadCapacity: return "Road capacity";
-        case BalanceStat::RoadSpeed: return "Road speed";
-        case BalanceStat::ManpowerRate: return "Manpower growth";
-        case BalanceStat::PopulationCap: return "Population cap";
-        case BalanceStat::VillageSupplyConsumption: return "Village supply consumption";
-        case BalanceStat::BuilderAmount: return "Builders";
-        case BalanceStat::UnitHp: return "Unit HP";
-        case BalanceStat::UnitFieldAttack: return "Unit field attack";
-        case BalanceStat::UnitSiegePower: return "Unit siege power";
-        case BalanceStat::UnitArmor: return "Unit armor";
-        case BalanceStat::UnitMoveSpeed: return "Unit move speed";
-        case BalanceStat::UnitAttackSpeed: return "Unit attack speed";
-        case BalanceStat::UnitRecruitTime: return "Unit recruit time";
-        case BalanceStat::UnitRecruitManpowerCost: return "Unit manpower cost";
-        case BalanceStat::ProvinceFortification: return "Province fortification";
-        case BalanceStat::ProvinceDefense: return "Province defense";
-        case BalanceStat::ProvinceCounterattack: return "Province counterattack";
-        case BalanceStat::ConquestSpoilsFraction: return "Conquest spoils";
-        case BalanceStat::ProvinceDefensePower: return "Province defense power";
-        case BalanceStat::ProvinceDefenseCoverage: return "Province defense coverage";
-        case BalanceStat::ProvinceDefenseReadiness: return "Province defense readiness";
-        case BalanceStat::ProvinceDefenseSupplyUse: return "Province defense supply use";
-        case BalanceStat::RouteTravelSpeed: return "Route travel speed";
-        case BalanceStat::RouteIncidentChance: return "Route incident chance";
-        case BalanceStat::TradeExchangeRate: return "Trade exchange rate";
-        case BalanceStat::TradeScoreGain: return "Trade score gain";
-        case BalanceStat::BattleAttack: return "Battle attack";
-        case BalanceStat::BattleCasualtyRate: return "Battle casualty rate";
-        case BalanceStat::BattleDuration: return "Battle duration";
-        case BalanceStat::GarrisonCapacity: return "Garrison capacity";
-        case BalanceStat::GarrisonFoodUpkeep: return "Garrison food upkeep";
-        case BalanceStat::RaidBuildingDestructionChance: return "Raid building destruction chance";
-        case BalanceStat::RaidStockLossFraction: return "Raid stock loss fraction";
-        case BalanceStat::ProvinceEventChance: return "Province event chance";
-        case BalanceStat::ProvinceEventWeight: return "Province event weight";
-        case BalanceStat::ProvinceEventDuration: return "Province event duration";
-        case BalanceStat::ColonizationDuration: return "Colonization duration";
-        default: return "Effect";
-    }
+    const auto* entry = FindBalanceStatCatalogEntry(stat);
+    return entry != nullptr ? entry->displayName : "Effect";
 }
 
 bool LowerValueIsBetter(BalanceStat stat)
 {
-    switch (stat)
-    {
-        case BalanceStat::BuildTime:
-        case BalanceStat::BuildCost:
-        case BalanceStat::ProductionCycleTime:
-        case BalanceStat::TransportTime:
-        case BalanceStat::TransportDispatchDelay:
-        case BalanceStat::VillageSupplyConsumption:
-        // Staffing a building is a cost, not a reward: the design goal is as few
-        // people tied up in buildings as possible, so MORE worker capacity is a
-        // nerf and has to render as one.
-        case BalanceStat::WorkerCapacity:
-        case BalanceStat::UnitRecruitTime:
-        case BalanceStat::UnitRecruitManpowerCost:
-        case BalanceStat::ProvinceDefenseSupplyUse:
-        case BalanceStat::RouteIncidentChance:
-        case BalanceStat::TradeExchangeRate:
-        case BalanceStat::BattleCasualtyRate:
-        case BalanceStat::BattleDuration:
-        case BalanceStat::GarrisonFoodUpkeep:
-        case BalanceStat::RaidBuildingDestructionChance:
-        case BalanceStat::RaidStockLossFraction:
-        case BalanceStat::ProvinceEventChance:
-        case BalanceStat::ProvinceEventDuration:
-        case BalanceStat::ColonizationDuration:
-            return true;
-        default:
-            return false;
-    }
+    const auto* entry = FindBalanceStatCatalogEntry(stat);
+    return entry != nullptr && entry->lowerValueIsBetter;
 }
 
 const char* ImprovedRateLabel(BalanceStat stat)

@@ -1,7 +1,7 @@
 #include "core/GameCommand.h"
 #include "core/GameSession.h"
 #include "core/GameWorld.h"
-#include "multiplayer/FaultInjectingGameTransport.h"
+#include "support/FaultInjectingGameTransport.h"
 
 #include <gtest/gtest.h>
 
@@ -45,6 +45,29 @@ TEST(GameCommandTests, ProvinceAndExpeditionContextRoundTripWithoutPackingIntoTi
     ASSERT_TRUE(GameCommand::TryDeserialize(build.Serialize(), parsed));
     EXPECT_EQ(parsed.provinceId, 41u);
     EXPECT_EQ(parsed.tilePos, (Vec2i{7, 9}));
+}
+
+TEST(GameCommandTests, ExpeditionLoadoutRoundTripsWithDeterministicOrdering)
+{
+    ExpeditionLoadout loadout;
+    loadout.resources = {{ResourceType::FOOD_PROVISIONS, 2}, {ResourceType::IRON_SWORD, 1}};
+    loadout.minimumResources = loadout.resources;
+    loadout.supplyRatioBasisPoints = 12500;
+    loadout.modifiers = {{BalanceStat::RouteTravelSpeed, 12500, "expedition.food"}};
+    const GameCommand original = GameCommand::StartScoutExpedition(
+        1, 17, 23, {100001}, loadout);
+    GameCommand parsed;
+    ASSERT_TRUE(GameCommand::TryDeserialize(original.Serialize(), parsed));
+    ASSERT_EQ(parsed.expeditionLoadout.resources.size(), loadout.resources.size());
+    for (std::size_t index = 0; index < loadout.resources.size(); ++index)
+    {
+        EXPECT_EQ(parsed.expeditionLoadout.resources[index].type, loadout.resources[index].type);
+        EXPECT_EQ(parsed.expeditionLoadout.resources[index].amount, loadout.resources[index].amount);
+    }
+    ASSERT_EQ(parsed.expeditionLoadout.minimumResources.size(), loadout.minimumResources.size());
+    EXPECT_EQ(parsed.expeditionLoadout.supplyRatioBasisPoints, 12500);
+    ASSERT_EQ(parsed.expeditionLoadout.modifiers.size(), 1u);
+    EXPECT_EQ(parsed.expeditionLoadout.modifiers.front().source, "expedition.food");
 }
 
 TEST(GameCommandTests, SerializesAndDeserializesFocusAndResearchIds)
@@ -301,10 +324,6 @@ TEST(GameCommandTests, GameWorldPublishesCommandResultAfterSimulationTick)
     EXPECT_EQ(results.front().type, GameCommandType::DestroyBuilding);
     EXPECT_FALSE(results.front().accepted);
 }
-
-// DEPRECATED: LocalhostMultiplayerSession test removed in Etap 1.2
-// LocalhostMultiplayerSession merged into HostSession + ClientSession architecture
-// Full integration test will be added in Etap 1.4 after IGameRuntimeLoop refactor
 
 TEST(GameCommandTests, ThreadedSessionAdvancesSimulationAndPublishesCommandResult)
 {

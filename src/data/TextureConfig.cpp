@@ -242,7 +242,7 @@ std::string FormatTextureConfig(const TextureConfig& config)
     std::ostringstream out;
 
     out << "# Texture bindings for every drawable slot in the game.\n";
-    out << "# Written by tools/texture-editor. Addressing: cell <texture> of <atlas>.\n";
+    out << "# Addressing: cell <texture> of <atlas>.\n";
     out << "# An atlas is (image, cell size) - a standalone sprite is a one-cell atlas.\n\n";
 
     out << "# atlas <id> <name> \"<path>\" <cellWidth> <cellHeight>\n";

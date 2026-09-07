@@ -15,6 +15,7 @@
 #include "warfare/WarfareViews.h"
 #include "core/GameCommand.h"
 #include "scenes/Scenes.h"
+#include "GuiInternal.h"
 
 #include <algorithm>
 #include <array>
@@ -1621,9 +1622,9 @@ namespace
     }
 }
 
-// Advances this object's state for one frame.
 void UiButton::Update(double dt)
 {
+    (void)dt;
     Rectangle bounds = WidgetBounds(*this);
     // Layout containers intentionally keep a generous hit box, but the new
     // frame should hug the label instead of becoming a full-width strip. Keep
@@ -1650,11 +1651,17 @@ void UiButton::Update(double dt)
     bool hovered = CheckCollisionPointRec(mouse, visualBounds);
     bool pressed = hovered && InputManager::IsMouseButtonPressed(MOUSE_BUTTON_LEFT);
 
-    const bool frameDrawn = UiControlIcons::DrawPixelHudWidgetFrame(visualBounds, hovered);
+    const bool danger = tone == UiButtonTone::Danger;
+    const bool frameDrawn = UiControlIcons::DrawPixelHudButtonFrame(
+        visualBounds, hovered, frameTint);
     if (!frameDrawn)
     {
-        const Color fill = hovered ? UiTheme::SurfaceHover : UiTheme::Surface;
-        const Color line = hovered ? UiTheme::SteelHover : UiTheme::Iron;
+        const Color fill = danger
+            ? (hovered ? UiTheme::OxbloodHover : UiTheme::Oxblood)
+            : (hovered ? UiTheme::SurfaceHover : UiTheme::Surface);
+        const Color line = danger
+            ? (hovered ? UiTheme::DangerBorder : UiTheme::Rust)
+            : (hovered ? UiTheme::SteelHover : UiTheme::Iron);
         // A separate steel bezel keeps large action buttons from reading as
         // a clipped piece of the panel directly behind them.
         DrawRectangleRounded(visualBounds, 0.06f, 8, UiTheme::Ink);
@@ -1683,16 +1690,19 @@ void UiButton::Update(double dt)
     }
 
     if (pressed)
-        // Handles the UI action represented by OnClick.
         OnClick();
 }
 
-// Initializes UiButton::UiButton.
 UiButton::UiButton()
 {
 }
 
-// Advances this object's state for one frame.
+void UiButton::SetTone(UiButtonTone value)
+{
+    tone = value;
+    frameTint = value == UiButtonTone::Danger ? UiTheme::DangerBorder : WHITE;
+}
+
 void CheckBox::Update(double dt)
 {
     (void)dt;
@@ -1727,7 +1737,6 @@ void CheckBox::Update(double dt)
                  fontSize, hovered ? UiTheme::Parchment : UiTheme::ParchmentDim);
 }
 
-// Advances this object's state for one frame.
 void SliderBar::Update(double dt)
 {
     (void)dt;
@@ -1761,7 +1770,6 @@ void SliderBar::Update(double dt)
                     std::clamp(static_cast<int>(knob.height * 0.50f), 11, 15), UiTheme::Parchment);
 }
 
-// Advances this object's state for one frame.
 void ProgressBar::Update(double dt)
 {
     Rectangle bounds = WidgetBounds(*this);
@@ -1782,7 +1790,6 @@ void ProgressBar::Update(double dt)
                  UiTheme::Parchment);
 }
 
-// Advances this object's state for one frame.
 void VBox::Update(double dt)
 {
     for(auto& child : children)
@@ -1791,7 +1798,6 @@ void VBox::Update(double dt)
     }
 }
 
-// Advances this object's state for one frame.
 void HBox::Update(double dt)
 {
     for(auto& child : children)
@@ -1800,7 +1806,6 @@ void HBox::Update(double dt)
     }
 }
 
-// Advances this object's state for one frame.
 void TextBox::Update(double dt)
 {
     static TextBox* activeTextBox = nullptr;
@@ -1857,7 +1862,6 @@ void TextBox::SetValue(const std::string& value)
     text = textOutput;
 }
 
-// Advances this object's state for one frame.
 void UiLabel::Update(double dt)
 {
     UiText::DrawFit(text, WidgetBounds(*this), fontSize, color);
@@ -2008,7 +2012,6 @@ void TutorialTaskWidget::Update(double dt)
     }
 }
 
-// Loads the requested data into runtime state.
 bool UiImage::LoadTextureFromFile(const std::string& path)
 {
     if (!FileExists(path.c_str()))
@@ -2121,7 +2124,6 @@ void UiParallaxBackground::Update(double dt)
     }
 }
 
-// Advances this object's state for one frame.
 void UiImage::Update(double dt)
 {
     Rectangle bounds = WidgetBounds(*this);
@@ -2220,7 +2222,6 @@ void UiAnimation::Update(double dt)
                    destination, {0.0f, 0.0f}, 0.0f, WHITE);
 }
 
-// Loads the requested data into runtime state.
 void ResourceIconAtlas::Load(const std::string& path, Vec2i iconSize)
 {
     if (!FileExists(path.c_str()))
@@ -2254,7 +2255,6 @@ Rectangle ResourceIconAtlas::GetRect(ResourceType type) const
         static_cast<float>(size.y)};
 }
 
-// Advances this object's state for one frame.
 // Draws background, title bar, drag handling and the close button; reports
 // the content area below the title bar. Returns false (after already having
 // called Close()) when the close button was clicked this frame — the caller
@@ -2387,6 +2387,7 @@ void GuiPanel::Update(double dt)
         destroyButton.pos = Vec2i{contentX, bottom - destroyButton.size.y};
         destroyButton.size = Vec2i{contentW, destroyButton.size.y};
         destroyButton.ChangeText("Destroy building");
+        destroyButton.SetTone(UiButtonTone::Danger);
         destroyButton.Update(dt);
     };
 
@@ -2434,6 +2435,7 @@ void GuiPanel::Update(double dt)
             destroyButton.pos = Vec2i{contentX, bottom - destroyButton.size.y};
             destroyButton.size = Vec2i{contentW, destroyButton.size.y};
             destroyButton.ChangeText("Remove from queue");
+            destroyButton.SetTone(UiButtonTone::Neutral);
             destroyButton.Update(dt);
         }
         return;
@@ -2448,8 +2450,7 @@ void GuiPanel::Update(double dt)
         y += 30;
     }
 
-    // TD(etap-8.4): recruitment building (Barracks) — same reordering reason.
-    // Deliberately does not also show the generic storage grid (delivered
+    // Do not also show the generic storage grid (delivered
     // unit-cost resources): the recruit buttons below already surface each
     // unit's cost, and panel space is tight with both the queue and the
     // catalog list present.
@@ -3074,47 +3075,18 @@ void GuiPanel::Update(double dt)
         UiText::Draw("Residential", contentX, y, 22, Color{224, 204, 168, 255});
         y += 32;
 
-        double manpowerRate = building->owner != nullptr
-            ? building->owner->ResolveStat(population->manpowerRate, building)
-            : population->manpowerRate.GetBase();
-        int populationCap = building->owner != nullptr
-            ? building->owner->ResolveStat(population->populationCap, building)
-            : population->populationCap.GetBase();
-        auto upkeepPerMinute = [&](ResourceType type)
-        {
-            const double interval = population->GetEffectiveSupplyUpkeepInterval(*building, type);
-            return std::isfinite(interval)
-                ? population->GetSupplyUpkeep(type) * (60.0 / interval)
-                : 0.0;
-        };
+        const VillagePresentationView villageView = BuildVillagePresentationView(*building);
+        const int populationCap = villageView.populationCap;
         std::vector<std::string> stats{
             "Settlement: " + std::string(population->settlementLevel == 1 ? "Village" :
                                           population->settlementLevel == 2 ? "Town" : "City"),
-            "Generates: Manpower",
-            "Rate: " + std::to_string(static_cast<int>(manpowerRate * 60.0)) + " / min",
-            "Population cap: " + std::to_string(populationCap),
-            "Food upkeep: " + FormatDecimal(upkeepPerMinute(ResourceType::FOOD_PROVISIONS)) + " / min",
+            "Residents: " + std::to_string(static_cast<int>(std::round(villageView.inhabitants))) +
+                " / " + std::to_string(populationCap),
+            "Manpower gain: " + FormatDecimal(villageView.manpowerGainPerMinute) + " / min",
             "Food supply: " + std::to_string(static_cast<int>(std::round(population->GetFoodSupplyRatio() * 100.0))) + "%",
             "Worker output: " + std::to_string(static_cast<int>(std::round(population->GetWorkerProductivity() * 100.0))) + "%",
             "Lifetime: " + std::to_string(static_cast<int>(building->GetLifetime())) + "s"};
-        if (population->settlementLevel >= 2)
-        {
-            stats.push_back("Household upkeep: " +
-                FormatDecimal(upkeepPerMinute(ResourceType::HOUSEHOLD_GOODS)) + " / min");
-            stats.push_back("Household supply: " +
-                std::to_string(static_cast<int>(std::round(population->householdSupplyLevel * 100.0))) + "%");
-        }
-        if (population->settlementLevel >= 3)
-        {
-            stats.push_back("Urban upkeep: " +
-                FormatDecimal(upkeepPerMinute(ResourceType::URBAN_GOODS)) + " / min");
-            stats.push_back("Urban supply: " +
-                std::to_string(static_cast<int>(std::round(population->urbanSupplyLevel * 100.0))) + "%");
-        }
-        if (auto* upgrade = building->GetComponent<UpgradeComponent>(); upgrade != nullptr && upgrade->isUpgrading)
-            stats.push_back("Upgrading: " + std::to_string(static_cast<int>(std::ceil(upgrade->upgradeRemaining))) + "s left");
-
-        int line = 18;
+        const int line = 18;
         for (const auto& stat : stats)
         {
             Color color = population->GetFoodSupplyRatio() < 1.0 && stat.find("Food supply") != std::string::npos ? Color{238, 184, 84, 255} : UiTheme::Parchment;
@@ -3122,13 +3094,77 @@ void GuiPanel::Update(double dt)
             y += line + 4;
         }
         const BuildingUpgradeView upgradeView = MakeBuildingUpgradeView(*building);
+        const bool canDestroy = building->CanBeManuallyDestroyed();
+        const int actionGap = 8;
+        const int actionHeight = 32;
+        const int fixedActionHeight = (upgradeView.CanStart() ? actionHeight + actionGap : 0) +
+                                      (canDestroy ? destroyButton.size.y + actionGap : 0);
+        const int supplyTop = y;
+        const int supplyHeaderHeight = 28;
+        const int supplyRowHeight = 48;
+        const int upgradingHeight = (building->GetComponent<UpgradeComponent>() != nullptr &&
+                                     building->GetComponent<UpgradeComponent>()->isUpgrading)
+            ? 26 : 0;
+        const int supplyContentHeight = supplyHeaderHeight +
+            static_cast<int>(villageView.supplies.size()) * supplyRowHeight + upgradingHeight;
+        const int viewportHeight = std::max(1, bottom - fixedActionHeight - supplyTop);
+        maxContentScrollOffset = static_cast<float>(std::max(0, supplyContentHeight - viewportHeight));
+        contentScrollOffset = std::clamp(contentScrollOffset, 0.0f, maxContentScrollOffset);
+
+        const Rectangle supplyViewport{static_cast<float>(contentX), static_cast<float>(supplyTop),
+                                       static_cast<float>(contentW), static_cast<float>(viewportHeight)};
+        BeginContentClip(supplyViewport);
+        int supplyY = supplyTop - static_cast<int>(contentScrollOffset);
+        UiText::Draw("Consumed supplies", static_cast<float>(contentX), static_cast<float>(supplyY),
+                     18, Color{224, 204, 168, 255});
+        supplyY += supplyHeaderHeight;
+        for (const auto& supply : villageView.supplies)
+        {
+            const bool warning = supply.supplyLevel < 0.5 || supply.storedPackages == 0;
+            const Color rowColor = warning ? Color{238, 184, 84, 255} : UiTheme::Parchment;
+            const Rectangle row{static_cast<float>(contentX), static_cast<float>(supplyY),
+                                static_cast<float>(contentW), static_cast<float>(supplyRowHeight - 6)};
+            DrawRectangleRounded(row, 0.08f, 6, UiTheme::Inset);
+            DrawRectangleRoundedLines(row, 0.08f, 6, 1.0f,
+                                      warning ? Color{196, 126, 62, 255} : UiTheme::Iron);
+            const Rectangle icon{row.x + 7.0f, row.y + 5.0f, 26.0f, 26.0f};
+            GuiPanel::DrawResourceIcon(supply.resource, icon);
+            DrawTextFit(ResourceDisplayName(supply.resource),
+                        {row.x + 42.0f, row.y + 3.0f, row.width - 48.0f, 17.0f},
+                        14, rowColor);
+            DrawTextFit(FormatDecimal(supply.packagesPerMinute) + " packages / min  |  " +
+                            std::to_string(supply.storedPackages) + " stored  |  " +
+                            std::to_string(static_cast<int>(std::round(
+                                std::clamp(supply.supplyLevel, 0.0, 1.0) * 100.0))) + "%",
+                        {row.x + 42.0f, row.y + 21.0f, row.width - 48.0f, 16.0f},
+                        12, warning ? Color{238, 184, 84, 255} : UiTheme::ParchmentDim);
+            if (CheckCollisionPointRec(GetMousePosition(), icon))
+            {
+                DrawResourceTooltip(supply.resource,
+                    {"Consumption: " + FormatDecimal(supply.packagesPerMinute) + " packages / min",
+                     "Stored: " + std::to_string(supply.storedPackages),
+                     "Supply level: " + std::to_string(static_cast<int>(std::round(
+                         std::clamp(supply.supplyLevel, 0.0, 1.0) * 100.0))) + "%"}, 280.0f);
+            }
+            supplyY += supplyRowHeight;
+        }
+        if (upgradingHeight > 0)
+        {
+            const auto* upgrade = building->GetComponent<UpgradeComponent>();
+            UiText::Draw("Upgrading: " + std::to_string(static_cast<int>(std::ceil(
+                upgrade->upgradeRemaining))) + "s left",
+                static_cast<float>(contentX), static_cast<float>(supplyY), 14, UiTheme::AmberBright);
+        }
+        EndContentClip();
+
+        int actionY = bottom - (canDestroy ? destroyButton.size.y + actionGap : 0);
         if (upgradeView.CanStart())
         {
             const int targetLevel = upgradeView.targetLevel;
             const auto& levelDefinition = *upgradeView.target;
             UiButton settlementUpgradeButton;
-            settlementUpgradeButton.pos = Vec2i{contentX, y};
-            settlementUpgradeButton.size = Vec2i{contentW, 32};
+            settlementUpgradeButton.pos = Vec2i{contentX, actionY - actionGap - actionHeight};
+            settlementUpgradeButton.size = Vec2i{contentW, actionHeight};
             settlementUpgradeButton.ChangeText("Upgrade to level " + std::to_string(targetLevel));
             Building* self = building;
             GameScene* panelScene = scene;
@@ -3142,12 +3178,15 @@ void GuiPanel::Update(double dt)
             };
             settlementUpgradeButton.Update(dt);
 
-            Rectangle upgradeRect{static_cast<float>(contentX), static_cast<float>(y),
-                                  static_cast<float>(contentW), 32.0f};
+            const Rectangle upgradeRect{static_cast<float>(contentX),
+                                        static_cast<float>(settlementUpgradeButton.pos.y),
+                                        static_cast<float>(contentW), static_cast<float>(actionHeight)};
             if (CheckCollisionPointRec(GetMousePosition(), upgradeRect))
             {
                 const int currentPopulationCap = populationCap;
-                const double currentManpowerRate = manpowerRate;
+                const double currentManpowerRate = building->owner != nullptr
+                    ? building->owner->ResolveStat(population->manpowerRate, building)
+                    : population->manpowerRate.GetBase();
                 std::vector<std::string> effects;
                 if (levelDefinition.populationCap.has_value())
                     effects.push_back("Population cap: " + std::to_string(currentPopulationCap) +
@@ -3485,12 +3524,12 @@ void GuiPanel::Update(double dt)
         {
             placeAction(destroyButton);
             destroyButton.ChangeText("Destroy building");
+            destroyButton.SetTone(UiButtonTone::Danger);
             destroyButton.Update(dt);
         }
     }
 }
 
-// Initializes GuiPanel::GuiPanel.
 GuiPanel::GuiPanel()
 {
     lockButton.func = [this]()
@@ -3563,7 +3602,6 @@ void BuildingInfoPanel::UpdateSize(Vec2i windowSize)
     sizeAnchor = savedAnchor;
 }
 
-// Advances UpdateSize for one frame or simulation tick.
 void GuiPanel::UpdateSize(Vec2i windowSize)
 {
     UiWidget::UpdateSize(windowSize);
@@ -3584,7 +3622,6 @@ void GuiPanel::UpdateSize(Vec2i windowSize)
     destroyButton.size = Vec2i{size.x - margin * 2, buttonH};
 }
 
-// Updates the requested state value.
 void GuiPanel::SetBuilding(Building* ptr)
 {
     tutorialHighlight = false;
@@ -3625,7 +3662,6 @@ void GuiPanel::EndContentClip()
     EndScissorMode();
 }
 
-// Loads the requested data into runtime state.
 void GuiPanel::LoadResourceAtlas(const std::string& path, Vec2i iconSize)
 {
     resourceIconAtlas.Load(path, iconSize);

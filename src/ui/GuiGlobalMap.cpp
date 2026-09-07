@@ -8,6 +8,7 @@
 #include "core/PersistenceLimits.h"
 #include "warfare/UnitDefinition.h"
 #include "world/Expedition.h"
+#include "world/ExpeditionQuote.h"
 #include "world/ProvinceDefinition.h"
 #include "world/WorldEventDefinition.h"
 #include "world/ColonizationDefinition.h"
@@ -32,6 +33,8 @@ namespace
                status == WorldJourneyStatus::AwaitingUnload;
     }
 
+    float JourneyProgress(const JourneyStatusView& journey, std::uint64_t currentTick);
+
     float ScoutJourneyProgress(const JourneyStatusView& journey,
                                std::uint64_t currentTick)
     {
@@ -40,25 +43,7 @@ namespace
         if (!IsActiveJourneyStatus(journey.status) || journey.totalLegs == 0)
             return 0.0f;
 
-        const auto* definition = FindExpeditionDefinition("scout");
-        const std::uint64_t nominalLegDuration = definition == nullptr
-            ? 1u
-            : std::max<std::uint64_t>(
-                1u, (definition->durationTicks + journey.totalLegs - 1) /
-                    journey.totalLegs);
-        const std::uint64_t legStart = journey.currentLeg == 0
-            ? journey.startTick
-            : journey.etaTick > nominalLegDuration
-                ? journey.etaTick - nominalLegDuration : journey.startTick;
-        const std::uint64_t legDuration = std::max<std::uint64_t>(
-            1u, journey.etaTick > legStart ? journey.etaTick - legStart : 1u);
-        const float legProgress = std::clamp(
-            static_cast<float>(currentTick > legStart ? currentTick - legStart : 0u) /
-                static_cast<float>(legDuration),
-            0.0f, 1.0f);
-        return std::clamp((static_cast<float>(journey.currentLeg) + legProgress) /
-                              static_cast<float>(journey.totalLegs),
-                          0.0f, 1.0f);
+        return JourneyProgress(journey, currentTick);
     }
 
     float JourneyProgress(const JourneyStatusView& journey, std::uint64_t currentTick)
@@ -253,6 +238,24 @@ namespace
         hash *= 0x7FEB352Du;
         hash ^= hash >> 15;
         return textureCount == 0 ? 0 : hash % textureCount;
+    }
+
+    std::string ProvinceTraitDisplayName(const std::string& traitId)
+    {
+        for (const auto& [definitionId, definition] : GetProvinceDefinitions())
+        {
+            (void)definitionId;
+            const auto trait = std::find_if(definition.traits.begin(), definition.traits.end(),
+                [&traitId](const ProvinceTraitDefinition& value)
+                { return value.id == traitId; });
+            if (trait == definition.traits.end())
+                continue;
+            std::string label = trait->displayName.empty() ? trait->id : trait->displayName;
+            if (!trait->effects.empty())
+                label += " (" + std::string(BalanceStatLabel(trait->effects.front().stat)) + ")";
+            return label;
+        }
+        return traitId;
     }
 }
 
@@ -563,7 +566,7 @@ Rectangle GlobalMapPanelWidget::ProvinceTooltipRect(const GlobalMapNodeView& sel
     const bool buildable = selected.visibleKind.has_value() &&
                            *selected.visibleKind == ProvinceKind::Buildable;
     const float width = scoutSetup ? 310.0f : buildable ? 340.0f : 268.0f;
-    const float height = scoutSetup ? 250.0f
+    const float height = scoutSetup ? 330.0f
         : operationActive ? 188.0f
         : buildable
             ? 250.0f + static_cast<float>(std::max<std::size_t>(1, actionCount)) * 42.0f
@@ -587,6 +590,12 @@ Rectangle GlobalMapPanelWidget::ScoutCountButtonRect(Rectangle tooltip, bool inc
 {
     return {increment ? tooltip.x + tooltip.width - 54.0f : tooltip.x + 14.0f,
             tooltip.y + 116.0f, 40.0f, 32.0f};
+}
+
+Rectangle GlobalMapPanelWidget::ScoutFoodButtonRect(Rectangle tooltip, bool increment) const
+{
+    return {increment ? tooltip.x + tooltip.width - 54.0f : tooltip.x + 14.0f,
+            tooltip.y + 150.0f, 40.0f, 32.0f};
 }
 
 Rectangle GlobalMapPanelWidget::ScoutConfirmButtonRect(Rectangle tooltip) const
@@ -962,7 +971,8 @@ void GlobalMapPanelWidget::DrawProvinceTooltip(const GlobalMapNodeView* selected
         {
             std::string traits = "Traits: ";
             for (std::size_t i = 0; i < selected->traitIds.size() && i < 3; ++i)
-                traits += (i == 0 ? "" : ", ") + selected->traitIds[i];
+                traits += (i == 0 ? "" : ", ") +
+                    ProvinceTraitDisplayName(selected->traitIds[i]);
             if (selected->traitIds.size() > 3)
                 traits += " +" + std::to_string(selected->traitIds.size() - 3);
             UiText::DrawFit(traits,
@@ -1054,21 +1064,57 @@ void GlobalMapPanelWidget::DrawProvinceTooltip(const GlobalMapNodeView* selected
                                   plus.x - minus.x - minus.width - 12.0f, minus.height},
                         15, assigned > 0 ? UiTheme::Parchment : UiTheme::Iron);
 
-        int routeRiskBasisPoints = 0;
-        for (const auto& [id, definition] : GetWorldEventCatalog())
-            if (definition.trigger == WorldEventTriggerDomain::Route)
-                routeRiskBasisPoints = std::max(routeRiskBasisPoints,
-                                                definition.chanceBasisPoints);
-        const auto* expedition = FindExpeditionDefinition("scout");
-        const double durationSeconds = expedition == nullptr
-            ? 0.0 : expedition->durationTicks / 100.0;
-        UiText::Draw("Duration: " + FormatOneDecimal(durationSeconds) + " s",
-                     panel.x + 14.0f, panel.y + 158.0f, 14,
+        ExpeditionQuote quote;
+        if (assigned > 0 && scene != nullptr && scene->game != nullptr)
+        {
+            const auto playerIt = scene->game->GetPlayerHandler().players.find(
+                scene->game->GetLocalPlayerId());
+            const Player* localPlayer = playerIt == scene->game->GetPlayerHandler().players.end()
+                ? nullptr : playerIt->second.get();
+            std::vector<int> selectedScouts(available.begin(), available.begin() + assigned);
+            ExpeditionLoadout requestedLoadout;
+            if (scoutFoodDraft > 0)
+                requestedLoadout.resources.push_back({ResourceType::FOOD_PROVISIONS,
+                                                      scoutFoodDraft});
+            if (localPlayer != nullptr)
+                quote = ExpeditionQuoteService::Quote(
+                    localPlayer, ExpeditionRole::Scout, scene->game->GetLocalPlayerId(),
+                    sourceProvinceId, selected->id, selectedScouts,
+                    localPlayer->roster, scene->game->GetGlobalMap(),
+                    std::move(requestedLoadout), scoutFoodDraft == 0);
+        }
+        const int minimumFood = quote.allowed
+            ? quote.loadout.GetMinimum(ResourceType::FOOD_PROVISIONS) : 0;
+        scoutMinimumFoodDraft = std::max(1, minimumFood);
+        const int selectedFood = scoutFoodDraft > 0 ? scoutFoodDraft : minimumFood;
+        const Rectangle foodMinus = ScoutFoodButtonRect(panel, false);
+        const Rectangle foodPlus = ScoutFoodButtonRect(panel, true);
+        DrawGlobalMapButton(foodMinus, "-", CheckCollisionPointRec(GetMousePosition(), foodMinus),
+                            UiTheme::AmberBright);
+        DrawGlobalMapButton(foodPlus, "+", CheckCollisionPointRec(GetMousePosition(), foodPlus),
+                            UiTheme::AmberBright);
+        UiText::DrawFit("Food: " + std::to_string(selectedFood) +
+                            "  (minimum " + std::to_string(minimumFood) + ")",
+                        {foodMinus.x + foodMinus.width + 6.0f, foodMinus.y,
+                         foodPlus.x - foodMinus.x - foodMinus.width - 12.0f, foodMinus.height},
+                        13, selectedFood >= minimumFood ? UiTheme::Parchment : UiTheme::RustBright);
+        UiText::Draw("Duration: " + FormatOneDecimal(
+                         quote.allowed ? quote.travel.totalDurationTicks / 100.0 : 0.0) + " s",
+                     panel.x + 14.0f, panel.y + 192.0f, 14,
                      Color{185, 198, 211, 255});
-        UiText::Draw("Random incident risk: up to " +
-                         FormatOneDecimal(routeRiskBasisPoints / 100.0) + "% / leg",
-                     panel.x + 14.0f, panel.y + 180.0f, 14,
+        UiText::Draw("Route risk: " +
+                         FormatOneDecimal(quote.negativeIncidentRiskBasisPoints / 100.0) + "%",
+                     panel.x + 14.0f, panel.y + 214.0f, 14,
                      Color{255, 166, 119, 255});
+        if (quote.allowed && quote.loadout.supplyRatioBasisPoints > 10000)
+            UiText::Draw("Food bonus: +" + FormatOneDecimal(
+                             (quote.loadout.supplyRatioBasisPoints - 10000) / 100.0) +
+                             "% route speed",
+                         panel.x + 14.0f, panel.y + 236.0f, 13, UiTheme::SageBright);
+        if (!scoutPendingFailureReason.empty())
+            UiText::DrawFit(scoutPendingFailureReason,
+                            {panel.x + 14.0f, panel.y + 258.0f,
+                             panel.width - 28.0f, 20.0f}, 12, UiTheme::RustBright);
         const Rectangle confirm = ScoutConfirmButtonRect(panel);
         const Rectangle cancel = ScoutCancelButtonRect(panel);
         DrawGlobalMapButton(confirm, assigned > 0 ? "Confirm mission" : "No scouts available",
@@ -1095,7 +1141,7 @@ void GlobalMapPanelWidget::DrawProvinceTooltip(const GlobalMapNodeView* selected
             : actions[index] == ProvinceAction::ResourceTransfer
                 ? "Transport resources" : "Transfer army";
         const Color tint = actions[index] == ProvinceAction::Attack
-            ? Color{168, 89, 78, 255}
+            ? UiTheme::DangerBorder
             : actions[index] == ProvinceAction::Scout ? UiTheme::Cyan
             : actions[index] == ProvinceAction::ResourceTransfer ? UiTheme::AmberBright
             : actions[index] == ProvinceAction::ArmyTransfer ? UiTheme::Gold
@@ -1131,8 +1177,10 @@ void GlobalMapPanelWidget::DrawRouteTooltip(const GlobalMapView& view,
         (1.0 - selectedEdge->routeTimeBasisPoints / 10000.0) * 100.0;
     UiText::Draw("Route speed: " + FormatOneDecimal(routeSpeedBonus) + "%",
                  panel.x + 12.0f, panel.y + 102.0f, 14, UiTheme::Parchment);
-    UiText::Draw("Incident risk: -" +
-                     FormatOneDecimal(selectedEdge->incidentReductionBasisPoints / 100.0) + " pp",
+    UiText::Draw("Incident risk: " +
+                     FormatOneDecimal(selectedEdge->incidentRiskBasisPoints / 100.0) +
+                     "%  (road reduction -" +
+                     FormatOneDecimal(selectedEdge->incidentReductionBasisPoints / 100.0) + " pp)",
                  panel.x + 12.0f, panel.y + 122.0f, 14, UiTheme::ParchmentDim);
 
     if (selectedEdge->canUpgrade && selectedEdge->upgradeRemainingTicks > 0)
@@ -1275,7 +1323,7 @@ void GlobalMapPanelWidget::DrawOperationDialog(const GlobalMapView& view)
         if (operationDialog == OperationDialogKind::Attack)
         {
             const float loadoutY = panel.y + 356.0f;
-            UiText::Draw("Draft loadout (presentation only)", panel.x + 18.0f, loadoutY,
+            UiText::Draw("Expedition supply preview", panel.x + 18.0f, loadoutY,
                          15, UiTheme::ParchmentDim);
             const auto drawDraft = [&](const char* label, int amount, float y)
             {
@@ -1290,7 +1338,7 @@ void GlobalMapPanelWidget::DrawOperationDialog(const GlobalMapView& view)
             };
             drawDraft("Food provisions", attackFoodDraft, loadoutY + 24.0f);
             drawDraft("Iron swords", attackSwordDraft, loadoutY + 48.0f);
-            UiText::DrawFit("Draft loadout is not consumed by the current combat backend.",
+            UiText::DrawFit("Authority quotes and validates the final expedition loadout.",
                             {panel.x + 18.0f, loadoutY + 76.0f, panel.width - 36.0f, 20.0f},
                             13, UiTheme::Iron);
         }
@@ -1578,9 +1626,23 @@ void GlobalMapPanelWidget::HandleInput(const GlobalMapView& view, Vector2 origin
                 selectedScoutCount = std::min(maximum, selectedScoutCount + 1);
                 return;
             }
+            if (CheckCollisionPointRec(mouse, ScoutFoodButtonRect(tooltip, false)))
+            {
+                const int current = scoutFoodDraft > 0 ? scoutFoodDraft : scoutMinimumFoodDraft;
+                scoutFoodDraft = current <= scoutMinimumFoodDraft ? 0
+                    : current - 1;
+                return;
+            }
+            if (CheckCollisionPointRec(mouse, ScoutFoodButtonRect(tooltip, true)))
+            {
+                const int current = scoutFoodDraft > 0 ? scoutFoodDraft : scoutMinimumFoodDraft;
+                scoutFoodDraft = std::min(scoutMinimumFoodDraft * 2, current + 1);
+                return;
+            }
             if (CheckCollisionPointRec(mouse, ScoutCancelButtonRect(tooltip)))
             {
                 scoutSetupProvinceId = InvalidProvinceId;
+                scoutPendingFailureReason.clear();
                 return;
             }
             if (maximum > 0 && CheckCollisionPointRec(mouse, ScoutConfirmButtonRect(tooltip)))
@@ -1588,12 +1650,17 @@ void GlobalMapPanelWidget::HandleInput(const GlobalMapView& view, Vector2 origin
                 selectedScoutCount = std::clamp(selectedScoutCount, 1, maximum);
                 std::vector<int> assigned(available.begin(),
                                           available.begin() + selectedScoutCount);
-                scene->SubmitLocalCommand(GameCommand::StartScoutExpedition(
-                    scene->game->GetLocalPlayerId(), originProvinceId,
-                    selected->id, std::move(assigned)));
+                ExpeditionLoadout loadout;
+                if (scoutFoodDraft > 0)
+                    loadout.resources.push_back({ResourceType::FOOD_PROVISIONS,
+                                                 scoutFoodDraft});
+                scoutPendingCommandId = scene->SubmitLocalCommand(
+                    GameCommand::StartScoutExpedition(
+                        scene->game->GetLocalPlayerId(), originProvinceId,
+                        selected->id, std::move(assigned), std::move(loadout)));
                 scoutSetupProvinceId = InvalidProvinceId;
                 scoutPendingProvinceId = selected->id;
-                scoutPendingUntil = GetTime() + 2.0;
+                scoutPendingFailureReason.clear();
                 return;
             }
             return;
@@ -1607,6 +1674,8 @@ void GlobalMapPanelWidget::HandleInput(const GlobalMapView& view, Vector2 origin
             {
                 case ProvinceAction::Scout:
                     scoutSetupProvinceId = selected->id;
+                    scoutPendingFailureReason.clear();
+                    scoutFoodDraft = 0;
                     selectedScoutCount = 1;
                     return;
                 case ProvinceAction::Trade:
@@ -1695,6 +1764,8 @@ void GlobalMapPanelWidget::HandleInput(const GlobalMapView& view, Vector2 origin
             operationDialog = OperationDialogKind::None;
             scoutSetupProvinceId = InvalidProvinceId;
             scoutPendingProvinceId = InvalidProvinceId;
+            scoutPendingCommandId = 0;
+            scoutPendingFailureReason.clear();
         }
         selectedProvinceId = *hit;
         selectedConnectionId = InvalidProvinceConnectionId;
@@ -1708,6 +1779,8 @@ void GlobalMapPanelWidget::HandleInput(const GlobalMapView& view, Vector2 origin
         operationDialog = OperationDialogKind::None;
         scoutSetupProvinceId = InvalidProvinceId;
         scoutPendingProvinceId = InvalidProvinceId;
+        scoutPendingCommandId = 0;
+        scoutPendingFailureReason.clear();
     }
 }
 
@@ -1730,10 +1803,31 @@ void GlobalMapPanelWidget::Update(double dt)
     const Vector2 origin = MapOrigin();
     const float scale = std::max(0.05f, MapScale());
 
-    if (scoutPendingProvinceId != InvalidProvinceId &&
-        (FindLatestScoutJourney(scoutPendingProvinceId, true) != nullptr ||
-         GetTime() >= scoutPendingUntil))
-        scoutPendingProvinceId = InvalidProvinceId;
+    if (scoutPendingCommandId != 0)
+    {
+        const auto result = std::find_if(scene->commandResults.begin(),
+                                         scene->commandResults.end(),
+            [this](const GameCommandResult& candidate)
+            {
+                return candidate.commandId == scoutPendingCommandId &&
+                       candidate.type == GameCommandType::StartScoutExpedition;
+            });
+        if (result != scene->commandResults.end())
+        {
+            if (result->accepted)
+            {
+                scoutPendingProvinceId = InvalidProvinceId;
+                scoutPendingFailureReason.clear();
+            }
+            else
+            {
+                scoutSetupProvinceId = scoutPendingProvinceId;
+                scoutPendingFailureReason = result->reason;
+                scoutPendingProvinceId = InvalidProvinceId;
+            }
+            scoutPendingCommandId = 0;
+        }
+    }
     if (scoutSetupProvinceId != InvalidProvinceId && scene->game != nullptr)
     {
         const int available = static_cast<int>(AvailableScoutIds(
@@ -1956,7 +2050,8 @@ void OwnedProvinceListWidget::Update(double dt)
         if (hovered && IsMouseButtonPressed(MOUSE_BUTTON_LEFT))
         {
             acknowledged->second = newestEventId;
-            scene->game->SetLocalActiveProvince(node->id);
+            if (scene->game->SetLocalActiveProvince(node->id))
+                CenterCameraOnActiveProvinceHeadquarters(scene);
         }
     }
     EndScissorMode();

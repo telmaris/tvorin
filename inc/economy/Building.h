@@ -95,8 +95,7 @@ enum class TileType : int
     CLAY = 12
 };
 
-// Coarse terrain region driving resource placement (and, later, ground visuals).
-// See docs/resource_world_design.md.
+// Coarse terrain region driving resource placement and ground visuals.
 enum class BiomeType : int
 {
     PLAINS = 0,
@@ -209,6 +208,13 @@ public:
     double GetActiveTime() const { return activeTime; }
     bool IsUnderConstruction() const { return constructionRemaining > 0.0; }
     float GetConstructionProgress() const;
+    // Presentation-level lookup for renderer/UI. Buildings without an
+    // UpgradeComponent intentionally remain at the baseline visual level.
+    int GetVisualUpgradeLevel() const
+    {
+        const auto* upgrade = GetComponent<UpgradeComponent>();
+        return upgrade != nullptr ? std::max(1, upgrade->level) : 1;
+    }
     double GetModifiedTransportTime() const;
     double GetModifiedDispatchDelay(ResourceType resourceType = ResourceType::Null) const;
 

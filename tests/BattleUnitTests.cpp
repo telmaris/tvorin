@@ -21,7 +21,7 @@ namespace
         return path;
     }
 
-    void FillOwnedGrass(TileMap& map, Player* owner, int width = 8, int height = 8)
+    void FillGrass(TileMap& map, int width = 8, int height = 8)
     {
         map.params.sizeX = width;
         map.params.sizeY = height;
@@ -30,7 +30,6 @@ namespace
         for (int i = 0; i < width * height; i++)
         {
             Tile tile{i};
-            tile.owner = owner;
             tile.tileType = TileType::GRASS;
             map.tilemap.push_back(std::move(tile));
         }
@@ -90,7 +89,7 @@ TEST(BattleUnitTests, TechnologyGatedUnitCannotBeQueuedBeforeResearch)
 {
     TileMap map;
     Player player{0, map};
-    FillOwnedGrass(map, &player);
+    FillGrass(map);
     Barracks* barracks = PlaceReadyBarracks(map, player);
     ASSERT_NE(barracks, nullptr);
 
@@ -106,7 +105,7 @@ TEST(BattleUnitTests, RecruitmentEndToEndConsumesResourcesAndManpowerThenAddsToR
 {
     TileMap map;
     Player player{0, map};
-    FillOwnedGrass(map, &player);
+    FillGrass(map);
     Barracks* barracks = PlaceReadyBarracks(map, player);
     ASSERT_NE(barracks, nullptr);
 
@@ -129,7 +128,7 @@ TEST(BattleUnitTests, RecruitTimeAndManpowerCostAreModifiableButFloored)
 {
     TileMap map;
     Player player{0, map};
-    FillOwnedGrass(map, &player);
+    FillGrass(map);
     Barracks* barracks = PlaceReadyBarracks(map, player);
     ASSERT_NE(barracks, nullptr);
 
@@ -157,16 +156,12 @@ TEST(BattleUnitTests, RecruitTimeAndManpowerCostAreModifiableButFloored)
         << "recruitTime must be floored so a strong multiplier can't make recruitment instant";
 }
 
-// Updated 2026-07-15 (docs/work_plan_2026-07-13.md, A5 correction): missing
-// resources no longer block QueueRecruitment outright — the order joins the
-// queue tagged "waiting" and the shortfall is requested on demand (see
-// RecruitmentComponent::QueueRecruitment). Manpower is the only hard gate,
-// since it's a global pool with nothing to physically wait on.
+// Missing resources create a waiting order; manpower remains a hard gate.
 TEST(BattleUnitTests, RecruitmentQueuesAsWaitingWithoutResourcesButFailsWithoutManpowerOrUnit)
 {
     TileMap map;
     Player player{0, map};
-    FillOwnedGrass(map, &player);
+    FillGrass(map);
     Barracks* barracks = PlaceReadyBarracks(map, player);
     ASSERT_NE(barracks, nullptr);
 
@@ -188,7 +183,7 @@ TEST(BattleUnitTests, TechTreeModifierChangesEffectiveStatsIncludingAlreadyRecru
 {
     TileMap map;
     Player player{0, map};
-    FillOwnedGrass(map, &player);
+    FillGrass(map);
     Barracks* barracks = PlaceReadyBarracks(map, player);
     ASSERT_NE(barracks, nullptr);
 
@@ -218,7 +213,7 @@ TEST(BattleUnitTests, InstanceIdsAreDeterministicAndUniquePerPlayer)
     TileMap map;
     Player playerA{0, map};
     Player playerB{1, map};
-    FillOwnedGrass(map, nullptr, 12, 8);
+    FillGrass(map, 12, 8);
     Barracks* barracksA = PlaceReadyBarracks(map, playerA, {1, 1});
     Barracks* barracksB = PlaceReadyBarracks(map, playerB, {6, 1});
     ASSERT_NE(barracksA, nullptr);
@@ -244,19 +239,14 @@ TEST(BattleUnitTests, InstanceIdsAreDeterministicAndUniquePerPlayer)
     EXPECT_EQ(idB, 1 * 100000 + 1);
 }
 
-// TODO #1 (2026-07-16) regression: while an order waited, the old code
-// re-requested its FULL remaining cost every tick without netting out
-// deliveries already on the road (RequestResource dispatches transport
-// immediately, unlike MaintainRequests), so a Barracks kept ordering "na
-// zapas" — far more than the queue needed. After the fix a Barracks must
-// pull exactly one queued unit's cost at a time and end with an empty buffer.
+// In-flight deliveries must count toward the queued cost to prevent over-ordering.
 TEST(BattleUnitTests, RecruitmentRequestsExactCostWithoutOverRequesting)
 {
     TileMap map;
     // Map must be sized BEFORE the Player exists — Player's constructor
     // builds its RoadNetwork against the map as it is right then (same
     // ordering RoadNetworkTests relies on).
-    FillOwnedGrass(map, nullptr, 10, 6);
+    FillGrass(map, 10, 6);
     Player player{0, map};
 
     // Same proven delivery layout as RoadNetworkTests'
@@ -294,14 +284,12 @@ TEST(BattleUnitTests, RecruitmentRequestsExactCostWithoutOverRequesting)
         << "the barracks must not stockpile beyond what the queue consumed";
 }
 
-// TODO #1 (2026-07-16): entries behind the front must flip resourcesReady
-// (clearing the GUI's "Waiting for resources" label) the moment their cost is
-// physically in the buffer — not only once they reach the front of the queue.
+// Entries become ready as soon as their resources arrive, even behind the front.
 TEST(BattleUnitTests, QueuedEntriesFlipResourcesReadyAsDeliveriesArrive)
 {
     TileMap map;
     Player player{0, map};
-    FillOwnedGrass(map, &player);
+    FillGrass(map);
     Barracks* barracks = PlaceReadyBarracks(map, player);
     ASSERT_NE(barracks, nullptr);
 
@@ -329,14 +317,12 @@ TEST(BattleUnitTests, QueuedEntriesFlipResourcesReadyAsDeliveriesArrive)
         << "each flip consumes exactly that entry's cost";
 }
 
-// TODO #1 (2026-07-16): strict FIFO — a later entry must not grab buffered
-// resources while an earlier entry still waits for its own cost, even when
-// the later entry's cost is fully available.
+// Later entries cannot take buffered resources ahead of an older waiting order.
 TEST(BattleUnitTests, WaitingEntriesConsumeInFifoOrder)
 {
     TileMap map;
     Player player{0, map};
-    FillOwnedGrass(map, &player);
+    FillGrass(map);
     Barracks* barracks = PlaceReadyBarracks(map, player);
     ASSERT_NE(barracks, nullptr);
 

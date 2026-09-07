@@ -1,65 +1,47 @@
-name: Windows build
+name: Windows CI
 
 on:
   push:
-    branches:
-      - "**"
-    tags:
-      - "v*"
+    branches: ["**"]
+    tags: ["v*"]
   pull_request:
-    branches:
-      - main
-      - master
+    branches: [main, master]
   workflow_dispatch:
 
+concurrency:
+  group: windows-ci-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  build-windows:
-    name: Build Tvorin Windows ZIP
+  build:
+    name: Build and test
     runs-on: windows-latest
-
-    env:
-      BUILD_TYPE: Release
+    timeout-minutes: 30
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Cache vcpkg
-        uses: actions/cache@v4
-        with:
-          path: |
-            C:\vcpkg\installed
-            C:\Users\runneradmin\AppData\Local\vcpkg
-          key: vcpkg-${{ runner.os }}-${{ hashFiles('vcpkg.json', '.vcpkg*') }}
-          restore-keys: vcpkg-${{ runner.os }}-
 
       - name: Configure
         shell: pwsh
-        run: |
-          cmake -S . -B build `
-            -A x64 `
-            -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} `
-            -DBUILD_TESTING=ON `
-            "-DCMAKE_POLICY_VERSION_MINIMUM=3.5"
+        run: >-
+          cmake -S . -B build -A x64
+          -DBUILD_TESTING=ON
+          "-DCMAKE_POLICY_VERSION_MINIMUM=3.5"
 
       - name: Build
         shell: pwsh
-        run: |
-          cmake --build build --config ${{ env.BUILD_TYPE }} --parallel
+        run: cmake --build build --config Release --parallel
 
-      - name: Run tests (excluding AI behavior harness)
+      - name: Test and validate data
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force -Path test-results | Out-Null
-          $testExe = "build\tests\${{ env.BUILD_TYPE }}\tvorin_tests.exe"
-          & $testExe `
-            --gtest_filter=-AIBehaviorHarnessTests.* `
-            --gtest_output=xml:test-results\gtest-results.xml
+          New-Item -ItemType Directory -Force test-results | Out-Null
+          ctest --test-dir build -C Release --output-on-failure `
+            --output-junit "$PWD\test-results\ctest-results.xml"
 
       - name: Upload test results
         if: always()
@@ -68,89 +50,55 @@ jobs:
           name: test-results
           path: test-results/*.xml
           if-no-files-found: warn
+          retention-days: 14
 
-      - name: Package
+      - name: Package Windows build
         shell: pwsh
         run: |
-          $dist = "dist\tvorin-windows-x64"
-          New-Item -ItemType Directory -Force -Path $dist | Out-Null
+          $package = "dist\tvorin-windows-x64"
+          New-Item -ItemType Directory -Force $package | Out-Null
+          Copy-Item "build\Release\tvorin.exe" $package
+          Copy-Item assets "$package\assets" -Recurse
+          New-Item -ItemType Directory -Force "$package\saves" | Out-Null
+          Compress-Archive -Path "$package\*" `
+            -DestinationPath "dist\tvorin-windows-x64.zip" -Force
 
-          $exe = Get-ChildItem -Path build -Recurse -Filter tvorin.exe |
-            Where-Object { (Split-Path -Leaf (Split-Path -Parent $_.FullName)) -eq "${{ env.BUILD_TYPE }}" } |
-            Select-Object -First 1
-          if (-not $exe) {
-            $exe = Get-ChildItem -Path build -Recurse -Filter tvorin.exe | Select-Object -First 1
-          }
-          if (-not $exe) {
-            Write-Host "Build tree:"
-            Get-ChildItem -Path build -Recurse | Select-Object FullName, Length
-            throw "tvorin.exe not found in build output"
-          }
-
-          Copy-Item $exe.FullName $dist
-
-          # Copy any DLLs sitting next to the exe (with static build there are none,
-          # but kept here as a safety net in case the triplet ever changes back).
-          $exeDir = Split-Path -Parent $exe.FullName
-          Get-ChildItem -Path $exeDir -Filter *.dll | ForEach-Object {
-            Copy-Item $_.FullName $dist
-          }
-
-          Copy-Item "assets" "$dist\assets" -Recurse
-          New-Item -ItemType Directory -Force -Path "$dist\saves" | Out-Null
-
-          Write-Host "Package contents:"
-          Get-ChildItem -Path $dist -Recurse | Select-Object FullName, Length
-
-          Compress-Archive -Path "$dist\*" -DestinationPath "dist\tvorin-windows-x64.zip" -Force
-
-      - name: Upload ZIP artifact
+      - name: Upload Windows build
         uses: actions/upload-artifact@v4
         with:
           name: tvorin-windows-x64
           path: dist/tvorin-windows-x64.zip
           if-no-files-found: error
+          retention-days: 14
 
-      - name: Resolve release version
-        id: release_version
-        if: github.event_name == 'push'
+  release:
+    name: Publish tagged release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: windows-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verify tag matches VERSION
         shell: pwsh
         run: |
-          $shouldRelease = "false"
-          $tagName = ""
-
-          if ("${{ github.ref }}".StartsWith("refs/tags/v")) {
-            $shouldRelease = "true"
-            $tagName = "${{ github.ref_name }}"
-          } elseif ("${{ github.ref }}" -eq "refs/heads/main" -or "${{ github.ref }}" -eq "refs/heads/master") {
-            # VERSION file is the single source of truth. Release only when its
-            # version has not been tagged yet (patch bumps come from local builds).
-            $version = (Get-Content "VERSION" -Raw).Trim()
-            if ($version -notmatch '^\d+\.\d+\.\d+$') {
-              throw "VERSION file malformed: '$version' (expected MAJOR.MINOR.PATCH)"
-            }
-            $tagName = "v$version"
-
-            git fetch --tags --force
-            $existing = git tag --list $tagName
-            if ([string]::IsNullOrWhiteSpace($existing)) {
-              git config user.name "github-actions[bot]"
-              git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-              git tag -a $tagName -m "Release $tagName"
-              git push origin $tagName
-              $shouldRelease = "true"
-            } else {
-              Write-Host "Tag $tagName already exists; building without a new release."
-            }
+          $expected = "v$((Get-Content VERSION -Raw).Trim())"
+          if ("${{ github.ref_name }}" -ne $expected) {
+            throw "Tag ${{ github.ref_name }} does not match VERSION ($expected)."
           }
 
-          "should_release=$shouldRelease" >> $env:GITHUB_OUTPUT
-          "tag_name=$tagName" >> $env:GITHUB_OUTPUT
+      - name: Download Windows build
+        uses: actions/download-artifact@v4
+        with:
+          name: tvorin-windows-x64
+          path: dist
 
-      - name: Create GitHub Release
-        if: steps.release_version.outputs.should_release == 'true'
+      - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.release_version.outputs.tag_name }}
           files: dist/tvorin-windows-x64.zip
           generate_release_notes: true

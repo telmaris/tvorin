@@ -1041,8 +1041,6 @@ void BuildGhostWidget::Update(double dt)
 BuildGuiSystem::BuildGuiSystem(GuiController* con)
     : GuiSystem(con)
 {
-    // A4 (docs/work_plan_2026-07-13.md): shadows GuiSystem::scene (Scene*) —
-    // also inherited as-is by RoadBuildSystem.
     scene = dynamic_cast<GameScene*>(owner->scene);
 
     WireCommonSystemActions(*this, cameraMovement);
@@ -1516,7 +1514,6 @@ bool RoadBuildSystem::TryPlaceRoadTowards(Vec2i tilePos)
 DestroyGuiSystem::DestroyGuiSystem(GuiController* con)
     : GuiSystem(con)
 {
-    // A4 (docs/work_plan_2026-07-13.md): shadows GuiSystem::scene (Scene*).
     scene = dynamic_cast<GameScene*>(owner->scene);
 
     WireCommonSystemActions(*this, cameraMovement);

@@ -87,7 +87,6 @@ BuildPaymentPolicy ResolveBuildPaymentPolicy(const TileMap& map, const Player& p
                : BuildPaymentPolicy::ChargeAuthoritativeCost;
 }
 
-// Submits this command to the simulation.
 std::uint64_t GameWorld::SubmitCommand(const GameCommand& command)
 {
     return SubmitCommand(command, simulationTick + 1);
@@ -122,7 +121,6 @@ bool GameWorld::ApplyAuthoritativeCommand(const GameCommand& command)
     return ExecuteCommand(command);
 }
 
-// Initializes GameWorld::AttachControllerForPlayer.
 void GameWorld::AttachControllerForPlayer(Player* player)
 {
     if (player == nullptr)
@@ -143,7 +141,6 @@ void GameWorld::AttachControllerForPlayer(Player* player)
     }
 }
 
-// Advances UpdateControllers for one frame or simulation tick.
 void GameWorld::UpdateControllers(double dt)
 {
     for (auto& controller : controllers)
@@ -165,7 +162,10 @@ void GameWorld::ProcessCommands()
             continue;
         }
 
-        bool accepted = ExecuteCommand(command);
+        std::string failureReason;
+        bool accepted = ExecuteCommand(command, &failureReason);
+        if (failureReason.empty())
+            failureReason = accepted ? "accepted" : "rejected";
         commandResults.push_back(GameCommandResult{
             command.commandId,
             simulationTick,
@@ -173,7 +173,7 @@ void GameWorld::ProcessCommands()
             command.playerId,
             command.type,
             accepted,
-            accepted ? "accepted" : "rejected",
+            std::move(failureReason),
             command.Serialize()});
     }
     pendingCommands = std::move(deferredCommands);
@@ -648,15 +648,21 @@ bool GameWorld::CompleteAutomaticColonization(Player& player, ProvinceId targetP
 }
 
 // Validates and applies one gameplay command.
-bool GameWorld::ExecuteCommand(const GameCommand& command)
+bool GameWorld::ExecuteCommand(const GameCommand& command, std::string* failureReason)
 {
+    const auto reject = [failureReason](std::string reason)
+    {
+        if (failureReason != nullptr)
+            *failureReason = std::move(reason);
+        return false;
+    };
     auto playerIt = playerHandler.players.find(command.playerId);
     if (playerIt == playerHandler.players.end())
-        return false;
+        return reject("player does not exist");
 
     Player* player = playerIt->second.get();
     if (player == nullptr)
-        return false;
+        return reject("player is unavailable");
     const bool isLocalMapCommand = command.type == GameCommandType::BuildBuilding ||
                                    command.type == GameCommandType::DestroyBuilding ||
                                    command.type == GameCommandType::SetReceiver ||
@@ -790,6 +796,39 @@ bool GameWorld::ExecuteCommand(const GameCommand& command)
         for (const auto& [playerId, candidate] : playerHandler.players)
             if (candidate != nullptr)
                 players.emplace(playerId, candidate.get());
+        const bool hasRequestedLoadout =
+            !command.expeditionLoadout.resources.empty() ||
+            !command.expeditionLoadout.minimumResources.empty();
+        const ExpeditionQuote quote = ExpeditionQuoteService::Quote(
+            player, ExpeditionRole::Garrison, player->id, command.provinceId,
+            command.targetProvinceId, unitIds, player->roster, globalMap,
+            command.expeditionLoadout, !hasRequestedLoadout);
+        if (!quote.allowed)
+            return reject(quote.reason.empty() ? "attack expedition quote is invalid" : quote.reason);
+        auto* sourceProvince = globalMap.FindBuildableProvince(command.provinceId);
+        auto* sourceSimulation = sourceProvince != nullptr ? sourceProvince->GetSimulation() : nullptr;
+        ProvinceEconomy* sourceEconomy = sourceSimulation != nullptr
+            ? &sourceSimulation->GetEconomy() : nullptr;
+        std::vector<ResourceAmount> loadoutReserved;
+        if (hasRequestedLoadout)
+        {
+            if (sourceEconomy == nullptr)
+                return reject("attack source province has no economy");
+            for (const auto& resource : quote.loadout.resources)
+                if (StockpileIndex::GetTotal(*sourceEconomy, resource.type) < resource.amount)
+                    return reject("attack source cannot provide the expedition loadout");
+            for (const auto& resource : quote.loadout.resources)
+            {
+                if (StockpileIndex::Consume(*sourceEconomy, resource.type, resource.amount) !=
+                    resource.amount)
+                {
+                    for (const auto& rollback : loadoutReserved)
+                        StockpileIndex::Deposit(*sourceEconomy, rollback.type, rollback.amount);
+                    return reject("attack loadout reservation failed");
+                }
+                loadoutReserved.push_back(resource);
+            }
+        }
         BattleId battleId = InvalidBattleId;
         std::string failureReason;
         if (!battleSystem.StartProvinceAttack(*player, command.provinceId,
@@ -797,8 +836,14 @@ bool GameWorld::ExecuteCommand(const GameCommand& command)
                                                unitIds, globalMap,
                                                armyJourneySystem, players, simulationTick,
                                                campaignGenerationParameters.globalMap.seed,
-                                               battleId, failureReason))
-            return false;
+                                               battleId, failureReason, quote.loadout,
+                                               quote.speedProfile))
+        {
+            if (sourceEconomy != nullptr)
+                for (const auto& rollback : loadoutReserved)
+                    StockpileIndex::Deposit(*sourceEconomy, rollback.type, rollback.amount);
+            return reject(failureReason.empty() ? "unable to start province attack" : failureReason);
+        }
         return acceptCommand();
     }
 
@@ -1440,7 +1485,15 @@ bool GameWorld::ExecuteCommand(const GameCommand& command)
         }
         const ExpeditionDefinition* expeditionDefinition = FindExpeditionDefinition("scout");
         if (expeditionDefinition == nullptr)
-            return false;
+            return reject("scout expedition definition is missing");
+        const bool hasRequestedLoadout =
+            !command.expeditionLoadout.resources.empty() ||
+            !command.expeditionLoadout.minimumResources.empty();
+        ExpeditionQuote quote = ExpeditionQuoteService::Quote(
+            player, ExpeditionRole::Scout, player->id, sourceProvinceId, targetProvinceId,
+            scoutIds, player->roster, globalMap, command.expeditionLoadout, !hasRequestedLoadout);
+        if (!quote.allowed)
+            return reject(quote.reason.empty() ? "scout expedition quote is invalid" : quote.reason);
         const double strategicSupply = player->strategicResources.Get(
             expeditionDefinition->supplyResource);
         const bool useStrategicSupply = strategicSupply >= expeditionDefinition->supplyCost;
@@ -1461,26 +1514,81 @@ bool GameWorld::ExecuteCommand(const GameCommand& command)
             StockpileIndex::GetTotal(*sourceEconomy, ResourceType::FOOD_PROVISIONS) >=
                 expeditionDefinition->supplyCost;
         if (!useStrategicSupply && !canUseLocalProvisions)
-            return false;
+            return reject("not enough expedition supply packages");
+
+        // Validate every requested loadout item before mutating either the
+        // strategic package pool or the source province stockpile. The
+        // command is therefore all-or-nothing even when a later item is
+        // missing from the warehouse network.
+        if (hasRequestedLoadout && sourceEconomy != nullptr)
+            for (const auto& resource : quote.loadout.resources)
+                if (resource.amount <= 0 ||
+                    StockpileIndex::GetTotal(*sourceEconomy, resource.type) < resource.amount)
+                    return reject("source province cannot provide the expedition loadout");
+
+        bool strategicReserved = false;
+        int localSupplyReserved = 0;
+        std::vector<ResourceAmount> loadoutReserved;
+        if (useStrategicSupply)
+        {
+            strategicReserved = player->strategicResources.Consume(
+                expeditionDefinition->supplyResource,
+                static_cast<double>(expeditionDefinition->supplyCost));
+            if (!strategicReserved)
+                return reject("expedition supply package reservation failed");
+        }
+        else
+        {
+            localSupplyReserved = StockpileIndex::Consume(
+                *sourceEconomy, ResourceType::FOOD_PROVISIONS,
+                expeditionDefinition->supplyCost);
+            if (localSupplyReserved != expeditionDefinition->supplyCost)
+                return reject("source province supply reservation failed");
+        }
+        if (hasRequestedLoadout && sourceEconomy != nullptr)
+        {
+            for (const auto& resource : quote.loadout.resources)
+            {
+                const int consumed = StockpileIndex::Consume(
+                    *sourceEconomy, resource.type, resource.amount);
+                if (consumed != resource.amount)
+                {
+                    for (const auto& rollback : loadoutReserved)
+                        StockpileIndex::Deposit(*sourceEconomy, rollback.type, rollback.amount);
+                    if (localSupplyReserved > 0)
+                        StockpileIndex::Deposit(*sourceEconomy, ResourceType::FOOD_PROVISIONS,
+                                                localSupplyReserved);
+                    if (strategicReserved)
+                        player->strategicResources.Add(
+                            expeditionDefinition->supplyResource,
+                            static_cast<double>(expeditionDefinition->supplyCost));
+                    return reject("expedition loadout reservation failed");
+                }
+                loadoutReserved.push_back(resource);
+            }
+        }
         WorldJourneyId journeyId = InvalidWorldJourneyId;
-        std::string failureReason;
-        const WorldJourneyRules journeyRules = ResolveJourneyRules(*player, 100);
+        std::string startFailureReason;
+        WorldJourneyRules journeyRules = ResolveJourneyRules(*player, 100);
+        journeyRules.speedProfile = quote.speedProfile;
         if (!ScoutExpeditionService::Start(player->id, sourceProvinceId, targetProvinceId,
                                            scoutIds, player->roster, globalMap,
                                            armyJourneySystem, simulationTick,
-                                           journeyId, failureReason, journeyRules))
-            return false;
-        if (useStrategicSupply)
+                                           journeyId, startFailureReason, journeyRules,
+                                           quote.loadout))
         {
-            if (!player->strategicResources.Consume(
+            for (const auto& rollback : loadoutReserved)
+                StockpileIndex::Deposit(*sourceEconomy, rollback.type, rollback.amount);
+            if (localSupplyReserved > 0)
+                StockpileIndex::Deposit(*sourceEconomy, ResourceType::FOOD_PROVISIONS,
+                                        localSupplyReserved);
+            if (strategicReserved)
+                player->strategicResources.Add(
                     expeditionDefinition->supplyResource,
-                    static_cast<double>(expeditionDefinition->supplyCost)))
-                return false;
+                    static_cast<double>(expeditionDefinition->supplyCost));
+            return reject(startFailureReason.empty() ? "unable to start scout expedition"
+                                                       : startFailureReason);
         }
-        else if (StockpileIndex::Consume(*sourceEconomy, ResourceType::FOOD_PROVISIONS,
-                                         expeditionDefinition->supplyCost) !=
-                 expeditionDefinition->supplyCost)
-            return false;
         return acceptCommand();
     }
 

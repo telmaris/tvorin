@@ -78,13 +78,16 @@ public:
                              GlobalMap& map, WorldJourneySystem& journeys,
                              const std::map<PlayerId, Player*>& players,
                              std::uint64_t currentTick, BattleSeed campaignSeed,
-                             BattleId& createdId, std::string& failureReason);
+                             BattleId& createdId, std::string& failureReason,
+                             ExpeditionLoadout expeditionLoadout = {},
+                             JourneySpeedProfile speedProfile = {});
     bool StartRaid(Player& defender, ProvinceId targetProvinceId, int raidStrength,
                    GlobalMap& map, std::uint64_t currentTick, BattleSeed campaignSeed,
                    BattleId& createdId, std::string& failureReason);
     void Update(GlobalMap& map, WorldJourneySystem& journeys,
                 const std::map<PlayerId, Player*>& players,
-                std::uint64_t currentTick, BattleSeed campaignSeed);
+                std::uint64_t currentTick, BattleSeed campaignSeed,
+                bool advanceJourneys = true);
 
     bool Cancel(BattleId battleId, const std::map<PlayerId, Player*>& players,
                 WorldJourneySystem& journeys);

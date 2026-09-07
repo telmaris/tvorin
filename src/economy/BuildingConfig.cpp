@@ -4,13 +4,13 @@
 #include <algorithm>
 #include <cmath>
 #include <functional>
+#include <set>
 #include <stdexcept>
 
 namespace
 {
     constexpr const char* buildingDataPath = "assets/data/buildings.rtsdata";
 
-    // Initializes MakeProduction.
     ProductionDefinition MakeProduction(
         double cycleTime,
         std::vector<ResourceAmountDefinition> inputs,
@@ -26,7 +26,6 @@ namespace
             std::move(outputBuffers)};
     }
 
-    // Initializes MakeDefaultDefinitions.
     std::vector<BuildingDefinition> MakeDefaultDefinitions()
     {
         return {
@@ -256,7 +255,6 @@ namespace
         {1, 1},
         0};
 
-    // Initializes ParseBuildingType.
     BuildingType ParseBuildingType(const std::string& value)
     {
         if (value == "Headquarters") return BuildingType::Headquarters;
@@ -328,7 +326,6 @@ namespace
                                  "' (expected materials, food, goods, military or science)");
     }
 
-    // Initializes ParseResourceType.
     ResourceType ParseResourceType(const std::string& value)
     {
         if (value == "WOOD") return ResourceType::WOOD;
@@ -408,7 +405,6 @@ namespace
         return ResourceType::Null;
     }
 
-    // Initializes ParseTileType.
     TileType ParseTileType(const std::string& value)
     {
         if (value == "GRASS") return TileType::GRASS;
@@ -427,7 +423,6 @@ namespace
         return TileType::GRASS;
     }
 
-    // Initializes FormatBuildCostText.
     std::string FormatBuildCostText(const std::vector<ResourceAmountDefinition>& costs)
     {
         if (costs.empty())
@@ -443,7 +438,6 @@ namespace
         return text;
     }
 
-    // Initializes DefinitionSeed.
     BuildingDefinition DefinitionSeed(BuildingType type)
     {
         for (const auto& definition : MakeDefaultDefinitions())
@@ -455,7 +449,6 @@ namespace
         return fallbackDefinition;
     }
 
-    // Initializes ParseProduction.
     void ParseProduction(
         const std::vector<std::vector<std::string>>& lines,
         size_t& index,
@@ -510,14 +503,91 @@ namespace
         return recipe;
     }
 
-    // Initializes ParseKeyValueLine.
     void ParseKeyValueLine(const std::vector<std::string>& tokens, size_t start, const std::function<void(const std::string&, const std::string&)>& setter)
     {
         for (size_t i = start; i + 1 < tokens.size(); i += 2)
             setter(tokens[i], tokens[i + 1]);
     }
 
-    // Initializes ParseBuilding.
+    bool ParseVillageSupplyRule(const std::vector<std::string>& tokens, size_t start,
+                                VillageSupplyRuleDefinition& rule, size_t* consumed = nullptr)
+    {
+        if (start + 1 >= tokens.size())
+            return false;
+
+        rule.resource = ParseResourceType(tokens[start]);
+        rule.packageAmount = RtsDataIntOr(tokens[start + 1]);
+        size_t index = start + 2;
+        while (index + 1 < tokens.size())
+        {
+            const std::string& key = tokens[index];
+            if (key == "residents_per_package")
+            {
+                rule.residentsPerPackage = RtsDataDoubleOr(tokens[index + 1]);
+                index += 2;
+            }
+            else if (key == "interval")
+            {
+                rule.intervalSeconds = RtsDataDoubleOr(tokens[index + 1]);
+                index += 2;
+            }
+            else
+            {
+                break;
+            }
+        }
+
+        if (consumed != nullptr)
+            *consumed = index - start;
+        return rule.resource != ResourceType::Null && rule.packageAmount > 0 &&
+               std::isfinite(rule.residentsPerPackage) && rule.residentsPerPackage > 0.0 &&
+               std::isfinite(rule.intervalSeconds) && rule.intervalSeconds > 0.0;
+    }
+
+    void UpsertVillageSupplyRule(std::vector<VillageSupplyRuleDefinition>& rules,
+                                 VillageSupplyRuleDefinition rule)
+    {
+        const auto it = std::find_if(rules.begin(), rules.end(),
+            [rule](const VillageSupplyRuleDefinition& candidate)
+            {
+                return candidate.resource == rule.resource;
+            });
+        if (it == rules.end())
+            rules.push_back(std::move(rule));
+        else
+            *it = std::move(rule);
+    }
+
+    void ValidateVillageSupplyRules(const BuildingDefinition& definition)
+    {
+        auto validate = [&](const std::vector<VillageSupplyRuleDefinition>& rules,
+                            const std::string& scope)
+        {
+            std::set<ResourceType> resources;
+            if (rules.size() > 3)
+                throw std::runtime_error(std::string("Too many Village supply resources in ") +
+                                         buildingDataPath + " (" + scope + ")");
+            for (const auto& rule : rules)
+            {
+                if (rule.resource == ResourceType::Null || rule.packageAmount <= 0 ||
+                    !std::isfinite(rule.residentsPerPackage) || rule.residentsPerPackage <= 0.0 ||
+                    !std::isfinite(rule.intervalSeconds) || rule.intervalSeconds <= 0.0 ||
+                    !resources.insert(rule.resource).second)
+                    throw std::runtime_error(std::string("Invalid or duplicate Village supply rule in ") +
+                                             buildingDataPath + " (" + scope + ")");
+            }
+        };
+
+        if (!std::isfinite(definition.village.foodShortageDecaySeconds) ||
+            definition.village.foodShortageDecaySeconds <= 0.0)
+            throw std::runtime_error(std::string("Invalid Village food shortage decay in ") +
+                                     buildingDataPath);
+
+        validate(definition.village.supplyRules, "level 1");
+        for (const auto& level : definition.upgradeLevels)
+            validate(level.villageSupplyRules, "upgrade level " + std::to_string(level.level));
+    }
+
     BuildingDefinition ParseBuilding(
         const std::vector<std::vector<std::string>>& lines,
         size_t& index)
@@ -539,7 +609,10 @@ namespace
             const auto& tokens = lines[index];
             const auto& command = tokens[0];
             if (command == "end")
+            {
+                ValidateVillageSupplyRules(definition);
                 return definition;
+            }
 
             if (command == "name" && tokens.size() >= 2)
                 definition.name = tokens[1];
@@ -656,8 +729,48 @@ namespace
                         levelDef.manpowerRate = RtsDataDoubleOr(tokens[i + 1]);
                         i += 1;
                     }
+                    else if (tokens[i] == "visual_texture" && i + 1 < tokens.size())
+                    {
+                        levelDef.visualTexturePath = tokens[i + 1];
+                        i += 1;
+                    }
+                    else if (tokens[i] == "supply")
+                    {
+                        VillageSupplyRuleDefinition rule;
+                        size_t consumed = 0;
+                        if (ParseVillageSupplyRule(tokens, i + 1, rule, &consumed))
+                        {
+                            if (std::any_of(levelDef.villageSupplyRules.begin(),
+                                            levelDef.villageSupplyRules.end(),
+                                            [rule](const VillageSupplyRuleDefinition& candidate)
+                                            { return candidate.resource == rule.resource; }))
+                                throw std::runtime_error(std::string("Duplicate Village supply resource in ") +
+                                                         buildingDataPath);
+                            UpsertVillageSupplyRule(levelDef.villageSupplyRules, std::move(rule));
+                            i += consumed;
+                        }
+                        else
+                            throw std::runtime_error(std::string("Invalid Village supply rule in ") +
+                                                     buildingDataPath);
+                    }
                 }
                 definition.upgradeLevels.push_back(std::move(levelDef));
+            }
+            else if (command == "supply")
+            {
+                VillageSupplyRuleDefinition rule;
+                if (ParseVillageSupplyRule(tokens, 1, rule))
+                {
+                    if (std::any_of(definition.village.supplyRules.begin(),
+                                    definition.village.supplyRules.end(),
+                                    [rule](const VillageSupplyRuleDefinition& candidate)
+                                    { return candidate.resource == rule.resource; }))
+                        throw std::runtime_error(std::string("Duplicate Village supply resource in ") +
+                                                 buildingDataPath);
+                    UpsertVillageSupplyRule(definition.village.supplyRules, std::move(rule));
+                }
+                else
+                    throw std::runtime_error(std::string("Invalid Village supply rule in ") + buildingDataPath);
             }
             else if (command == "village")
             {
@@ -667,6 +780,8 @@ namespace
                     else if (key == "population_cap") definition.village.populationCap = RtsDataIntOr(value);
                     else if (key == "upkeep_interval") definition.village.upkeepInterval = RtsDataDoubleOr(value);
                     else if (key == "food_package_upkeep") definition.village.foodPackageUpkeep = RtsDataDoubleOr(value);
+                    else if (key == "food_shortage_decay_seconds")
+                        definition.village.foodShortageDecaySeconds = RtsDataDoubleOr(value);
                 });
             }
             else if (command == "defense")
@@ -858,7 +973,6 @@ const std::vector<BuildingType>& GetBuildableRoadTypes()
     return types;
 }
 
-// Finds the best matching runtime object.
 const TerrainProductionDefinition* FindTerrainProductionDefinition(BuildingType type, TileType tileType)
 {
     const auto& definition = GetBuildingDefinition(type);

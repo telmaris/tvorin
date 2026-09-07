@@ -18,6 +18,11 @@ class Player;
 
 struct BuildableProvinceParameters
 {
+    struct ResourceDeposit
+    {
+        ResourceType resource{ResourceType::Null};
+        double richness{1.0};
+    };
     std::string definitionId;
     int sizeX{201};
     int sizeY{201};
@@ -34,6 +39,7 @@ struct BuildableProvinceParameters
     // Sorted, unique campaign-level deposit profile. Local map generation
     // filters its existing patch catalog through this list.
     std::vector<ResourceType> naturalResourceTypes;
+    std::vector<ResourceDeposit> resourceDeposits;
 };
 
 struct NeutralCityState
@@ -98,17 +104,21 @@ public:
     ProvinceKnowledgeLevel GetKnowledge(PlayerId playerId) const override;
     bool SetKnowledge(PlayerId playerId, ProvinceKnowledgeLevel level) override;
     Vec2i GetLayoutPosition() const override { return layoutPosition; }
+    const std::vector<std::string>& GetTraitIds() const { return traitIds; }
+    void SetTraitIds(std::vector<std::string> value) { traitIds = std::move(value); }
 
 protected:
     ProvinceId id{InvalidProvinceId};
     Vec2i layoutPosition{};
     std::map<PlayerId, ProvinceKnowledgeLevel> knowledgeByPlayer;
+    std::vector<std::string> traitIds;
 
 private:
     friend class GlobalMap;
     void CopyKnowledgeFrom(const ProvinceBase& source)
     {
         knowledgeByPlayer = source.knowledgeByPlayer;
+        traitIds = source.traitIds;
     }
 };
 
@@ -122,7 +132,7 @@ public:
     ProvinceKind GetKind() const override { return ProvinceKind::Buildable; }
     PlayerId GetOwnerId() const { return ownerId; }
     const BuildableProvinceParameters& GetParameters() const { return parameters; }
-    void SetParameters(BuildableProvinceParameters value) { parameters = std::move(value); }
+    void SetParameters(BuildableProvinceParameters value);
     ProvinceSimulation* GetSimulation() { return simulation.get(); }
     const ProvinceSimulation* GetSimulation() const { return simulation.get(); }
 

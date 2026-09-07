@@ -128,3 +128,37 @@ TEST(BuildingPresentationTests, OpponentStatusDoesNotExposeRecipeBuffersOrProgre
     EXPECT_EQ(construction.general, "Under construction");
     EXPECT_EQ(construction.general.find('%'), std::string::npos);
 }
+
+TEST(BuildingPresentationTests, VillageSupplyViewExposesTypedRowsForEverySettlementTier)
+{
+    Village village{90};
+    village.population.hasAssignedResidents = true;
+    village.population.assignedResidents = 120.0;
+    village.population.foodBuffer.SetStoredAmount(1);
+    village.population.householdGoodsBuffer.SetStoredAmount(1);
+    village.population.urbanGoodsBuffer.SetStoredAmount(1);
+
+    village.population.SetSettlementLevel(1);
+    auto levelOne = BuildVillagePresentationView(village);
+    ASSERT_EQ(levelOne.supplies.size(), 1u);
+    EXPECT_EQ(levelOne.supplies[0].resource, ResourceType::FOOD_PROVISIONS);
+    EXPECT_GT(levelOne.supplies[0].packagesPerMinute, 0.0);
+    EXPECT_EQ(levelOne.supplies[0].storedPackages, 1);
+
+    village.population.SetSettlementLevel(2);
+    auto levelTwo = BuildVillagePresentationView(village);
+    ASSERT_EQ(levelTwo.supplies.size(), 2u);
+    EXPECT_EQ(levelTwo.supplies[0].resource, ResourceType::FOOD_PROVISIONS);
+    EXPECT_EQ(levelTwo.supplies[1].resource, ResourceType::HOUSEHOLD_GOODS);
+    EXPECT_GT(levelTwo.supplies[1].packagesPerMinute, 0.0);
+
+    village.population.SetSettlementLevel(3);
+    auto levelThree = BuildVillagePresentationView(village);
+    ASSERT_EQ(levelThree.supplies.size(), 3u);
+    EXPECT_EQ(levelThree.supplies[0].resource, ResourceType::FOOD_PROVISIONS);
+    EXPECT_EQ(levelThree.supplies[1].resource, ResourceType::HOUSEHOLD_GOODS);
+    EXPECT_EQ(levelThree.supplies[2].resource, ResourceType::URBAN_GOODS);
+    EXPECT_GT(levelThree.supplies[2].packagesPerMinute, 0.0);
+    EXPECT_DOUBLE_EQ(levelThree.supplies[2].supplyLevel,
+                     village.population.urbanSupplyLevel);
+}

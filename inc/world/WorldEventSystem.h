@@ -5,6 +5,7 @@
 #include "world/GlobalMap.h"
 #include "world/WorldEventDefinition.h"
 #include "world/WorldIds.h"
+#include "world/RouteIncidentRisk.h"
 
 #include <cstdint>
 #include <deque>
@@ -27,6 +28,10 @@ struct EventEligibilityContext
     // kept separate from routeLevel so a route upgrade can reduce the base
     // incident roll without changing the event catalog or reroll seed.
     int routeIncidentChanceReductionBasisPoints{0};
+    int routeLengthUnits{1};
+    int routeQualityBasisPoints{10000};
+    int scoutEscortCount{1};
+    std::vector<ResourceType> producedResources;
 };
 
 class EventEligibilityService
@@ -46,15 +51,6 @@ public:
         const std::vector<const WorldEventDefinition*>& candidates,
         std::uint64_t roll);
 };
-
-struct ProvinceEventCadenceState
-{
-    std::uint64_t nextCheckTick{0};
-    std::uint64_t attemptCounter{0};
-};
-
-using ProvinceEventCadenceByDefinition = std::map<std::string, ProvinceEventCadenceState>;
-using ProvinceEventCadenceStateMap = std::map<ProvinceId, ProvinceEventCadenceByDefinition>;
 
 enum class AppliedWorldEventEffectKind : std::uint8_t
 {
@@ -111,6 +107,11 @@ struct JourneyUnitLossRequest
     WorldJourneyId journeyId{InvalidWorldJourneyId};
     PlayerId ownerId{InvalidPlayerId};
     int amount{0};
+    int minimumFractionBasisPoints{0};
+    int maximumFractionBasisPoints{0};
+    int minimumUnits{1};
+    int maximumUnits{0};
+    std::uint64_t outcomeRoll{0};
 };
 
 // This is the only representation the UI/network-facing feed receives. It
@@ -166,7 +167,8 @@ class ProvinceEventSystem
 {
 public:
     explicit ProvinceEventSystem(std::uint32_t campaignSeed = 0,
-                                 const WorldEventCatalog* definitions = nullptr);
+                                 const WorldEventCatalog* definitions = nullptr,
+                                 std::optional<PeriodicEventScheduleDefinition> schedule = std::nullopt);
 
     void SetCampaignSeed(std::uint32_t seed) { campaignSeed = seed; }
 
@@ -176,7 +178,10 @@ public:
     bool TriggerRoute(GlobalMap& map, PlayerId playerId, ProvinceId sourceProvinceId,
                       ProvinceId targetProvinceId, int routeLevel,
                       std::uint64_t currentTick,
-                      WorldJourneyId journeyId = InvalidWorldJourneyId);
+                      WorldJourneyId journeyId = InvalidWorldJourneyId,
+                      int scoutEscortCount = 1,
+                      std::size_t completedLeg = 0,
+                      std::uint64_t journeyAttemptCounter = 0);
     bool TriggerRaid(GlobalMap& map, PlayerId playerId, ProvinceId provinceId,
                      int routeLevel, std::uint64_t currentTick);
     bool PublishNotification(std::string_view definitionId, PlayerId ownerId,
@@ -189,7 +194,11 @@ public:
         return instances;
     }
     const WorldEventInstance* FindInstance(WorldEventInstanceId id) const;
-    const ProvinceEventCadenceStateMap& GetCadenceStates() const { return cadenceStates; }
+    const PeriodicEventScheduler& GetPeriodicScheduler() const { return periodicScheduler; }
+    void SetPeriodicEventSchedule(PeriodicEventScheduleDefinition schedule)
+    {
+        periodicScheduler.SetSchedule(schedule);
+    }
     WorldEventFeed& GetFeed() { return feed; }
     const WorldEventFeed& GetFeed() const { return feed; }
     std::vector<WorldEventNotificationView> ConsumeFeedFor(PlayerId playerId)
@@ -202,9 +211,10 @@ public:
     {
         nextInstanceId = value == InvalidWorldEventInstanceId ? 1 : value;
     }
-    void RestoreCadenceState(ProvinceId provinceId, std::string definitionId,
-                             ProvinceEventCadenceState state);
+    bool RestorePeriodicSchedulerState(PlayerId playerId,
+                                       PeriodicEventSchedulerState state);
     bool RestoreInstance(WorldEventInstance instance);
+    bool RestoreInstance(GlobalMap& map, WorldEventInstance instance);
     // Appends an effect that was resolved by a later authority service and
     // mirrors it into the pointer-free feed entry with the same instance ID.
     bool RecordAppliedEffect(WorldEventInstanceId eventId,
@@ -232,7 +242,7 @@ private:
         std::string_view poolId, const std::vector<std::string>& dueDefinitionIds) const;
     void ApplyEffects(GlobalMap& map, WorldEventInstance& instance);
     void ExpireInstances(GlobalMap& map, std::uint64_t currentTick);
-    std::uint64_t NextDeterministicValue(ProvinceId provinceId,
+    std::uint64_t NextDeterministicValue(PlayerId playerId, ProvinceId provinceId,
                                          std::uint64_t attemptCounter,
                                          std::uint64_t salt) const;
     static std::uint64_t Mix(std::uint64_t value);
@@ -240,9 +250,11 @@ private:
     std::uint32_t campaignSeed{0};
     const WorldEventCatalog* definitions{nullptr};
     WorldEventInstanceId nextInstanceId{1};
-    ProvinceEventCadenceStateMap cadenceStates;
+    PeriodicEventScheduler periodicScheduler;
     std::map<WorldEventInstanceId, WorldEventInstance> instances;
     WorldEventFeed feed;
 };
+
+using WorldEventSystem = ProvinceEventSystem;
 
 #endif

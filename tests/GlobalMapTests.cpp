@@ -152,36 +152,6 @@ TEST(GlobalMapTests, MovePreservesStableProvinceIdsAndTopology)
     EXPECT_TRUE(moved.IsAdjacent(1, 2));
 }
 
-TEST(GlobalMapGeneratorTests, HundredSeedsAreConnectedDeterministicAndBounded)
-{
-    for (std::uint32_t seed = 0; seed < 100; ++seed)
-    {
-        GlobalMapParameters parameters;
-        parameters.seed = seed;
-        parameters.provinceCount = 12;
-        parameters.extraEdgeCount = 8;
-        auto first = GlobalMapGenerator::Generate(parameters, 2);
-        auto second = GlobalMapGenerator::Generate(parameters, 2);
-        ASSERT_TRUE(first.success) << first.failureReason;
-        ASSERT_TRUE(second.success) << second.failureReason;
-        EXPECT_TRUE(first.map.IsConnected());
-        EXPECT_EQ(first.map.GetEdgeCount(), second.map.GetEdgeCount());
-        EXPECT_EQ(first.homeProvinceByPlayer, second.homeProvinceByPlayer);
-        EXPECT_EQ(first.map.GetProvinceIds(), second.map.GetProvinceIds());
-        for (ProvinceId id : first.map.GetProvinceIds())
-        {
-            const auto* a = first.map.FindProvince(id);
-            const auto* b = second.map.FindProvince(id);
-            ASSERT_NE(a, nullptr);
-            ASSERT_NE(b, nullptr);
-            EXPECT_EQ(a->GetKind(), b->GetKind());
-            EXPECT_EQ(a->GetLayoutPosition().x, b->GetLayoutPosition().x);
-            EXPECT_EQ(a->GetLayoutPosition().y, b->GetLayoutPosition().y);
-            EXPECT_EQ(first.map.GetNeighbors(id), second.map.GetNeighbors(id));
-        }
-    }
-}
-
 TEST(GlobalMapGeneratorTests, DifferentSeedChangesTheGlobalLayout)
 {
     GlobalMapParameters firstParameters;

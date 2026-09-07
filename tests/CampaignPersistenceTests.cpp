@@ -242,3 +242,38 @@ TEST(CampaignPersistenceTests, InFlightRoadShipmentRoundTripsAtExactProgress)
     EXPECT_DOUBLE_EQ(afterIt->elapsedTime, expected.elapsedTime);
     EXPECT_DOUBLE_EQ(afterIt->transportTime, expected.transportTime);
 }
+
+TEST(CampaignPersistenceTests, PeriodicSchedulerRoundTripsItsAuthorityState)
+{
+    MapParameters parameters;
+    parameters.sizeX = 101;
+    parameters.sizeY = 101;
+    parameters.seed = 6604;
+
+    GameWorld world;
+    ASSERT_TRUE(world.InitMultiplayerWorld(
+        "scheduler-persistence", nullptr, parameters, 0, true));
+
+    PeriodicEventSchedulerState schedulerState;
+    schedulerState.nextCheckTick = 12345;
+    schedulerState.nextAllowedEventTick = 14567;
+    schedulerState.attemptCounter = 17;
+    schedulerState.definitionCooldownUntil.emplace("frontier_harvest", 16789);
+    ASSERT_TRUE(world.GetEventSystem().RestorePeriodicSchedulerState(0,
+                                                                      schedulerState));
+
+    const std::string payload = world.SerializeSimulationState();
+    ASSERT_FALSE(payload.empty());
+    GameWorld restored;
+    ASSERT_TRUE(restored.RestoreSimulationState(payload));
+
+    EXPECT_EQ(restored.BuildChecksum(), world.BuildChecksum());
+    const auto& states = restored.GetEventSystem().GetPeriodicScheduler().GetStates();
+    ASSERT_EQ(states.size(), 1u);
+    const auto& restoredState = states.at(0);
+    EXPECT_EQ(restoredState.nextCheckTick, schedulerState.nextCheckTick);
+    EXPECT_EQ(restoredState.nextAllowedEventTick, schedulerState.nextAllowedEventTick);
+    EXPECT_EQ(restoredState.attemptCounter, schedulerState.attemptCounter);
+    EXPECT_EQ(restoredState.definitionCooldownUntil,
+              schedulerState.definitionCooldownUntil);
+}

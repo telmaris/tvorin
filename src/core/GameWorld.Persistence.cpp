@@ -32,7 +32,6 @@ namespace
 
 }
 
-// Serializes current runtime state.
 bool GameWorld::SaveToFile(const std::string& path) const
 {
     namespace fs = std::filesystem;
@@ -177,6 +176,9 @@ bool GameWorld::SaveToStream(std::ostream& out) const
             out << ' ' << value.naturalResourceTypes.size();
             for (const ResourceType resource : value.naturalResourceTypes)
                 out << ' ' << static_cast<int>(resource);
+            out << ' ' << value.resourceDeposits.size();
+            for (const auto& deposit : value.resourceDeposits)
+                out << ' ' << static_cast<int>(deposit.resource) << ' ' << deposit.richness;
             out << '\n';
         }
         else if (const auto* city = dynamic_cast<const NeutralCityProvince*>(province))
@@ -214,6 +216,9 @@ bool GameWorld::SaveToStream(std::ostream& out) const
             out << ' ' << future.naturalResourceTypes.size();
             for (const ResourceType resource : future.naturalResourceTypes)
                 out << ' ' << static_cast<int>(resource);
+            out << ' ' << future.resourceDeposits.size();
+            for (const auto& deposit : future.resourceDeposits)
+                out << ' ' << static_cast<int>(deposit.resource) << ' ' << deposit.richness;
             out << '\n';
         }
         else if (const auto* event = dynamic_cast<const EventProvince*>(province))
@@ -232,6 +237,15 @@ bool GameWorld::SaveToStream(std::ostream& out) const
         const auto* simulation = buildable != nullptr ? buildable->GetSimulation() : nullptr;
         out << "PROVINCE_STATE " << provinceId << ' ' << (simulation != nullptr ? 1 : 0) << ' '
             << (simulation != nullptr ? simulation->GetEconomy().simulationTick : 0) << '\n';
+        if (simulation != nullptr)
+        {
+            const auto& population = simulation->GetEconomy().population;
+            out << "PROVINCE_POPULATION " << provinceId << ' '
+                << (population.initialized ? 1 : 0) << ' '
+                << population.availableManpower << '\n';
+        }
+        else
+            out << "PROVINCE_POPULATION " << provinceId << " 0 0\n";
     }
     out << "ENDPROVINCES\nCONNECTIONS " << globalMap.GetConnectionCount() << '\n';
     for (ProvinceConnectionId connectionId : globalMap.GetConnectionIds())
@@ -285,9 +299,6 @@ bool GameWorld::SaveToStream(std::ostream& out) const
             ? &home->GetSimulation()->GetEconomy() : nullptr;
         if (player == nullptr || economy == nullptr)
             return false;
-        // Save v27 (AI rework czystka, TODO #2): the dead DiplomaticState —
-        // never read by any gameplay logic post-pivot — was removed, and the
-        // DIPLO/WAR blocks (and their counts on this line) with it.
         out << "PLAYER " << id << ' ' << player->homeProvinceId << ' '
             << player->strategicResources.values.size() << ' '
             << player->technologies.GetUnlocked().size() << ' '
@@ -316,8 +327,7 @@ bool GameWorld::SaveToStream(std::ostream& out) const
                 << std::quoted(unit.unitDefId) << ' ' << static_cast<int>(assignment.kind) << ' '
                 << assignment.provinceId << ' ' << assignment.buildingId << ' '
                 << assignment.worldJourneyId << ' ' << assignment.battleId << ' '
-                << unit.taskGroupId << ' '
-                << unit.equipment.size() << '\n';
+                << unit.taskGroupId << '\n';
         }
 
         out << "TASK_GROUPS " << player->taskGroups.GetNextTaskGroupId() << ' '
@@ -360,11 +370,9 @@ bool GameWorld::SaveToStream(std::ostream& out) const
         out << "TILES " << tilemap.tilemap.size() << '\n';
     for (const auto& tile : tilemap.tilemap)
     {
-        int ownerId = tile.ownerId != InvalidPlayerId
-            ? tile.ownerId
-            : (tile.owner != nullptr ? tile.owner->id : -1);
         out << "T " << tile.id << ' ' << static_cast<int>(tile.tileType) << ' '
-            << tile.terrainTextureId << ' ' << tile.resourceOverlayTextureId << ' ' << ownerId << ' ' << tile.resourceRichness << ' '
+            << tile.terrainTextureId << ' ' << tile.resourceOverlayTextureId << ' '
+            << tile.resourceRichness << ' '
             << static_cast<int>(tile.biome) << '\n';
     }
 
@@ -485,7 +493,12 @@ bool GameWorld::SaveToStream(std::ostream& out) const
                 << pop->householdSupplyLevel << ' ' << pop->householdGoodsBuffer.bufferSize << ' '
                 << pop->householdGoodsBuffer.buffer.size() << ' ' << pop->urbanSupplyLevel << ' '
                 << pop->urbanGoodsBuffer.bufferSize << ' ' << pop->urbanGoodsBuffer.buffer.size() << ' '
-                << pop->householdUpkeepTimer << ' ' << pop->urbanUpkeepTimer << '\n';
+                << pop->householdUpkeepTimer << ' ' << pop->urbanUpkeepTimer << ' '
+                << pop->assignedResidents << ' ' << (pop->hasAssignedResidents ? 1 : 0) << '\n';
+            out << "VIL_DEBT " << pop->supplyDebt.size();
+            for (const auto& [resource, debt] : pop->supplyDebt)
+                out << ' ' << static_cast<int>(resource) << ' ' << debt;
+            out << '\n';
         }
 
         if (const auto* recruitment = building->GetComponent<RecruitmentComponent>())
@@ -626,6 +639,17 @@ bool GameWorld::SaveToStream(std::ostream& out) const
             out << ' ' << leg.connectionId << ' ' << leg.lengthUnits << ' '
                 << leg.routeTimeBasisPoints << ' ' << leg.routeLevelAtStart << ' '
                 << leg.incidentReductionBasisPoints << ' ' << leg.durationTicks;
+        out << ' ' << journey.loadout.resources.size();
+        for (const auto& resource : journey.loadout.resources)
+            out << ' ' << static_cast<int>(resource.type) << ' ' << resource.amount;
+        out << ' ' << journey.loadout.minimumResources.size();
+        for (const auto& resource : journey.loadout.minimumResources)
+            out << ' ' << static_cast<int>(resource.type) << ' ' << resource.amount;
+        out << ' ' << journey.loadout.supplyRatioBasisPoints << ' '
+            << journey.loadout.modifiers.size();
+        for (const auto& modifier : journey.loadout.modifiers)
+            out << ' ' << static_cast<int>(modifier.stat) << ' '
+                << modifier.multiplierBasisPoints << ' ' << modifier.source;
         out << ' ';
         if (const auto* scout = std::get_if<ScoutParty>(&journey.payload))
         {
@@ -760,13 +784,15 @@ bool GameWorld::SaveToStream(std::ostream& out) const
     out << "END_BATTLES\n";
 
     out << "EVENT_RUNTIME " << eventSystem.GetNextInstanceId() << ' '
-        << eventSystem.GetCadenceStates().size() << '\n';
-    for (const auto& [provinceId, definitions] : eventSystem.GetCadenceStates())
+        << eventSystem.GetPeriodicScheduler().GetStates().size() << '\n';
+    for (const auto& [playerId, schedulerState] : eventSystem.GetPeriodicScheduler().GetStates())
     {
-        out << "EVENT_CADENCE " << provinceId << ' ' << definitions.size() << '\n';
-        for (const auto& [definitionId, cadence] : definitions)
-            out << "CADENCE " << std::quoted(definitionId) << ' ' << cadence.nextCheckTick << ' '
-                << cadence.attemptCounter << '\n';
+        out << "EVENT_SCHEDULER " << playerId << ' ' << schedulerState.nextCheckTick << ' '
+            << schedulerState.nextAllowedEventTick << ' ' << schedulerState.attemptCounter << ' '
+            << schedulerState.definitionCooldownUntil.size() << '\n';
+        for (const auto& [definitionId, cooldownUntil] : schedulerState.definitionCooldownUntil)
+            out << "SCHEDULER_COOLDOWN " << std::quoted(definitionId) << ' '
+                << cooldownUntil << '\n';
     }
     out << "EVENT_INSTANCES " << eventSystem.GetInstances().size() << '\n';
     for (const auto& [instanceId, instance] : eventSystem.GetInstances())
@@ -805,7 +831,6 @@ bool GameWorld::SaveToStream(std::ostream& out) const
     return true;
 }
 
-// Loads the requested data into runtime state.
 bool GameWorld::LoadFromFile(const std::string& path, Renderer* renderer)
 {
     std::ifstream in(path, std::ios::binary);
@@ -1094,6 +1119,25 @@ bool GameWorld::LoadFromStream(std::istream& in, Renderer* renderer,
                     return false;
                 parameters.naturalResourceTypes.push_back(resource);
             }
+            if (version >= 58)
+            {
+                int depositCount = 0;
+                in >> depositCount;
+                if (!in || !PersistenceLimits::IsCountInRange(depositCount, 16))
+                    return false;
+                for (int depositIndex = 0; depositIndex < depositCount; depositIndex++)
+                {
+                    int resourceValue = 0;
+                    double richness = 0.0;
+                    in >> resourceValue >> richness;
+                    if (!in || resourceValue < 0 || resourceValue > 255 ||
+                        resourceValue == static_cast<int>(ResourceType::Null) ||
+                        !std::isfinite(richness) || richness < 0.0)
+                        return false;
+                    parameters.resourceDeposits.push_back({
+                        static_cast<ResourceType>(resourceValue), richness});
+                }
+            }
             auto* restored = globalMap.FindBuildableProvince(provinceId);
             if (restored == nullptr)
                 return false;
@@ -1230,6 +1274,25 @@ bool GameWorld::LoadFromStream(std::istream& in, Renderer* renderer,
                     return false;
                 future.naturalResourceTypes.push_back(resource);
             }
+            if (version >= 58)
+            {
+                int depositCount = 0;
+                in >> depositCount;
+                if (!in || !PersistenceLimits::IsCountInRange(depositCount, 16))
+                    return false;
+                for (int depositIndex = 0; depositIndex < depositCount; depositIndex++)
+                {
+                    int resourceValue = 0;
+                    double richness = 0.0;
+                    in >> resourceValue >> richness;
+                    if (!in || resourceValue < 0 || resourceValue > 255 ||
+                        resourceValue == static_cast<int>(ResourceType::Null) ||
+                        !std::isfinite(richness) || richness < 0.0)
+                        return false;
+                    future.resourceDeposits.push_back({
+                        static_cast<ResourceType>(resourceValue), richness});
+                }
+            }
             auto* bandit = dynamic_cast<BanditProvince*>(globalMap.FindProvince(provinceId));
             if (bandit == nullptr)
                 return false;
@@ -1278,6 +1341,25 @@ bool GameWorld::LoadFromStream(std::istream& in, Renderer* renderer,
             if (buildable == nullptr)
                 return false;
             buildable->CreateSimulation().RestoreSimulationTick(simulationTick);
+        }
+        if (version >= 58)
+        {
+            int initialized = 0;
+            double availableManpower = 0.0;
+            in >> tag >> provinceIdValue >> initialized >> availableManpower;
+            if (!in || tag != "PROVINCE_POPULATION" || provinceIdValue != provinceId ||
+                (initialized != 0 && initialized != 1) ||
+                !std::isfinite(availableManpower) || availableManpower < 0.0)
+                return false;
+            if (hasSimulation)
+            {
+                auto* buildable = dynamic_cast<BuildableProvince*>(globalMap.FindProvince(provinceId));
+                if (buildable == nullptr || buildable->GetSimulation() == nullptr)
+                    return false;
+                auto& population = buildable->GetSimulation()->GetEconomy().population;
+                population.initialized = initialized != 0;
+                population.availableManpower = availableManpower;
+            }
         }
     }
     in >> tag;
@@ -1493,7 +1575,6 @@ bool GameWorld::LoadFromStream(std::istream& in, Renderer* renderer,
             int instanceId = 0;
             int ownerPlayerId = 0;
             std::string unitDefId;
-            size_t equipmentCount = 0;
             int assignmentKind = 0;
             std::uint64_t assignmentProvinceValue = 0;
             int assignmentBuildingId = 0;
@@ -1502,7 +1583,7 @@ bool GameWorld::LoadFromStream(std::istream& in, Renderer* renderer,
             std::uint64_t taskGroupValue = 0;
             in >> tag >> instanceId >> ownerPlayerId >> std::quoted(unitDefId)
                >> assignmentKind >> assignmentProvinceValue >> assignmentBuildingId
-               >> activeJourneyValue >> activeBattleValue >> taskGroupValue >> equipmentCount;
+               >> activeJourneyValue >> activeBattleValue >> taskGroupValue;
             if (tag != "UNIT" || instanceId <= 0 || ownerPlayerId != playerId ||
                 unitDefId.empty() || player->roster.units.contains(instanceId) ||
                 assignmentKind < static_cast<int>(UnitAssignmentKind::BarracksReserve) ||
@@ -1523,9 +1604,6 @@ bool GameWorld::LoadFromStream(std::istream& in, Renderer* renderer,
             unit.assignment.battleId = static_cast<BattleId>(activeBattleValue);
             unit.taskGroupId = static_cast<TaskGroupId>(taskGroupValue);
             if (!unit.assignment.IsStructurallyValid())
-                return false;
-            // Equipment remains a reserved, empty seam in the peaceful format.
-            if (equipmentCount != 0)
                 return false;
             player->roster.AddUnit(std::move(unit));
         }
@@ -1706,11 +1784,9 @@ bool GameWorld::LoadFromStream(std::istream& in, Renderer* renderer,
         int tileType = 0;
         int terrainTextureId = 0;
         int resourceOverlayTextureId = -1;
-        int ownerId = -1;
         in >> tag >> id >> tileType >> terrainTextureId;
         if (version >= 31)
             in >> resourceOverlayTextureId;
-        in >> ownerId;
         if (tag != "T")
             return false;
         if (id < 0 || static_cast<std::size_t>(id) >= expectedTiles || id != i)
@@ -1730,15 +1806,6 @@ bool GameWorld::LoadFromStream(std::istream& in, Renderer* renderer,
             in >> biome;
             tile.biome = static_cast<BiomeType>(biome);
         }
-        // Tile::owner is a relic of the pre-pivot territory system (ETAP 1
-        // removed it; nothing in production sets it anymore, see
-        // docs/post_pivot_audit_2026-07-12.md T2) — restored here only
-        // because it's still part of the save format. Left in place rather
-        // than bumping the save version to drop the field; ownerId always
-        // reads back as whatever was written (effectively unused/-1 today).
-        tile.ownerId = ownerId;
-        auto ownerIt = playerHandler.players.find(ownerId);
-        tile.owner = ownerIt != playerHandler.players.end() ? ownerIt->second.get() : nullptr;
         tilemap.tilemap[id] = std::move(tile);
     }
 
@@ -2040,6 +2107,16 @@ bool GameWorld::LoadFromStream(std::istream& in, Renderer* renderer,
                     pop.householdUpkeepTimer = pop.upkeepTimer;
                     pop.urbanUpkeepTimer = pop.upkeepTimer;
                 }
+                if (version >= 58)
+                {
+                    in >> pop.assignedResidents;
+                    int hasAssignedResidents = 0;
+                    in >> hasAssignedResidents;
+                    if (!in || !std::isfinite(pop.assignedResidents) || pop.assignedResidents < 0.0 ||
+                        (hasAssignedResidents != 0 && hasAssignedResidents != 1))
+                        return false;
+                    pop.hasAssignedResidents = hasAssignedResidents != 0;
+                }
                 pop.householdGoodsBuffer.Clear();
                 pop.householdGoodsBuffer = ResourceBuffer{
                     ResourceType::HOUSEHOLD_GOODS, pop.householdGoodsBuffer.bufferSize};
@@ -2049,6 +2126,26 @@ bool GameWorld::LoadFromStream(std::istream& in, Renderer* renderer,
                     ResourceType::URBAN_GOODS, pop.urbanGoodsBuffer.bufferSize};
                 pop.urbanGoodsBuffer.SetStoredAmount(urbanAmount);
                 pop.SetSettlementLevel(pop.settlementLevel);
+            }
+            else if (tag == "VIL_DEBT")
+            {
+                auto* population = placed->GetComponent<PopulationComponent>();
+                if (population == nullptr) return false;
+                int count = 0;
+                in >> count;
+                if (!in || count < 0 || count > 8)
+                    return false;
+                population->supplyDebt.clear();
+                for (int n = 0; n < count; n++)
+                {
+                    int resourceType = 0;
+                    double debt = 0.0;
+                    in >> resourceType >> debt;
+                    if (!in || resourceType < 0 || resourceType > 255 ||
+                        !std::isfinite(debt) || debt < 0.0)
+                        return false;
+                    population->supplyDebt[static_cast<ResourceType>(resourceType)] = debt;
+                }
             }
             else if (tag == "RECRUIT")
             {
@@ -2325,6 +2422,49 @@ bool GameWorld::LoadFromStream(std::istream& in, Renderer* renderer,
                 leg.incidentReductionBasisPoints > 10000 || leg.durationTicks == 0)
                 return false;
         }
+        auto readLoadoutResources = [&in](std::vector<ResourceAmount>& resources)
+        {
+            int count = 0;
+            in >> count;
+            if (!in || count < 0 || count > 16)
+                return false;
+            resources.resize(static_cast<std::size_t>(count));
+            ResourceType previous = ResourceType::Null;
+            for (auto& resource : resources)
+            {
+                int type = 0;
+                in >> type >> resource.amount;
+                resource.type = static_cast<ResourceType>(type);
+                if (!in || type < 0 || type == static_cast<int>(ResourceType::Null) ||
+                    type > static_cast<int>(ResourceType::CATAPULT) || resource.amount <= 0 ||
+                    (previous != ResourceType::Null && static_cast<int>(previous) >= type))
+                    return false;
+                previous = resource.type;
+            }
+            return true;
+        };
+        if (!readLoadoutResources(journey.loadout.resources) ||
+            !readLoadoutResources(journey.loadout.minimumResources))
+            return false;
+        int modifierCount = 0;
+        in >> journey.loadout.supplyRatioBasisPoints >> modifierCount;
+        if (!in || journey.loadout.supplyRatioBasisPoints < 10000 ||
+            journey.loadout.supplyRatioBasisPoints > 20000 || modifierCount < 0 ||
+            modifierCount > 16)
+            return false;
+        journey.loadout.modifiers.resize(static_cast<std::size_t>(modifierCount));
+        for (auto& modifier : journey.loadout.modifiers)
+        {
+            int stat = 0;
+            in >> stat >> modifier.multiplierBasisPoints >> modifier.source;
+            if (!in || stat < 0 || stat >= static_cast<int>(BalanceStat::Count) ||
+                modifier.multiplierBasisPoints <= 0 ||
+                modifier.multiplierBasisPoints > 20000 || modifier.source.size() > 128)
+                return false;
+            modifier.stat = static_cast<BalanceStat>(stat);
+        }
+        if (!journey.loadout.IsSortedUnique())
+            return false;
         in >> payloadKind;
         if (!in || payloadKind < 0 || payloadKind > 5)
             return false;
@@ -2640,31 +2780,43 @@ bool GameWorld::LoadFromStream(std::istream& in, Renderer* renderer,
         return false;
 
     in >> tag >> restoredNextEventId;
-    int cadenceProvinceCount = 0;
-    in >> cadenceProvinceCount;
+    int schedulerPlayerCount = 0;
+    in >> schedulerPlayerCount;
     if (!in || tag != "EVENT_RUNTIME" || restoredNextEventId == InvalidWorldEventInstanceId ||
-        !PersistenceLimits::IsCountInRange(cadenceProvinceCount, PersistenceLimits::MaxGlobalProvinces))
+        !PersistenceLimits::IsCountInRange(schedulerPlayerCount, PersistenceLimits::MaxSupportedPlayers))
         return false;
-    std::vector<std::tuple<ProvinceId, std::string, ProvinceEventCadenceState>> restoredCadence;
-    for (int index = 0; index < cadenceProvinceCount; ++index)
+    std::vector<std::pair<PlayerId, PeriodicEventSchedulerState>> restoredSchedulerStates;
+    std::set<PlayerId> restoredSchedulerPlayers;
+    for (int index = 0; index < schedulerPlayerCount; ++index)
     {
-        ProvinceId provinceId = InvalidProvinceId;
-        int definitionCount = 0;
-        in >> tag >> provinceId >> definitionCount;
-        if (!in || tag != "EVENT_CADENCE" || provinceId == InvalidProvinceId ||
-            globalMap.FindProvince(provinceId) == nullptr ||
-            !PersistenceLimits::IsCountInRange(definitionCount, PersistenceLimits::MaxBufferEntries))
+        PlayerId playerId = InvalidPlayerId;
+        PeriodicEventSchedulerState schedulerState;
+        int cooldownCount = 0;
+        in >> tag >> playerId >> schedulerState.nextCheckTick >>
+            schedulerState.nextAllowedEventTick >> schedulerState.attemptCounter >> cooldownCount;
+        if (!in || tag != "EVENT_SCHEDULER" || playerId == InvalidPlayerId ||
+            !playerHandler.players.contains(static_cast<int>(playerId)) ||
+            !PersistenceLimits::IsCountInRange(cooldownCount, PersistenceLimits::MaxBufferEntries) ||
+            !restoredSchedulerPlayers.insert(playerId).second)
             return false;
-        for (int definitionIndex = 0; definitionIndex < definitionCount; ++definitionIndex)
+        std::string previousDefinitionId;
+        for (int cooldownIndex = 0; cooldownIndex < cooldownCount; ++cooldownIndex)
         {
             std::string definitionId;
-            ProvinceEventCadenceState state;
-            in >> tag >> std::quoted(definitionId) >> state.nextCheckTick >> state.attemptCounter;
-            if (!in || tag != "CADENCE" || definitionId.empty() ||
-                FindWorldEventDefinition(definitionId) == nullptr)
+            std::uint64_t cooldownUntil = 0;
+            in >> tag >> std::quoted(definitionId) >> cooldownUntil;
+            const auto* definition = FindWorldEventDefinition(definitionId);
+            if (!in || tag != "SCHEDULER_COOLDOWN" || definitionId.empty() ||
+                definitionId.size() > PersistenceLimits::MaxStringBytes ||
+                (!previousDefinitionId.empty() && definitionId <= previousDefinitionId) ||
+                definition == nullptr ||
+                definition->trigger != WorldEventTriggerDomain::ProvincePeriodic ||
+                cooldownUntil < schedulerState.nextAllowedEventTick)
                 return false;
-            restoredCadence.emplace_back(provinceId, std::move(definitionId), state);
+            previousDefinitionId = definitionId;
+            schedulerState.definitionCooldownUntil.emplace(std::move(definitionId), cooldownUntil);
         }
+        restoredSchedulerStates.emplace_back(playerId, std::move(schedulerState));
     }
     int eventCount = 0;
     in >> tag >> eventCount;
@@ -2908,7 +3060,10 @@ bool GameWorld::LoadFromStream(std::istream& in, Renderer* renderer,
         !battleSystem.Restore(restoredNextBattleId, std::move(restoredBattles),
                               std::move(restoredBattleReports), globalMap,
                               restoredPlayers, armyJourneySystem, runtimeFailure))
+    {
+        Log::Msg("[Persistence] runtime restore rejected: ", runtimeFailure);
         return false;
+    }
     activeTradeOrders.clear();
     nextTradeOrderId = restoredNextTradeOrderId;
     for (auto& order : restoredTradeOrders)
@@ -2940,8 +3095,9 @@ bool GameWorld::LoadFromStream(std::istream& in, Renderer* renderer,
     }
     eventSystem.SetCampaignSeed(restoredCampaignMap.seed);
     eventSystem.SetNextInstanceId(restoredNextEventId);
-    for (const auto& [provinceId, definitionId, cadence] : restoredCadence)
-        eventSystem.RestoreCadenceState(provinceId, definitionId, cadence);
+    for (auto& [playerId, schedulerState] : restoredSchedulerStates)
+        if (!eventSystem.RestorePeriodicSchedulerState(playerId, std::move(schedulerState)))
+            return false;
     for (auto& instance : restoredEvents)
     {
         if (globalMap.FindProvince(instance.provinceId) == nullptr ||
@@ -2949,7 +3105,7 @@ bool GameWorld::LoadFromStream(std::istream& in, Renderer* renderer,
              globalMap.FindProvince(instance.secondaryProvinceId) == nullptr) ||
             (instance.journeyId != InvalidWorldJourneyId &&
              !armyJourneySystem.GetJourneys().contains(instance.journeyId)) ||
-            !eventSystem.RestoreInstance(std::move(instance)))
+            !eventSystem.RestoreInstance(globalMap, std::move(instance)))
             return false;
     }
     for (auto& notification : restoredEventNotifications)
@@ -3107,4 +3263,3 @@ bool GameWorld::LoadFromStream(std::istream& in, Renderer* renderer,
     initializationError.clear();
     return true;
 }
-

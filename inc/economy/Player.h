@@ -292,6 +292,16 @@ public:
         return balanceModifiers.ModifyInt(base, MakeBalanceContext(stat, buildingType, resourceType, position), minimum);
     }
 
+    int ModifyBalanceIntAt(BalanceStat stat, int base, ProvinceId provinceId,
+                           BuildingType buildingType = BuildingType::Building,
+                           ResourceType resourceType = ResourceType::Null,
+                           int minimum = 0) const
+    {
+        return balanceModifiers.ModifyInt(
+            base, MakeBalanceContext(stat, buildingType, resourceType, std::nullopt, provinceId),
+            minimum);
+    }
+
     double ModifyBalanceForBuilding(BalanceStat stat, double base, const Building* building,
                                     ResourceType resourceType = ResourceType::Null) const
     {
@@ -376,6 +386,7 @@ public:
 
     // Rebuilds the modifier set entries emitted by unlocked technologies.
     void RefreshTechnologyModifiers();
+    void RefreshProvinceTraitModifiers();
 
     // Rebuilds all per-building upgrade modifiers from the currently tracked
     // buildings. Persistence calls this after the complete building section
@@ -428,9 +439,7 @@ public:
         return context;
     }
 
-    // TD(etap-3): unit-stat modifier lookup, mirroring the building-scoped
-    // overloads above — filters BalanceModifier::unitDefId (see
-    // BalanceModifiers.h) so a tech/focus can target one unit type.
+    // Resolves a modifier for one unit definition.
     double ModifyBalanceForUnit(BalanceStat stat, double base, const std::string& unitDefId) const
     {
         BalanceModifierContext context{stat};
@@ -439,7 +448,11 @@ public:
     }
 
     double AddManpower(double amount);
+    double AddManpower(ProvinceEconomy& economy, double amount);
+    bool ConsumeManpower(ProvinceEconomy& economy, double amount);
     int AutoAssignWorkers(Building* building);
+    int AutoAssignWorkers(ProvinceEconomy& economy, Building* building);
+    ProvincePopulationView GetProvincePopulationView(ProvinceId provinceId) const;
     bool TryPayBuildCost(const std::vector<ResourceAmountDefinition>& costs);
     bool TryPayBuildCost(ProvinceEconomy& economy,
                          const std::vector<ResourceAmountDefinition>& costs);

@@ -38,15 +38,6 @@ struct UnitAssignment
     bool IsStructurallyValid() const;
 };
 
-// DLC-ready equipment seam (ETAP 3.4 — not implemented, only reserved). Always
-// present in the save/wire format, even though the list stays empty until a
-// real equipment system exists, so adding one later doesn't break old saves.
-struct EquipmentInstance
-{
-    std::string itemDefId;
-    std::map<BalanceStat, double> statModifiers;
-};
-
 // One recruited unit instance. Composition over inheritance: a single
 // BattleUnit class plus a UnitDefinition id — no Swordsman : BattleUnit
 // hierarchy. Effective stats are resolved from the definition + the owning
@@ -71,8 +62,6 @@ public:
     TaskGroupId taskGroupId{InvalidTaskGroupId};
     // Canonical location. It can only be changed through UnitAssignmentService.
     UnitAssignment assignment;
-    // DLC seam — always empty in v1.
-    std::vector<EquipmentInstance> equipment;
 };
 
 class UnitAssignmentService

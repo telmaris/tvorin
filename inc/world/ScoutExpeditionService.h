@@ -3,6 +3,7 @@
 
 #include "warfare/BattleUnit.h"
 #include "world/Expedition.h"
+#include "world/ExpeditionQuote.h"
 #include "world/GlobalMap.h"
 #include "world/WorldJourney.h"
 
@@ -28,7 +29,8 @@ public:
                       std::uint64_t currentTick,
                       WorldJourneyId& createdId,
                       std::string& failureReason,
-                      WorldJourneyRules journeyRules = {});
+                      WorldJourneyRules journeyRules = {},
+                      ExpeditionLoadout loadout = {});
 
     static bool HasActiveFor(const WorldJourneySystem& journeys,
                              PlayerId playerId, ProvinceId targetProvinceId);

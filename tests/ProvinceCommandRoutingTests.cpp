@@ -134,8 +134,6 @@ TEST(ProvinceCommandRoutingTests, LocalModifierScopeIncludesProvinceIdentity)
         {
             map.tilemap.emplace_back(tileId);
             map.tilemap.back().tileType = TileType::GRASS;
-            map.tilemap.back().owner = &player;
-            map.tilemap.back().ownerId = player.id;
         }
         return dynamic_cast<Road*>(map.PlaceLoadedBuilding(
             map.GetIdFromCoords({3, 3}), &player, std::make_unique<Road>(77)));

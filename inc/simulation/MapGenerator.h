@@ -22,8 +22,7 @@ enum class MapSizePreset
 };
 
 // Parameters controlling one generated resource patch family. A patch only paints
-// tiles whose biome is listed in allowedBiomes (empty = any biome). See
-// docs/resource_world_design.md. Add a new deposit by appending one of these.
+// tiles whose biome is listed in allowedBiomes (empty = any biome).
 struct ResourcePatchParameters
 {
     TileType type{TileType::WOOD};
@@ -32,6 +31,14 @@ struct ResourcePatchParameters
     int maxRadius{8};
     std::vector<BiomeType> allowedBiomes{};
     float richnessScale{1.0f};   // multiplies base resourceRichness for this deposit
+};
+
+// Campaign province profiles can tune richness per deposit while reusing the
+// same deterministic local patch generator.
+struct ResourceProfileDeposit
+{
+    ResourceType resource{ResourceType::Null};
+    float richnessScale{1.0f};
 };
 
 // Thresholds shaping the biome pass (all tunable; deterministic on seed).
@@ -95,15 +102,15 @@ class MapGenerator
         // Returns the fixed headquarters footprint.
         static Vec2i HeadquartersFootprint() { return {4, 4}; }
         // Returns the starting territory side length around headquarters.
-        // Widened 27 -> 35 (2026-07-17, user request): the starting zone
-        // scales with the 10-tile HQ build clearance + the 14-tile village +
-        // the pushed-out resource patch ring (see PlaceStartingResourcePatch).
+        // Covers HQ clearance, the village, and the starting resource ring.
         static int HeadquartersTerritorySize() { return 35; }
         // Ensures a starting territory contains required early resources.
         static void PrepareStartingArea(TileMap&, Vec2i hqAnchor, std::mt19937&);
         static ResourceType ResourceTypeFromTileType(TileType type);
         static void FilterResourcePatchesForProfile(
             MapParameters&, const std::vector<ResourceType>& naturalResourceTypes);
+        static void ApplyResourceProfile(
+            MapParameters&, const std::vector<ResourceProfileDeposit>& deposits);
 
     private:
         // Assigns a biome to every tile from elevation + moisture noise fields.
@@ -117,7 +124,7 @@ class MapGenerator
         void RefreshResourceOverlayEdges(TileMap&, std::mt19937&);
 };
 
-// One square of terrain with optional owning player and building occupancy.
+// One square of terrain with optional building occupancy.
 class Tile
 {
     public:
@@ -139,10 +146,6 @@ class Tile
         bool IsBuildingAnchor() const { return building != nullptr; }
 
         int id;
-        // Stable ownership value used by persistence/checksum. `owner` is a
-        // runtime presentation cache rebuilt after load.
-        PlayerId ownerId{InvalidPlayerId};
-        Player* owner{nullptr};
         std::unique_ptr<Building> building{nullptr};
         Building* buildingRef{nullptr};
         TileType tileType{static_cast<TileType>(0)};

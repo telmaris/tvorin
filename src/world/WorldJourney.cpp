@@ -165,6 +165,31 @@ WorldJourneyStartResult WorldJourneySystem::Start(WorldJourney journey, const Gl
     {
         return reject("journey route speed multiplier is invalid");
     }
+    const bool validLoadout =
+        journey.loadout.IsSortedUnique() &&
+        journey.loadout.resources.size() <= 16 &&
+        journey.loadout.minimumResources.size() <= 16 &&
+        std::none_of(journey.loadout.minimumResources.begin(),
+                     journey.loadout.minimumResources.end(),
+                     [&journey](const ResourceAmount& minimum)
+                     { return journey.loadout.Get(minimum.type) < minimum.amount; }) &&
+        std::none_of(journey.loadout.resources.begin(), journey.loadout.resources.end(),
+                     [&journey](const ResourceAmount& resource)
+                     {
+                         return resource.type != ResourceType::FOOD_PROVISIONS &&
+                                resource.amount != journey.loadout.GetMinimum(resource.type);
+                     }) &&
+        std::none_of(journey.loadout.modifiers.begin(), journey.loadout.modifiers.end(),
+                     [](const OperationModifier& modifier)
+                     {
+                         return static_cast<int>(modifier.stat) < 0 ||
+                                modifier.stat >= BalanceStat::Count ||
+                                modifier.multiplierBasisPoints <= 0 ||
+                                modifier.multiplierBasisPoints > 20000 ||
+                                modifier.source.size() > 128;
+                     });
+    if (!validLoadout)
+        return reject("journey loadout is invalid");
     if (journey.id == InvalidWorldJourneyId)
     {
         if (nextJourneyId == InvalidWorldJourneyId)
@@ -300,6 +325,13 @@ bool WorldJourneySystem::FailJourney(WorldJourneyId journeyId)
 
 std::vector<int> WorldJourneySystem::ApplyScoutUnitLoss(WorldJourneyId journeyId, int amount)
 {
+    return ApplyJourneyUnitLoss(journeyId, amount, 0);
+}
+
+std::vector<int> WorldJourneySystem::ApplyJourneyUnitLoss(WorldJourneyId journeyId,
+                                                          int amount,
+                                                          std::uint64_t outcomeRoll)
+{
     std::vector<int> casualties;
     const auto it = journeys.find(journeyId);
     if (it == journeys.end() || amount <= 0 ||
@@ -307,17 +339,38 @@ std::vector<int> WorldJourneySystem::ApplyScoutUnitLoss(WorldJourneyId journeyId
          it->second.status != WorldJourneyStatus::Succeeded))
         return casualties;
 
-    auto* party = std::get_if<ScoutParty>(&it->second.payload);
-    if (party == nullptr || party->unitInstanceIds.empty())
+    std::vector<int>* units = nullptr;
+    if (auto* party = std::get_if<ScoutParty>(&it->second.payload))
+        units = &party->unitInstanceIds;
+    else if (auto* party = std::get_if<ArmyParty>(&it->second.payload))
+        units = &party->unitInstanceIds;
+    else if (auto* party = std::get_if<ArmyTransferParty>(&it->second.payload))
+        units = &party->unitInstanceIds;
+    if (units == nullptr || units->empty())
         return casualties;
-    std::sort(party->unitInstanceIds.begin(), party->unitInstanceIds.end());
     const std::size_t count = std::min<std::size_t>(
-        party->unitInstanceIds.size(), static_cast<std::size_t>(amount));
-    casualties.assign(party->unitInstanceIds.begin(),
-                      party->unitInstanceIds.begin() + count);
-    party->unitInstanceIds.erase(party->unitInstanceIds.begin(),
-                                 party->unitInstanceIds.begin() + count);
-    if (party->unitInstanceIds.empty())
+        units->size(), static_cast<std::size_t>(amount));
+    if (outcomeRoll == 0)
+        std::sort(units->begin(), units->end());
+    else
+        std::stable_sort(units->begin(), units->end(),
+        [outcomeRoll](int lhs, int rhs)
+        {
+            const auto mix = [outcomeRoll](std::uint64_t value)
+            {
+                value += 0x9E3779B97F4A7C15ull;
+                value = (value ^ (value >> 30)) * 0xBF58476D1CE4E5B9ull;
+                value = (value ^ (value >> 27)) * 0x94D049BB133111EBull;
+                return value ^ (value >> 31);
+            };
+            const auto left = mix(outcomeRoll ^ static_cast<std::uint64_t>(lhs));
+            const auto right = mix(outcomeRoll ^ static_cast<std::uint64_t>(rhs));
+            return left == right ? lhs < rhs : left < right;
+        });
+    casualties.assign(units->begin(), units->begin() + count);
+    units->erase(units->begin(), units->begin() + count);
+    std::sort(casualties.begin(), casualties.end());
+    if (units->empty())
         it->second.status = WorldJourneyStatus::Failed;
     return casualties;
 }
@@ -392,6 +445,31 @@ bool WorldJourneySystem::Restore(WorldJourneyId nextId, std::vector<WorldJourney
             !IsPayloadCompatible(journey.kind, journey.payload))
         {
             failureReason = "journey kind does not match payload";
+            return false;
+        }
+        if (!journey.loadout.IsSortedUnique() || journey.loadout.resources.size() > 16 ||
+            journey.loadout.minimumResources.size() > 16 ||
+            std::any_of(journey.loadout.minimumResources.begin(),
+                        journey.loadout.minimumResources.end(),
+                        [&journey](const ResourceAmount& minimum)
+                        { return journey.loadout.Get(minimum.type) < minimum.amount; }) ||
+            std::any_of(journey.loadout.resources.begin(), journey.loadout.resources.end(),
+                        [&journey](const ResourceAmount& resource)
+                        {
+                            return resource.type != ResourceType::FOOD_PROVISIONS &&
+                                   resource.amount != journey.loadout.GetMinimum(resource.type);
+                        }) ||
+            std::any_of(journey.loadout.modifiers.begin(), journey.loadout.modifiers.end(),
+                        [](const OperationModifier& modifier)
+                        {
+                            return static_cast<int>(modifier.stat) < 0 ||
+                                   modifier.stat >= BalanceStat::Count ||
+                                   modifier.multiplierBasisPoints <= 0 ||
+                                   modifier.multiplierBasisPoints > 20000 ||
+                                   modifier.source.size() > 128;
+                        }))
+        {
+            failureReason = "journey loadout is invalid";
             return false;
         }
         for (const auto& leg : journey.legPlan)

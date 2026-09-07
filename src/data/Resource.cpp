@@ -278,7 +278,6 @@ ResourceBuffer& ResourceBuffer::operator=(ResourceBuffer&& other) noexcept
     return *this;
 }
 
-// Adds this object or value to local state.
 void ResourceBuffer::AddResource(Resource* res)
 {
     if (res == nullptr)
@@ -289,7 +288,6 @@ void ResourceBuffer::AddResource(Resource* res)
         Resource::DestroyOwned(res);
 }
 
-// Removes and returns one resource pointer when available.
 std::pair<bool, Resource*> ResourceBuffer::GetResource()
 {
     if(buffer.size() > 0)
@@ -301,13 +299,11 @@ std::pair<bool, Resource*> ResourceBuffer::GetResource()
     return {false, nullptr};
 }
 
-// Initializes ResourceBuffer::GenerateResource.
 void ResourceBuffer::GenerateResource(ResourceType type)
 {
     AddResource(Resource::CreateOwned(type));
 }
 
-// Releases one stored owned resource instance.
 void ResourceBuffer::FreeResource()
 {
     if (buffer.empty())
@@ -317,14 +313,12 @@ void ResourceBuffer::FreeResource()
     Resource::DestroyOwned(res);
 }
 
-// Clears this runtime state.
 void ResourceBuffer::Clear()
 {
     while (!buffer.empty())
         FreeResource();
 }
 
-// Updates the requested state value.
 void ResourceBuffer::SetStoredAmount(int amount)
 {
     Clear();

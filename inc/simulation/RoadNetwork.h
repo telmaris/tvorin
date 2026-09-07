@@ -119,7 +119,7 @@ class RoadNetwork
         // Counts transports already heading to a destination buffer.
         int CountIncomingToDestination(Building* dest, ResourceType type) const;
 
-        // Perf fix (docs/post_pivot_audit_2026-07-12.md follow-up, 2026-07-12):
+        // Revisions invalidate cached paths after topology or traffic changes.
         struct PathCacheKey
         {
             int sourceId{0};

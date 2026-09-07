@@ -6,7 +6,6 @@
 #include <cmath>
 #include <sstream>
 
-// Initializes ControlsScene::ControlsScene.
 ControlsScene::ControlsScene()
 {
     backButton.ChangeText("Back");
@@ -111,7 +110,6 @@ namespace
     }
 }
 
-// Advances this object's state for one frame.
 void ControlsScene::Update(double dt)
 {
     ProcessGuiInput(dt);
@@ -241,7 +239,6 @@ void ControlsScene::Update(double dt)
     render.PresentFrame();
 }
 
-// Handles the UI action represented by OnBackPressed.
 void ControlsScene::OnBackPressed()
 {
     auto msg = std::make_shared<ChangeSceneEvent>();
@@ -251,7 +248,6 @@ void ControlsScene::OnBackPressed()
     broker->Broadcast(msg);
 }
 
-// Handles the requested event or transfer.
 void ControlsScene::HandleEvent(std::shared_ptr<Event> e)
 {
     auto ptr = std::dynamic_pointer_cast<WindowSizeChangedEvent>(e);

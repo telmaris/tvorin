@@ -28,7 +28,6 @@ namespace
     }
 }
 
-// Initializes MainMenuScene::MainMenuScene.
 MainMenuScene::MainMenuScene()
 {
     buttonsColumn.ChangeSizeAnchor(Vec2f{0.4f, 0.3f});
@@ -120,7 +119,6 @@ void MainMenuScene::OnActivated()
         audioSystem->PlayMusic("menu", DefaultMusicCrossfadeSeconds);
 }
 
-// Advances this object's state for one frame.
 void MainMenuScene::Update(double dt)
 {
     ProcessGuiInput(dt);
@@ -139,7 +137,6 @@ void MainMenuScene::Update(double dt)
     render.Draw(widgets, dt);
 }
 
-// Handles the UI action represented by OnNewGamePressed.
 void MainMenuScene::OnNewGamePressed()
 {
     auto msg = std::make_shared<ChangeSceneEvent>();
@@ -149,7 +146,6 @@ void MainMenuScene::OnNewGamePressed()
     broker->Broadcast(msg);
 }
 
-// Handles the UI action represented by OnLoadGamePressed.
 void MainMenuScene::OnLoadGamePressed()
 {
     auto msg = std::make_shared<ChangeSceneEvent>();
@@ -159,7 +155,6 @@ void MainMenuScene::OnLoadGamePressed()
     broker->Broadcast(msg);
 }
 
-// Handles the UI action represented by OnMultiplayerPressed.
 void MainMenuScene::OnMultiplayerPressed()
 {
     auto msg = std::make_shared<ChangeSceneEvent>();
@@ -169,7 +164,6 @@ void MainMenuScene::OnMultiplayerPressed()
     broker->Broadcast(msg);
 }
 
-// Handles the UI action represented by OnOptionsPressed.
 void MainMenuScene::OnOptionsPressed()
 {
     auto msg = std::make_shared<ChangeSceneEvent>();
@@ -179,7 +173,6 @@ void MainMenuScene::OnOptionsPressed()
     broker->Broadcast(msg);
 }
 
-// Handles the UI action represented by OnControlsPressed.
 void MainMenuScene::OnControlsPressed()
 {
     auto msg = std::make_shared<ChangeSceneEvent>();
@@ -189,7 +182,6 @@ void MainMenuScene::OnControlsPressed()
     broker->Broadcast(msg);
 }
 
-// Handles the UI action represented by OnQuitPressed.
 void MainMenuScene::OnQuitPressed()
 {
     auto msg = std::make_shared<QuitGameEvent>();
@@ -197,7 +189,6 @@ void MainMenuScene::OnQuitPressed()
     broker->Broadcast(msg);
 }
 
-// Handles the requested event or transfer.
 void MainMenuScene::HandleEvent(std::shared_ptr<Event> e)
 {
     auto ptr = std::dynamic_pointer_cast<WindowSizeChangedEvent>(e);

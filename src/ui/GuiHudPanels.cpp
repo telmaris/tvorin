@@ -39,19 +39,30 @@ namespace
         if (player == nullptr)
             return stats;
 
-        stats.freeManpower = static_cast<int>(std::floor(player->strategicResources.Get(StrategicResourceType::Manpower)));
-        stats.workers = static_cast<int>(std::floor(player->strategicResources.Get(StrategicResourceType::Workers)));
-        stats.totalPopulation = static_cast<int>(std::floor(player->GetTotalPopulation()));
-        stats.populationCap = player->GetPopulationCap();
-        // T6 (docs/post_pivot_audit_2026-07-12.md): the HUD chip must show the
-        // raw food supply ratio, not GetFoodProductivity()'s floored (0.3+)
-        // worker-productivity average — the village panel already shows the
-        // real supply ratio, and the two disagreed (e.g. "30%" vs "0%").
-        stats.foodSupplyPercent = static_cast<int>(std::round(player->GetFoodSupplyRatio() * 100.0));
-        stats.workerProductivityPercent = static_cast<int>(std::round(player->GetFoodProductivity() * 100.0));
         const ProvinceEconomy* economy = player->GetProvinceEconomy();
         if (economy == nullptr)
             return stats;
+        if (player->homeProvinceId != InvalidProvinceId)
+        {
+            const ProvincePopulationView population = BuildProvincePopulationView(*economy, *player);
+            stats.freeManpower = static_cast<int>(std::floor(population.availableManpower));
+            stats.workers = population.assignedWorkers;
+            stats.totalPopulation = static_cast<int>(std::floor(population.currentPopulation));
+            stats.populationCap = population.populationCap;
+            stats.manpowerGainPerMinute = population.manpowerGainPerMinute;
+        }
+        else
+        {
+            stats.freeManpower = static_cast<int>(std::floor(
+                player->strategicResources.Get(StrategicResourceType::Manpower)));
+            stats.workers = static_cast<int>(std::floor(
+                player->strategicResources.Get(StrategicResourceType::Workers)));
+            stats.totalPopulation = static_cast<int>(std::floor(player->GetTotalPopulation()));
+            stats.populationCap = player->GetPopulationCap();
+        }
+        // Food supply and worker productivity are distinct player-facing values.
+        stats.foodSupplyPercent = static_cast<int>(std::round(player->GetFoodSupplyRatio() * 100.0));
+        stats.workerProductivityPercent = static_cast<int>(std::round(player->GetFoodProductivity() * 100.0));
         stats.productionRatesPerMinute = economy->economyTelemetry.current.productionRatesPerMinute;
         stats.consumptionRatesPerMinute = economy->economyTelemetry.current.consumptionRatesPerMinute;
 
@@ -71,16 +82,15 @@ namespace
                 continue;
 
             const auto* population = building->GetComponent<PopulationComponent>();
-            double productivity = population->GetManpowerProductivity();
-            stats.manpowerGainPerMinute += player->ResolveStat(population->manpowerRate, building) * productivity * 60.0;
-            const double foodInterval = population->GetEffectiveSupplyUpkeepInterval(
-                *building, ResourceType::FOOD_PROVISIONS);
-            if (std::isfinite(foodInterval))
+            if (player->homeProvinceId == InvalidProvinceId)
             {
-                stats.villageFoodConsumptionPerMinute +=
-                    population->GetSupplyUpkeep(ResourceType::FOOD_PROVISIONS) *
-                    (60.0 / foodInterval);
+                const double productivity = population->GetManpowerProductivity();
+                stats.manpowerGainPerMinute += player->ResolveStat(population->manpowerRate, building) *
+                    productivity * 60.0;
             }
+            for (const auto& supply : population->GetSupplyConsumptionViews(*building))
+                if (supply.resource == ResourceType::FOOD_PROVISIONS)
+                    stats.villageFoodConsumptionPerMinute += supply.packagesPerMinute;
         }
         // Warehouse network only (see StockpileIndex): Barracks' queued unit
         // costs are that building's own consumption
@@ -1180,7 +1190,6 @@ bool StatsPanelWidget::HandleClick(Vec2i point)
 StatsGuiSystem::StatsGuiSystem(GuiController* con)
     : GuiSystem(con)
 {
-    // A4 (docs/work_plan_2026-07-13.md): shadows GuiSystem::scene (Scene*).
     scene = dynamic_cast<GameScene*>(owner->scene);
 
     WireCommonSystemActions(*this, cameraMovement);

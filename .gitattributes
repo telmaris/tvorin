@@ -1,0 +1,17 @@
+* text=auto
+
+*.cpp text eol=lf
+*.h text eol=lf
+*.in text eol=lf
+*.md text eol=lf
+*.ps1 text eol=crlf
+*.rtsdata text eol=lf
+*.txt text eol=lf
+*.yml text eol=lf
+
+*.mp3 binary
+*.ogg binary
+*.otf binary
+*.png binary
+*.ttf binary
+*.wav binary

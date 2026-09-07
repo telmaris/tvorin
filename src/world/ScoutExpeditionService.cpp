@@ -143,7 +143,8 @@ bool ScoutExpeditionService::Start(PlayerId playerId, ProvinceId sourceProvinceI
                                    std::uint64_t currentTick,
                                    WorldJourneyId& createdId,
                                    std::string& failureReason,
-                                   WorldJourneyRules journeyRules)
+                                   WorldJourneyRules journeyRules,
+                                   ExpeditionLoadout loadout)
 {
     createdId = InvalidWorldJourneyId;
     const auto* definition = FindExpeditionDefinition("scout");
@@ -194,6 +195,17 @@ bool ScoutExpeditionService::Start(PlayerId playerId, ProvinceId sourceProvinceI
         }
     }
 
+    const bool hasRequestedLoadout = !loadout.resources.empty() ||
+                                     !loadout.minimumResources.empty();
+    const ExpeditionQuote quote = ExpeditionQuoteService::Quote(
+        nullptr, ExpeditionRole::Scout, playerId, sourceProvinceId, targetProvinceId,
+        unitInstanceIds, roster, map, std::move(loadout), true);
+    if (!quote.allowed)
+    {
+        failureReason = quote.reason.empty() ? "scout loadout quote is invalid" : quote.reason;
+        return false;
+    }
+
     WorldJourney journey;
     journey.ownerId = playerId;
     journey.sourceProvinceId = sourceProvinceId;
@@ -202,6 +214,7 @@ bool ScoutExpeditionService::Start(PlayerId playerId, ProvinceId sourceProvinceI
     for (const ProvinceConnectionId connectionId : path)
         journey.legPlan.push_back({connectionId});
     journey.payload = ScoutParty{std::vector<int>(unitInstanceIds.begin(), unitInstanceIds.end())};
+    journey.loadout = quote.loadout;
     auto& payload = std::get<ScoutParty>(journey.payload);
     std::sort(payload.unitInstanceIds.begin(), payload.unitInstanceIds.end());
     double slowestMoveSpeed = std::numeric_limits<double>::max();
@@ -217,8 +230,16 @@ bool ScoutExpeditionService::Start(PlayerId playerId, ProvinceId sourceProvinceI
         }
         slowestMoveSpeed = std::min(slowestMoveSpeed, unitDefinition->moveSpeed);
     }
-    journeyRules.speedProfile.moverSpeedBasisPoints = static_cast<int>(std::llround(
-        slowestMoveSpeed * JourneyTiming::BasisPoints));
+    if (journeyRules.baseLegDurationTicks == 100 && !hasRequestedLoadout)
+    {
+        journeyRules.speedProfile = quote.speedProfile;
+        journeyRules.routeTravelSpeedMultiplier =
+            static_cast<double>(quote.speedProfile.playerRouteSpeedBasisPoints) /
+            JourneyTiming::BasisPoints;
+    }
+    else
+        journeyRules.speedProfile.moverSpeedBasisPoints = static_cast<int>(std::llround(
+            slowestMoveSpeed * JourneyTiming::BasisPoints));
     journey.kind = WorldJourneyKind::Scout;
     const WorldJourneyStartResult start = journeys.Start(
         std::move(journey), map, currentTick, journeyRules);

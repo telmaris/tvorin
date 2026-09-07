@@ -251,12 +251,6 @@ private:
     GameSessionStartupStatus startupStatus;
 };
 
-// Single player - uses HostSession without transport
-using SinglePlayerSession = HostSession;
-
-// Multiplayer - alias for HostSession with transport (for backward compatibility if needed)
-using MultiplayerHostSession = HostSession;
-
 // Multiplayer client. Runtime instances own their world mirror and synchronize
 // it on a session worker; the raw-pointer constructor remains for focused tests.
 class ClientSession : public IGameSession
@@ -343,9 +337,5 @@ private:
         {},
         false};
 };
-
-// Backward compatibility alias
-using LocalhostClientSession = ClientSession;
-using LocalhostMultiplayerSession = HostSession;
 
 #endif

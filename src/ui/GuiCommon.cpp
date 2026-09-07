@@ -66,6 +66,27 @@ Building* FindLocalHeadquarters(GameScene* scene)
     return nullptr;
 }
 
+bool CenterCameraOnActiveProvinceHeadquarters(GameScene* scene)
+{
+    if (scene == nullptr || scene->game == nullptr)
+        return false;
+
+    Building* headquarters = FindLocalHeadquarters(scene);
+    if (headquarters == nullptr)
+        return false;
+
+    TileMap& map = scene->game->GetTileMap();
+
+    const Vec2i anchor = map.GetCoordsFromId(headquarters->positionId);
+    const Vec2i footprint = headquarters->GetFootprint();
+    const Vec2f center{
+        static_cast<float>((anchor.x + footprint.x * 0.5f) * TILE_SIZE),
+        static_cast<float>((anchor.y + footprint.y * 0.5f) * TILE_SIZE)};
+    ApplyStrategicHudCameraPadding(scene);
+    scene->render.CenterCameraOnWorld(center, GetMapSize(scene));
+    return true;
+}
+
 namespace
 {
     // Adds a debug resource package to one storage-like building.
@@ -137,8 +158,7 @@ void ApplyStrategicHudCameraPadding(GameScene* scene)
 
 namespace
 {
-    // Net screen-space displacement beyond which an RMB press+release counts
-    // as a pan drag rather than a click (A3, docs/work_plan_2026-07-13.md).
+    // Minimum displacement that distinguishes a pan from a click.
     constexpr float kRmbDragThresholdPixels = 4.0f;
 }
 

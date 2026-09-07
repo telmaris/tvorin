@@ -1,4 +1,4 @@
-#include "multiplayer/FaultInjectingGameTransport.h"
+#include "support/FaultInjectingGameTransport.h"
 
 #include <gtest/gtest.h>
 

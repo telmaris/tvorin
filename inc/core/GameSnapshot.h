@@ -68,11 +68,10 @@ struct GameSnapshotTile
 {
     int terrainTextureId{0};
     int resourceOverlayTextureId{-1};
-    bool hasOwner{false};
-    Color ownerColor{BLANK};
     bool hasBuilding{false};
     BuildingType buildingType{BuildingType::Building};
     Vec2i buildingFootprint{1, 1};
+    int buildingUpgradeLevel{1};
     int buildingOwnerId{-1};
     bool isBuildingOperational{false};
     bool isBuildingUpgrading{false};
@@ -85,15 +84,11 @@ inline bool operator==(const GameSnapshotTile& lhs, const GameSnapshotTile& rhs)
 {
     return lhs.terrainTextureId == rhs.terrainTextureId &&
            lhs.resourceOverlayTextureId == rhs.resourceOverlayTextureId &&
-           lhs.hasOwner == rhs.hasOwner &&
-           lhs.ownerColor.r == rhs.ownerColor.r &&
-           lhs.ownerColor.g == rhs.ownerColor.g &&
-           lhs.ownerColor.b == rhs.ownerColor.b &&
-           lhs.ownerColor.a == rhs.ownerColor.a &&
            lhs.hasBuilding == rhs.hasBuilding &&
            lhs.buildingType == rhs.buildingType &&
            lhs.buildingFootprint.x == rhs.buildingFootprint.x &&
            lhs.buildingFootprint.y == rhs.buildingFootprint.y &&
+           lhs.buildingUpgradeLevel == rhs.buildingUpgradeLevel &&
            lhs.buildingOwnerId == rhs.buildingOwnerId &&
            lhs.isBuildingOperational == rhs.isBuildingOperational &&
            lhs.isBuildingUpgrading == rhs.isBuildingUpgrading &&
@@ -111,15 +106,11 @@ inline void SerializeSnapshotTile(std::ostringstream& out, const GameSnapshotTil
 {
     out << tile.terrainTextureId << ' '
         << tile.resourceOverlayTextureId << ' '
-        << (tile.hasOwner ? 1 : 0) << ' '
-        << static_cast<int>(tile.ownerColor.r) << ' '
-        << static_cast<int>(tile.ownerColor.g) << ' '
-        << static_cast<int>(tile.ownerColor.b) << ' '
-        << static_cast<int>(tile.ownerColor.a) << ' '
         << (tile.hasBuilding ? 1 : 0) << ' '
         << static_cast<int>(tile.buildingType) << ' '
         << tile.buildingFootprint.x << ' '
         << tile.buildingFootprint.y << ' '
+        << tile.buildingUpgradeLevel << ' '
         << tile.buildingOwnerId << ' '
         << (tile.isBuildingOperational ? 1 : 0) << ' '
         << (tile.isBuildingUpgrading ? 1 : 0) << ' '
@@ -130,27 +121,20 @@ inline void SerializeSnapshotTile(std::ostringstream& out, const GameSnapshotTil
 
 inline bool TryDeserializeSnapshotTile(std::istringstream& in, GameSnapshotTile& tile)
 {
-    int hasOwner = 0;
     int hasBuilding = 0;
-    int r = 0;
-    int g = 0;
-    int b = 0;
-    int a = 0;
     int buildingType = 0;
+    int buildingUpgradeLevel = 1;
     int isBuildingOperational = 0;
     int isBuildingUpgrading = 0;
     int roadDisconnected = 0;
     int roadSaturated = 0;
-    if (!(in >> tile.terrainTextureId >> tile.resourceOverlayTextureId >> hasOwner >> r >> g >> b >> a >> hasBuilding >> buildingType >> tile.buildingFootprint.x >> tile.buildingFootprint.y >> tile.buildingOwnerId >> isBuildingOperational >> isBuildingUpgrading >> roadDisconnected >> tile.roadUtilization >> roadSaturated))
+    if (!(in >> tile.terrainTextureId >> tile.resourceOverlayTextureId >> hasBuilding >> buildingType >> tile.buildingFootprint.x >> tile.buildingFootprint.y >> buildingUpgradeLevel >> tile.buildingOwnerId >> isBuildingOperational >> isBuildingUpgrading >> roadDisconnected >> tile.roadUtilization >> roadSaturated))
         return false;
-    tile.hasOwner = hasOwner != 0;
-    tile.ownerColor = Color{
-        static_cast<unsigned char>(std::clamp(r, 0, 255)),
-        static_cast<unsigned char>(std::clamp(g, 0, 255)),
-        static_cast<unsigned char>(std::clamp(b, 0, 255)),
-        static_cast<unsigned char>(std::clamp(a, 0, 255))};
     tile.hasBuilding = hasBuilding != 0;
     tile.buildingType = static_cast<BuildingType>(buildingType);
+    if (buildingUpgradeLevel < 1 || buildingUpgradeLevel > 64)
+        return false;
+    tile.buildingUpgradeLevel = buildingUpgradeLevel;
     tile.isBuildingOperational = isBuildingOperational != 0;
     tile.isBuildingUpgrading = isBuildingUpgrading != 0;
     tile.roadDisconnected = roadDisconnected != 0;
@@ -222,6 +206,7 @@ struct GameSnapshot
             out << edge.from << ' ' << edge.to << ' ' << edge.connectionId << ' '
                 << edge.lengthUnits << ' ' << edge.level << ' '
                 << edge.routeTimeBasisPoints << ' ' << edge.incidentReductionBasisPoints << ' '
+                << edge.incidentRiskBasisPoints << ' '
                 << edge.nextLevel << ' ' << edge.nextRouteTimeBasisPoints << ' '
                 << edge.nextIncidentReductionBasisPoints << ' ' << edge.nextUpgradeDurationTicks << ' '
                 << edge.nextUpgradeCost.size() << ' ';
@@ -410,6 +395,7 @@ struct GameSnapshot
             std::size_t upgradeCostCount = 0;
             if (!(in >> edge.from >> edge.to >> edge.connectionId >> edge.level >>
                   edge.lengthUnits >> edge.routeTimeBasisPoints >> edge.incidentReductionBasisPoints >>
+                  edge.incidentRiskBasisPoints >>
                   edge.nextLevel >> edge.nextRouteTimeBasisPoints >>
                   edge.nextIncidentReductionBasisPoints >> edge.nextUpgradeDurationTicks >>
                   upgradeCostCount) || upgradeCostCount > 16)
@@ -434,6 +420,7 @@ struct GameSnapshot
                 edge.connectionId == InvalidProvinceConnectionId || edge.level < 0 ||
                 edge.lengthUnits < 0 || edge.routeTimeBasisPoints <= 0 ||
                 edge.incidentReductionBasisPoints < 0 || edge.nextLevel < 0 ||
+                edge.incidentRiskBasisPoints < 0 || edge.incidentRiskBasisPoints > 10000 ||
                 edge.nextRouteTimeBasisPoints <= 0 || edge.nextIncidentReductionBasisPoints < 0 ||
                 (canInspect != 0 && canInspect != 1) ||
                 (canUpgrade != 0 && canUpgrade != 1) ||
@@ -447,6 +434,7 @@ struct GameSnapshot
             if (!edge.canInspect && (edge.lengthUnits != 0 || edge.level != 0 ||
                                      edge.routeTimeBasisPoints != 10000 ||
                                      edge.incidentReductionBasisPoints != 0 ||
+                                     edge.incidentRiskBasisPoints != 0 ||
                                      edge.nextLevel != 0 || edge.nextRouteTimeBasisPoints != 10000 ||
                                      edge.nextIncidentReductionBasisPoints != 0 ||
                                      edge.nextUpgradeDurationTicks != 0 ||

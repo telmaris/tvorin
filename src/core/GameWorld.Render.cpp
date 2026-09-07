@@ -17,6 +17,44 @@ using namespace GameWorldInternal;
 
 namespace
 {
+    std::size_t JourneyUnitCount(const WorldJourney& journey)
+    {
+        if (const auto* scouts = std::get_if<ScoutParty>(&journey.payload))
+            return scouts->unitInstanceIds.size();
+        if (const auto* army = std::get_if<ArmyParty>(&journey.payload))
+            return army->unitInstanceIds.size();
+        if (const auto* transfer = std::get_if<ArmyTransferParty>(&journey.payload))
+            return transfer->unitInstanceIds.size();
+        return 0;
+    }
+
+    int ResolveJourneyLossAmount(const JourneyUnitLossRequest& request,
+                                 const WorldJourney& journey)
+    {
+        if (request.maximumFractionBasisPoints <= 0)
+            return std::max(0, request.amount);
+        const std::size_t unitCount = JourneyUnitCount(journey);
+        if (unitCount == 0)
+            return 0;
+        const auto percent = [unitCount](int basisPoints)
+        {
+            return static_cast<int>((unitCount * static_cast<std::size_t>(basisPoints) +
+                                     9999u) / 10000u);
+        };
+        int minimum = percent(std::clamp(request.minimumFractionBasisPoints, 0, 10000));
+        int maximum = percent(std::clamp(request.maximumFractionBasisPoints, 0, 10000));
+        minimum = std::max(minimum, request.minimumUnits);
+        maximum = std::max(maximum, minimum);
+        if (request.maximumUnits > 0)
+            maximum = std::min(maximum, request.maximumUnits);
+        minimum = std::min(minimum, static_cast<int>(unitCount));
+        maximum = std::min(maximum, static_cast<int>(unitCount));
+        if (maximum <= minimum)
+            return maximum;
+        const std::uint64_t span = static_cast<std::uint64_t>(maximum - minimum + 1);
+        return minimum + static_cast<int>(request.outcomeRoll % span);
+    }
+
     float GetRoadUtilization(const Building& building)
     {
         const auto* road = building.GetComponent<RoadComponent>();
@@ -160,6 +198,8 @@ void GameWorld::UpdateSimulation(double dt)
             eventSystem.ConfirmRaidStarted(request.eventId);
         }
     }
+    armyJourneySystem.Update(globalMap, simulationTick);
+    ProcessJourneyRouteEvents();
     UpdateBattles();
     ProcessNonBattleJourneyEvents();
     ProcessResourceTransfers();
@@ -176,7 +216,7 @@ void GameWorld::UpdateBattles()
         if (player != nullptr)
             players.emplace(playerId, player.get());
     battleSystem.Update(globalMap, armyJourneySystem, players, simulationTick,
-                        campaignGenerationParameters.globalMap.seed);
+                        campaignGenerationParameters.globalMap.seed, false);
     // A crushing bandit victory first transforms the node in the warfare
     // service. Finish the automatic colonization only after the local map and
     // starting base have been generated successfully on the side.
@@ -190,21 +230,19 @@ void GameWorld::UpdateBattles()
     }
 }
 
-void GameWorld::ProcessNonBattleJourneyEvents()
+void GameWorld::ProcessJourneyRouteEvents()
 {
-    // BattleLifecycleSystem selectively consumes only army/battle journey
-    // events. The remaining events belong to the shared journey payload
-    // handlers and are processed in stable emission order.
-    for (const auto& event : armyJourneySystem.ConsumeLegEvents())
+    for (const auto& event : armyJourneySystem.GetPendingLegEvents())
     {
         const auto journeyIt = armyJourneySystem.GetJourneys().find(event.journeyId);
         if (journeyIt == armyJourneySystem.GetJourneys().end())
             continue;
         const WorldJourney& journey = journeyIt->second;
-
-        // Resolve the route incident before applying the terminal scout
-        // result. A final-leg ambush must be able to fail the journey before
-        // it grants discovery or marks the target as scouted.
+        if (JourneyUnitCount(journey) == 0 ||
+            (!std::holds_alternative<ScoutParty>(journey.payload) &&
+             !std::holds_alternative<ArmyParty>(journey.payload) &&
+             !std::holds_alternative<ArmyTransferParty>(journey.payload)))
+            continue;
         eventSystem.TriggerRoute(globalMap, journey.ownerId, event.fromProvinceId,
                                  event.toProvinceId, [&]()
                                  {
@@ -213,21 +251,23 @@ void GameWorld::ProcessNonBattleJourneyEvents()
                                      const auto* route = dynamic_cast<const LandRouteConnection*>(
                                          connection);
                                      return route == nullptr ? 0 : route->GetLevel();
-                                 }(), simulationTick, journey.id);
+                                 }(), simulationTick, journey.id,
+                                 std::max(1, static_cast<int>(JourneyUnitCount(journey))),
+                                 event.completedLeg, journey.deterministicAttemptCounter);
+
         for (const auto& loss : eventSystem.ConsumePendingJourneyUnitLosses())
         {
             const auto lossJourneyIt = armyJourneySystem.GetJourneys().find(loss.journeyId);
-            if (lossJourneyIt == armyJourneySystem.GetJourneys().end())
+            if (lossJourneyIt == armyJourneySystem.GetJourneys().end() ||
+                loss.ownerId != lossJourneyIt->second.ownerId)
                 continue;
-            const auto* scout = std::get_if<ScoutParty>(&lossJourneyIt->second.payload);
-            if (scout == nullptr || loss.ownerId != lossJourneyIt->second.ownerId)
-                continue;
-            const auto lossPlayerIt = playerHandler.players.find(
-                static_cast<int>(loss.ownerId));
+            const auto lossPlayerIt = playerHandler.players.find(static_cast<int>(loss.ownerId));
             if (lossPlayerIt == playerHandler.players.end() || lossPlayerIt->second == nullptr)
                 continue;
-            const std::vector<int> casualties = armyJourneySystem.ApplyScoutUnitLoss(
-                loss.journeyId, loss.amount);
+            const auto* scout = std::get_if<ScoutParty>(&lossJourneyIt->second.payload);
+            const int lossAmount = ResolveJourneyLossAmount(loss, lossJourneyIt->second);
+            const std::vector<int> casualties = armyJourneySystem.ApplyJourneyUnitLoss(
+                loss.journeyId, lossAmount, loss.outcomeRoll);
             if (!casualties.empty())
             {
                 eventSystem.RecordAppliedEffect(loss.eventId,
@@ -240,14 +280,34 @@ void GameWorld::ProcessNonBattleJourneyEvents()
             const auto afterLoss = armyJourneySystem.GetJourneys().find(loss.journeyId);
             if (!casualties.empty() && afterLoss != armyJourneySystem.GetJourneys().end() &&
                 afterLoss->second.status == WorldJourneyStatus::Failed)
+            {
+                const bool wasScout = scout != nullptr;
                 eventSystem.PublishNotification(
-                    "scout_mission_failed", loss.ownerId,
-                    afterLoss->second.targetProvinceId,
-                    afterLoss->second.sourceProvinceId, simulationTick,
-                    "All assigned scouts were lost before province " +
+                    wasScout ? "scout_mission_failed" : "army_journey_failed", loss.ownerId,
+                    afterLoss->second.targetProvinceId, afterLoss->second.sourceProvinceId,
+                    simulationTick,
+                    wasScout ? "All assigned scouts were lost before province " +
                         std::to_string(afterLoss->second.targetProvinceId) +
-                        " could be surveyed.");
+                        " could be surveyed."
+                             : "The journey lost all assigned units before reaching its target.");
+            }
         }
+    }
+}
+
+void GameWorld::ProcessNonBattleJourneyEvents()
+{
+    // BattleLifecycleSystem selectively consumes only army/battle journey
+    // events. The remaining events belong to the shared journey payload
+    // handlers and are processed in stable emission order. Route incidents
+    // have already been resolved for every unit-carrying journey before the
+    // battle lifecycle consumes its own leg events.
+    for (const auto& event : armyJourneySystem.ConsumeLegEvents())
+    {
+        const auto journeyIt = armyJourneySystem.GetJourneys().find(event.journeyId);
+        if (journeyIt == armyJourneySystem.GetJourneys().end())
+            continue;
+        const WorldJourney& journey = journeyIt->second;
 
         // A route loss on any leg invalidates the complete scouting
         // operation. The failed-journey cleanup below releases survivors.
@@ -440,7 +500,6 @@ void GameWorld::UpdateFogOfWar()
     // owned province renders and accepts placement across its full local map.
 }
 
-// Advances this object's state for one frame.
 void GameWorld::Update(double dt)
 {
     UpdateSimulation(dt);
@@ -524,16 +583,6 @@ GameSnapshot GameWorld::BuildSnapshot() const
         GameSnapshotTile view;
         view.terrainTextureId = tile.terrainTextureId;
         view.resourceOverlayTextureId = tile.resourceOverlayTextureId;
-        // tile.owner is a relic of the removed territory system (ETAP 1) —
-        // always nullptr in production today, so hasOwner/ownerColor are
-        // effectively dead wire fields. Left in place to avoid a snapshot
-        // wire-version bump for a rendering-only cleanup; see
-        // docs/post_pivot_audit_2026-07-12.md T2.
-        if (tile.owner != nullptr)
-        {
-            view.hasOwner = true;
-            view.ownerColor = tile.owner->color;
-        }
 
         if (tile.building != nullptr)
         {
@@ -544,6 +593,7 @@ GameSnapshot GameWorld::BuildSnapshot() const
                 ? tile.building->ownerId
                 : (tile.building->owner != nullptr ? tile.building->owner->id : -1);
             view.isBuildingOperational = !tile.building->IsUnderConstruction();
+            view.buildingUpgradeLevel = tile.building->GetVisualUpgradeLevel();
             if (const auto* upgrade = tile.building->GetComponent<UpgradeComponent>(); upgrade != nullptr)
                 view.isBuildingUpgrading = upgrade->isUpgrading;
             view.roadDisconnected = !IsRoadLike(tile.building->buildingType) &&
@@ -775,7 +825,8 @@ void GameWorld::DrawMap()
                         ? Color{118, 122, 132, 215}
                         : WHITE;
                     if (IsRoadLike(tile.building->buildingType))
-                        render->DrawRoadTexture(tile.building->buildingType, pos,
+                        render->DrawRoadTexture(tile.building->buildingType,
+                                                tile.building->GetVisualUpgradeLevel(), pos,
                                                 GetRoadConnectionMask(tilemap, x, y), tint);
                     else
                         render->DrawBuildingTexture(tile.building.get(), pos, tint);

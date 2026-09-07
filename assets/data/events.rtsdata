@@ -1,10 +1,13 @@
 # Data-driven world events. Effects are typed and intentionally not scripts.
 
+periodic_schedule initial_delay_ticks 6000 check_interval_ticks 3000 chance_bp 2500 minimum_gap_ticks 6000
+
 event bandit_ambush
     name "Bandit ambush"
     title "Ambush on the road"
     description "A caravan was attacked on an unsafe tract."
     trigger Route
+    polarity Negative
     chance_bp 250
     weight 10
     duration_ticks 0
@@ -17,9 +20,9 @@ event bandit_raid
     title "Raiders at the frontier"
     description "Bandits from a nearby camp attack an exposed settlement."
     trigger ProvincePeriodic
-    chance_bp 150
+    polarity Negative
     weight 10
-    check_interval_ticks 3000
+    repeat_cooldown_ticks 30000
     duration_ticks 0
     allow_kind Buildable
     require_adjacent_trait ambush_country
@@ -31,12 +34,79 @@ event frontier_harvest
     title "A productive season"
     description "Careful work brings an unexpected surplus to the province."
     trigger ProvincePeriodic
-    chance_bp 500
+    polarity Positive
     weight 10
-    check_interval_ticks 1000
+    repeat_cooldown_ticks 12000
     duration_ticks 6000
     allow_kind Buildable
     effect ModifyResource WHEAT 5
+end
+
+event woodland_bounty
+    name "Woodland bounty"
+    title "A rich timber season"
+    description "The province's active wood production leaves a useful surplus."
+    trigger ProvincePeriodic
+    polarity Positive
+    weight 8
+    repeat_cooldown_ticks 18000
+    duration_ticks 0
+    allow_kind Buildable
+    require_produced_resource WOOD
+    effect ModifyResource WOOD 4
+end
+
+event iron_vein
+    name "Iron vein"
+    title "A promising vein"
+    description "Miners discover a productive seam and bring extra ore above plan."
+    trigger ProvincePeriodic
+    polarity Positive
+    weight 7
+    repeat_cooldown_ticks 24000
+    duration_ticks 0
+    allow_kind Buildable
+    require_produced_resource IRON_ORE
+    effect ModifyResource IRON_ORE 3
+end
+
+event supply_discipline
+    name "Supply discipline"
+    title "A well supplied province"
+    description "Organized depots reduce the food burden of military operations for a time."
+    trigger ProvincePeriodic
+    polarity Positive
+    weight 6
+    repeat_cooldown_ticks 24000
+    duration_ticks 1800
+    allow_kind Buildable
+    require_produced_resource FOOD_PROVISIONS
+    effect AddTimedModifier ArmySupplyConsumptionReduction 0 0.9 1800
+end
+
+event route_attrition
+    name "Route attrition"
+    title "Attrition on the march"
+    description "A difficult stretch of road costs the expedition a fraction of its strength."
+    trigger Route
+    polarity Negative
+    chance_bp 350
+    weight 8
+    duration_ticks 0
+    effect KillJourneyUnitsPercent 1000 2500 1 0
+end
+
+event ancient_cache
+    name "Ancient cache"
+    title "A cache beneath the ruins"
+    description "A careful search uncovers supplies left by an earlier settlement."
+    trigger Discovery
+    polarity Positive
+    chance_bp 450
+    weight 4
+    duration_ticks 0
+    allow_kind EventSite
+    effect ModifyResource TOOLS 2
 end
 
 event market_favor
@@ -44,6 +114,7 @@ event market_favor
     title "A trusted trading partner"
     description "A completed delivery improves the city's opinion of the trader."
     trigger Discovery
+    polarity Positive
     chance_bp 300
     weight 5
     duration_ticks 0
@@ -54,6 +125,7 @@ end
 # Journal-only mission reports. A zero chance prevents these definitions from
 # entering random discovery rolls; the journey authority publishes them at
 # the exact terminal transition.
+
 event scout_mission_completed
     name "Scouting report"
     title "Scouting mission completed"

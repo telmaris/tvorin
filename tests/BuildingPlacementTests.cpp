@@ -7,8 +7,8 @@
 
 namespace
 {
-    // Creates a rectangular grass map fully owned by the supplied player.
-    void FillOwnedGrassMap(TileMap& map, Player* owner, int width = 12, int height = 12)
+    // Creates a rectangular grass map.
+    void FillGrassMap(TileMap& map, int width = 12, int height = 12)
     {
         map.params.sizeX = width;
         map.params.sizeY = height;
@@ -18,7 +18,6 @@ namespace
         for (int i = 0; i < width * height; i++)
         {
             Tile tile{i};
-            tile.owner = owner;
             tile.tileType = TileType::GRASS;
             tile.resourceRichness = 0;
             map.tilemap.push_back(std::move(tile));
@@ -58,7 +57,7 @@ TEST(BuildingPlacementTests, FootprintMustFitInsideMap)
 {
     TileMap map;
     Player player{0, map};
-    FillOwnedGrassMap(map, &player, 8, 8);
+    FillGrassMap(map, 8, 8);
 
     EXPECT_TRUE(map.IsInsideFootprint({5, 5}, {3, 3}));
     EXPECT_FALSE(map.IsInsideFootprint({6, 6}, {3, 3}));
@@ -68,7 +67,7 @@ TEST(BuildingPlacementTests, FootprintBlockedByOccupancy)
 {
     TileMap map;
     Player player{0, map};
-    FillOwnedGrassMap(map, &player);
+    FillGrassMap(map);
 
     EXPECT_TRUE(map.CanBuildFootprint({2, 2}, {2, 2}, &player));
 
@@ -80,7 +79,7 @@ TEST(BuildingPlacementTests, OwnStructuresNeverBlockPlacement)
 {
     TileMap map;
     Player player{0, map};
-    FillOwnedGrassMap(map, nullptr, 20, 20);
+    FillGrassMap(map, 20, 20);
 
     int ownTileId = map.GetIdFromCoords({10, 10});
     map.tilemap[ownTileId].building = std::make_unique<Woodcutter>(1);
@@ -94,7 +93,7 @@ TEST(BuildingPlacementTests, ResourceProducerRequiresMatchingTerrainAndRichness)
 {
     TileMap map;
     Player player{0, map};
-    FillOwnedGrassMap(map, &player);
+    FillGrassMap(map);
 
     const Vec2i footprint = GetBuildingDefinition(BuildingType::Woodcutter).footprint;
     EXPECT_FALSE(map.CanPlaceBuilding(BuildingType::Woodcutter, {2, 2}, footprint, &player));
@@ -117,7 +116,7 @@ TEST(BuildingPlacementTests, MineSelectsTheMostAbundantTerrainFromItsWholeFootpr
     {
         TileMap map;
         Player player{0, map};
-        FillOwnedGrassMap(map, &player);
+        FillGrassMap(map);
         PaintMineCells(map, anchor, {terrain, terrain, TileType::GRASS, TileType::GRASS});
 
         const TerrainPlacementEvaluation evaluation = map.EvaluateTerrainPlacement(
@@ -135,7 +134,7 @@ TEST(BuildingPlacementTests, MineRequiresTwoRichTilesOfOneTerrainAndFitsInsideMa
     {
         TileMap map;
         Player player{0, map};
-        FillOwnedGrassMap(map, &player);
+        FillGrassMap(map);
         PaintMineCells(map, anchor, types, richness);
         return map.EvaluateTerrainPlacement(BuildingType::Mine, anchor, {2, 2});
     };
@@ -151,7 +150,7 @@ TEST(BuildingPlacementTests, MineRequiresTwoRichTilesOfOneTerrainAndFitsInsideMa
 
     TileMap edgeMap;
     Player edgePlayer{0, edgeMap};
-    FillOwnedGrassMap(edgeMap, &edgePlayer);
+    FillGrassMap(edgeMap);
     EXPECT_EQ(edgeMap.EvaluateTerrainPlacement(BuildingType::Mine, {11, 11}, {2, 2}).failure,
               TerrainPlacementFailure::OutsideMap);
 }
@@ -160,7 +159,7 @@ TEST(BuildingPlacementTests, MineTieUsesDefinitionOrderAndInitializesThatVariant
 {
     TileMap map;
     Player player{0, map};
-    FillOwnedGrassMap(map, &player);
+    FillGrassMap(map);
     const Vec2i anchor{4, 4};
     PaintMineCells(map, anchor, {TileType::IRON_ORE, TileType::IRON_ORE,
                                  TileType::COAL, TileType::COAL});
@@ -182,7 +181,7 @@ TEST(BuildingPlacementTests, FootprintReferencesPointBackToAnchorBuilding)
 {
     TileMap map;
     Player player{0, map};
-    FillOwnedGrassMap(map, &player);
+    FillGrassMap(map);
 
     Vec2i anchor{2, 2};
     Vec2i footprint = GetBuildingDefinition(BuildingType::Woodcutter).footprint;

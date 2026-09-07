@@ -25,8 +25,6 @@ namespace
             {
                 map.tilemap.emplace_back(id);
                 map.tilemap.back().tileType = TileType::GRASS;
-                map.tilemap.back().owner = &player;
-                map.tilemap.back().ownerId = player.id;
             }
             player.RebindTileMap(map);
             barracks = dynamic_cast<Barracks*>(map.PlaceLoadedBuilding(

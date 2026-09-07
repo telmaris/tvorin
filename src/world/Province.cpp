@@ -102,7 +102,16 @@ ProvinceSimulation& BuildableProvince::CreateSimulation()
 {
     if (simulation == nullptr)
         simulation = std::make_unique<ProvinceSimulation>(id, ownerId);
+    simulation->GetEconomy().SetTraitIds(parameters.traitIds);
     return *simulation;
+}
+
+void BuildableProvince::SetParameters(BuildableProvinceParameters value)
+{
+    parameters = std::move(value);
+    SetTraitIds(parameters.traitIds);
+    if (simulation != nullptr)
+        simulation->GetEconomy().SetTraitIds(parameters.traitIds);
 }
 
 bool BuildableProvince::InstallSimulation(std::unique_ptr<ProvinceSimulation> value)

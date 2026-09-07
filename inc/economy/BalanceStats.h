@@ -68,7 +68,14 @@ enum class BalanceStat
     ProvinceEventChance,
     ProvinceEventWeight,
     ProvinceEventDuration,
-    ColonizationDuration
+    ColonizationDuration,
+    // Reduction multiplier for provisions consumed by a deployed army.
+    // A 10% reduction is represented by a final multiplier of 0.9.
+    ArmySupplyConsumptionReduction,
+
+    // Sentinel for validation and editor contracts. It is never a gameplay
+    // modifier and is intentionally excluded from the catalog.
+    Count
 };
 
 #endif

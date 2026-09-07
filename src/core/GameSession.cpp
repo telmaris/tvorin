@@ -19,7 +19,6 @@ std::vector<std::string> LocalhostGameTransport::Drain(std::deque<std::string>& 
     }
     return result;
 }
-
 void LocalhostGameTransport::SendClientCommand(const std::string& payload)
 {
     std::lock_guard<std::mutex> lock(mutex);
@@ -697,8 +696,11 @@ void HostSession::RunSimulationTick()
         if (transport != nullptr)
             transport->SendHostFrame(frame.Serialize());
 
-        // Snapshot capture for threaded access
-        if (frame.hasChecksum)
+        // Snapshot capture for threaded access. The periodic checksum cadence
+        // is intentionally sparse, but local UI mutations such as creating a
+        // task group or adding units must become visible immediately after the
+        // authoritative command result instead of waiting up to one second.
+        if (frame.hasChecksum || !results.empty())
         {
             std::lock_guard<std::mutex> snapshotLock(snapshotMutex);
             latestSnapshot = world->BuildSnapshot();
@@ -786,12 +788,6 @@ void HostSession::RunSimulation()
             nextTick = std::chrono::steady_clock::now();
     }
 }
-
-// LocalhostHostSession is now deprecated - use HostSession instead instead
-
-// ============================================================================
-// ClientSession Implementation
-// ============================================================================
 
 ClientSession::ClientSession(GameWorld* observedWorld, std::shared_ptr<IGameTransport> transport, int assignedPlayerId)
     : observedWorld(observedWorld), transport(std::move(transport)), assignedPlayerId(assignedPlayerId)
@@ -1385,6 +1381,3 @@ void ClientSession::Stop()
                              status.progress, "Session stopped",
                              status.error);
 }
-
-// LocalhostMultiplayerSession is now deprecated - use HostSession instead
-// ThreadedGameSession functionality is now integrated into HostSession

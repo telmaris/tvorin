@@ -8,9 +8,7 @@
 #include <functional>
 #include <string>
 
-// Small helpers shared by two or more scenes (save-file scenes, and the new
-// game / multiplayer setup scenes). Split out of Scenes.cpp (ETAP 7.3) so
-// each scene's own .cpp doesn't need to duplicate them.
+// Small helpers shared by save-file, new-game, and multiplayer scenes.
 
 // Converts user-provided save names into filesystem-safe filenames.
 std::string SanitizeSaveName(std::string name);

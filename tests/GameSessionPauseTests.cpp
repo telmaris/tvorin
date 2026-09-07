@@ -1,6 +1,6 @@
 #include "core/GameSession.h"
 #include "core/GameWorld.h"
-#include "multiplayer/FaultInjectingGameTransport.h"
+#include "support/FaultInjectingGameTransport.h"
 
 #include <gtest/gtest.h>
 

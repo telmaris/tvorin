@@ -3,6 +3,7 @@
 
 #include "economy/BalanceModifiers.h"
 #include "economy/Building.h"
+#include "economy/VillageSupplyRule.h"
 
 struct ResourceBufferDefinition
 {
@@ -62,6 +63,13 @@ struct BuildingUpgradeLevelDefinition
     // back to a lower settlement tier when its local supplies run out.
     std::optional<int> populationCap;
     std::optional<double> manpowerRate;
+    std::vector<VillageSupplyRuleDefinition> villageSupplyRules;
+    // Optional visual override selected once this level is completed. It is
+    // deliberately generic: road-like buildings treat it as an autotile
+    // atlas, while regular buildings treat it as their standalone sprite.
+    // The renderer keeps the highest authored override at or below the live
+    // level, so later gameplay-only tiers retain the last visual upgrade.
+    std::string visualTexturePath;
 };
 
 struct BuildingDefinition;
@@ -79,6 +87,8 @@ struct VillageDefinition
     int populationCap{1000};
     double upkeepInterval{60.0};
     double foodPackageUpkeep{1.0};
+    double foodShortageDecaySeconds{180.0};
+    std::vector<VillageSupplyRuleDefinition> supplyRules;
 };
 
 struct DefenseDefinition

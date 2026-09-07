@@ -85,23 +85,8 @@ int StorageComponent::HandleTransport(ResourceType type, int amount, Building* r
     return sent;
 }
 
-// Storage is deliberately passive: it accepts deliveries and serves requests,
-// and never initiates a transfer of its own.
-//
-// User report (2026-07-25): this used to be an ambient "push my whole buffer
-// to anything that will accept it" scan over every tracked building. A newly
-// built StorageBuilding accepts EVERY resource type and starts empty, so the
-// moment one went up the HQ began emptying itself into it — and the new
-// warehouse pushed straight back, which is the HQ<->StorageBuilding bounce
-// recorded in docs/tech_debt.md. The scan was also redundant: every consumer
-// already pulls what it needs (ProductionComponent via
-// LogisticsComponent::MaintainRequests, Village via
-// PopulationComponent::RequestFoodSupply and Barracks via its own
-// components' RequestResource), and those pulls now reach the whole warehouse
-// network through StockpileIndex::RankSourcesFor, so nothing is stranded by
-// dropping the push.
-//
-// Update() is intentionally not overridden anymore — see the header.
+// Storage is passive: consumers pull through StockpileIndex. Pushing from
+// storage would make interchangeable warehouses bounce resources indefinitely.
 
 std::vector<ResourceBufferView> StorageComponent::GetBufferViews() const
 {

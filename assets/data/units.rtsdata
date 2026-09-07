@@ -14,6 +14,7 @@ unit militia
     recruit_time 7
     manpower_cost 5
     garrison_food_upkeep_per_minute 0.5
+    expedition_food_per_100_distance 0.5
     cost FOOD_PROVISIONS 3
 end
 
@@ -30,6 +31,8 @@ unit swordsman
     recruit_time 14
     manpower_cost 10
     garrison_food_upkeep_per_minute 0.5
+    expedition_food_per_100_distance 0.5
+    expedition_equipment IRON_SWORD 1
     cost IRON_SWORD 10
     cost FOOD_PROVISIONS 5
 end
@@ -47,6 +50,8 @@ unit armored_swordsman
     recruit_time 17
     manpower_cost 12
     garrison_food_upkeep_per_minute 0.7
+    expedition_food_per_100_distance 0.65
+    expedition_equipment IRON_SWORD 1
     cost IRON_SWORD 12
     cost LEATHER_ARMOR 12
     cost FOOD_PROVISIONS 6
@@ -65,6 +70,8 @@ unit heavy_infantry
     recruit_time 24
     manpower_cost 12
     garrison_food_upkeep_per_minute 0.8
+    expedition_food_per_100_distance 0.8
+    expedition_equipment IRON_SWORD 1
     cost IRON_SWORD 12
     cost HEAVY_ARMOR 12
     cost FOOD_PROVISIONS 10
@@ -85,6 +92,9 @@ unit archer
     recruit_time 13
     manpower_cost 10
     garrison_food_upkeep_per_minute 0.5
+    expedition_food_per_100_distance 0.55
+    expedition_equipment BOW 1
+    expedition_equipment ARROWS 5
     cost BOW 10
     cost ARROWS 50
     cost FOOD_PROVISIONS 5
@@ -106,6 +116,9 @@ unit heavy_archer
     recruit_time 19
     manpower_cost 15
     garrison_food_upkeep_per_minute 0.7
+    expedition_food_per_100_distance 0.7
+    expedition_equipment HEAVY_BOW 1
+    expedition_equipment ARROWS 5
     cost HEAVY_BOW 15
     cost ARROWS 75
     cost LEATHER_ARMOR 15
@@ -126,6 +139,8 @@ unit spearman
     recruit_time 10
     manpower_cost 10
     garrison_food_upkeep_per_minute 0.6
+    expedition_food_per_100_distance 0.6
+    expedition_equipment SPEAR 1
     cost SPEAR 10
     cost LEATHER_ARMOR 10
     cost FOOD_PROVISIONS 5
@@ -145,6 +160,9 @@ unit light_cavalry
     recruit_time 20
     manpower_cost 10
     garrison_food_upkeep_per_minute 1.0
+    expedition_food_per_100_distance 1.0
+    expedition_equipment HORSE 1
+    expedition_equipment IRON_SWORD 1
     cost HORSE 10
     cost IRON_SWORD 10
     cost LEATHER_ARMOR 10
@@ -165,6 +183,9 @@ unit knight
     recruit_time 28
     manpower_cost 20
     garrison_food_upkeep_per_minute 1.2
+    expedition_food_per_100_distance 1.2
+    expedition_equipment HORSE 1
+    expedition_equipment IRON_SWORD 1
     cost HORSE 20
     cost IRON_SWORD 20
     cost HEAVY_ARMOR 20
@@ -186,6 +207,8 @@ unit ballista
     recruit_time 25
     manpower_cost 20
     garrison_food_upkeep_per_minute 1.5
+    expedition_food_per_100_distance 1.5
+    expedition_equipment BALLISTA 1
     cost BALLISTA 5
     cost SPEAR 10
     cost FOOD_PROVISIONS 20
@@ -204,6 +227,8 @@ unit ram
     recruit_time 24
     manpower_cost 10
     garrison_food_upkeep_per_minute 1.1
+    expedition_food_per_100_distance 1.1
+    expedition_equipment BATTERING_RAM 1
     cost BATTERING_RAM 5
     cost FOOD_PROVISIONS 10
 end
@@ -224,6 +249,8 @@ unit catapult
     recruit_time 36
     manpower_cost 20
     garrison_food_upkeep_per_minute 1.4
+    expedition_food_per_100_distance 1.4
+    expedition_equipment CATAPULT 1
     cost CATAPULT 20
     cost STONE 40
     cost FOOD_PROVISIONS 20
@@ -243,5 +270,6 @@ unit scout
     recruit_time 12
     manpower_cost 4
     garrison_food_upkeep_per_minute 0.4
+    expedition_food_per_100_distance 0.5
     cost FOOD_PROVISIONS 4
 end

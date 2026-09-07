@@ -3,6 +3,8 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
+
 namespace
 {
     CampaignGenerationParameters DebugCampaign()
@@ -48,15 +50,33 @@ TEST(ColonizationTests, ColonizationUsesDataDefinitionAndCreatesIndependentEcono
     auto* source = world.GetGlobalMap().FindBuildableProvince(sourceId);
     ASSERT_NE(source, nullptr);
     ASSERT_NE(source->GetSimulation(), nullptr);
-    StockpileIndex::Deposit(source->GetSimulation()->GetEconomy(), ResourceType::WOOD, 20);
-    StockpileIndex::Deposit(source->GetSimulation()->GetEconomy(), ResourceType::STONE, 10);
-    StockpileIndex::Deposit(source->GetSimulation()->GetEconomy(), ResourceType::PLANKS, 10);
-    ASSERT_GE(StockpileIndex::GetTotal(source->GetSimulation()->GetEconomy(),
-                                       ResourceType::WOOD), 20);
-    ASSERT_GE(StockpileIndex::GetTotal(source->GetSimulation()->GetEconomy(),
-                                       ResourceType::STONE), 10);
-    ASSERT_GE(StockpileIndex::GetTotal(source->GetSimulation()->GetEconomy(),
-                                       ResourceType::PLANKS), 10);
+    auto& sourceEconomy = source->GetSimulation()->GetEconomy();
+    TileMap& sourceMap = *sourceEconomy.tilemap;
+    StorageBuilding storagePreview{0};
+    StorageBuilding* warehouse = nullptr;
+    for (int y = 0; y < sourceMap.params.sizeY && warehouse == nullptr; ++y)
+    {
+        for (int x = 0; x < sourceMap.params.sizeX && warehouse == nullptr; ++x)
+        {
+            const Vec2i anchor{x, y};
+            if (sourceMap.CanPlaceBuilding(storagePreview.buildingType, anchor,
+                                           storagePreview.GetFootprint(), player))
+                warehouse = dynamic_cast<StorageBuilding*>(player->Build<StorageBuilding>(anchor, false));
+        }
+    }
+    ASSERT_NE(warehouse, nullptr);
+
+    const ColonizationDefinition* definition =
+        FindColonizationDefinition("frontier_settlement");
+    ASSERT_NE(definition, nullptr);
+    for (const ColonizationCost& cost : definition->cost)
+    {
+        const int held = StockpileIndex::GetTotal(sourceEconomy, cost.type);
+        ASSERT_EQ(StockpileIndex::Deposit(sourceEconomy, cost.type,
+                                          std::max(0, cost.amount - held)),
+                  std::max(0, cost.amount - held));
+        ASSERT_GE(StockpileIndex::GetTotal(sourceEconomy, cost.type), cost.amount);
+    }
 
     const auto commandId = world.SubmitCommand(
         GameCommand::ColonizeProvince(0, sourceId, targetId));

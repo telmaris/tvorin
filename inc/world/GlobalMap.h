@@ -21,6 +21,7 @@ struct ProvinceEdgeView
     int level{0};
     int routeTimeBasisPoints{10000};
     int incidentReductionBasisPoints{0};
+    int incidentRiskBasisPoints{0};
     int nextLevel{0};
     int nextRouteTimeBasisPoints{10000};
     int nextIncidentReductionBasisPoints{0};

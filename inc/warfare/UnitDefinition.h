@@ -8,21 +8,6 @@
 #include <string>
 #include <vector>
 
-// Damage/movement taxonomy — a single Physical/Ground value today, but the
-// enum (and the resistances map below) exist from day one so future unit
-// types (ranged, flying, elemental damage) are pure data additions, not
-// architecture changes.
-enum class DamageType
-{
-    Physical
-};
-
-enum class MovementType
-{
-    Ground,
-    Flying
-};
-
 enum class UnitRole
 {
     Line,
@@ -56,18 +41,11 @@ struct UnitDefinition
     double attackSpeed{1.0};
     UnitRole role{UnitRole::Line};
 
-    // Extensibility seams (ETAP 5+ consumes these; parser accepts them now so
-    // future units are pure data additions).
     double attackRange{0.0}; // 0 = melee
-    DamageType damageType{DamageType::Physical};
-    std::map<DamageType, float> resistances;
-    MovementType movementType{MovementType::Ground};
     bool canTargetFlying{false};
     bool cavalry{false};
     double antiCavalryMultiplier{1.0};
     int areaTargets{1};
-    double colliderRadius{0.4};
-    std::vector<std::string> abilities; // accepted, ignored until an ability system exists
 
     BuildingType recruitBuilding{BuildingType::Barracks};
     // Empty means available from the start; otherwise recruitment is gated by
@@ -77,8 +55,10 @@ struct UnitDefinition
     std::vector<UnitCostEntry> cost;
     double manpowerCost{0.0};
     double garrisonFoodUpkeepPerMinute{0.5};
-
-    std::vector<std::string> equipmentSlots; // accepted, ignored until ETAP 3.4's equipment system lands
+    // Physical provisions consumed by one unit per 100 route-distance units.
+    // This is deliberately separate from stationary garrison upkeep.
+    double expeditionFoodPer100Distance{0.0};
+    std::vector<UnitCostEntry> expeditionEquipment;
 
     bool IsValid() const { return !id.empty() && maxHp > 0.0; }
 };

@@ -9,8 +9,8 @@
 
 namespace
 {
-    // Creates an owned grass map for TileMap tests.
-    void FillMap(TileMap& map, Player* owner, int width = 12, int height = 12)
+    // Creates a grass map for TileMap tests.
+    void FillGrassMap(TileMap& map, int width = 12, int height = 12)
     {
         map.params.sizeX = width;
         map.params.sizeY = height;
@@ -19,7 +19,6 @@ namespace
         for (int i = 0; i < width * height; i++)
         {
             Tile tile{i};
-            tile.owner = owner;
             tile.tileType = TileType::GRASS;
             map.tilemap.push_back(std::move(tile));
         }
@@ -44,7 +43,7 @@ TEST(TileMapDomainTests, ContainsBuildingRejectsDestroyedObject)
 {
     TileMap map;
     Player player{0, map};
-    FillMap(map, &player, 8, 8);
+    FillGrassMap(map, 8, 8);
 
     Building* pointer = map.PlaceLoadedBuilding(
         map.GetIdFromCoords({2, 2}), &player, std::make_unique<StorageBuilding>(1234));
@@ -60,7 +59,7 @@ TEST(TileMapDomainTests, AdjacentTileIdsSkipFootprintAndDiagonals)
 {
     TileMap map;
     Player player{0, map};
-    FillMap(map, &player);
+    FillGrassMap(map);
 
     auto* storage = map.PlaceLoadedBuilding(map.GetIdFromCoords({4, 4}), &player, std::make_unique<StorageBuilding>(1));
     ASSERT_NE(storage, nullptr);
@@ -92,7 +91,7 @@ TEST(TileMapDomainTests, RoadAutotileMaskAndRefreshTrackNeighbors)
 {
     TileMap map;
     Player player{0, map};
-    FillMap(map, &player, 6, 6);
+    FillGrassMap(map, 6, 6);
 
     auto* center = map.PlaceLoadedBuilding(map.GetIdFromCoords({2, 2}), &player, std::make_unique<Road>(1));
     auto* north = map.PlaceLoadedBuilding(map.GetIdFromCoords({2, 1}), &player, std::make_unique<Road>(2));
@@ -113,7 +112,7 @@ TEST(TileMapDomainTests, AutoConnectAndConnectReceiverToggleProductionLinks)
 {
     TileMap map;
     Player player{0, map};
-    FillMap(map, &player);
+    FillGrassMap(map);
 
     auto* storage = map.PlaceLoadedBuilding(map.GetIdFromCoords({1, 1}), &player, std::make_unique<StorageBuilding>(1));
     auto* mill = dynamic_cast<LumberMill*>(
@@ -152,7 +151,7 @@ TEST(TileMapDomainTests, RoadMaskIgnoresAdjacentNonRoadBuildings)
 {
     TileMap map;
     Player player{0, map};
-    FillMap(map, &player, 8, 8);
+    FillGrassMap(map, 8, 8);
 
     auto* center = map.PlaceLoadedBuilding(map.GetIdFromCoords({3, 3}), &player, std::make_unique<Road>(1));
     auto* north = map.PlaceLoadedBuilding(map.GetIdFromCoords({3, 2}), &player, std::make_unique<Road>(2));
@@ -169,7 +168,7 @@ TEST(TileMapDomainTests, AutoConnectConsumerDoesNotChangeExistingProducerDestina
 {
     TileMap map;
     Player player{0, map};
-    FillMap(map, &player);
+    FillGrassMap(map);
     map[Vec2i{1, 1}].tileType = TileType::WOOD;
 
     auto* storage = map.PlaceLoadedBuilding(map.GetIdFromCoords({8, 1}), &player,

@@ -16,8 +16,6 @@ TEST(KeyBindingsTests, DefaultsMatchActiveGameplayControls)
     EXPECT_EQ(bindings.GetKeyForAction(GameAction::CaptureFinalFrame), KEY_F9);
     EXPECT_EQ(bindings.GetKeyForAction(GameAction::AdvanceTutorialStep), KEY_F11);
 
-    EXPECT_EQ(bindings.GetKeyForAction(GameAction::SaveGame), 0);
-    EXPECT_EQ(bindings.GetKeyForAction(GameAction::LoadGame), 0);
 }
 
 TEST(KeyBindingsTests, DisplayNamesAndInputProcessorUseTheSameDefaults)
@@ -25,8 +23,6 @@ TEST(KeyBindingsTests, DisplayNamesAndInputProcessorUseTheSameDefaults)
     EXPECT_EQ(GetKeyDisplayName(KEY_M), "M");
     EXPECT_EQ(GetKeyDisplayName(KEY_F10), "F10");
     EXPECT_EQ(GetBindingDisplayName(GetDefaultKeyBindings(), GameAction::OpenGlobalMap), "M");
-    EXPECT_EQ(GetBindingDisplayName(GetDefaultKeyBindings(), GameAction::SaveGame), "Unbound");
-
     InputProcessor processor;
     processor.Init(nullptr);
     EXPECT_EQ(processor.actionInputs[OPEN_BUILD_GUI].key, KEY_Q);

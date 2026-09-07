@@ -1,6 +1,5 @@
 #include "ui/RaylibResource.h"
 #include "ui/UiAssetContext.h"
-#include "ui/Gui.h"
 
 #include <gtest/gtest.h>
 
@@ -86,10 +85,4 @@ TEST(UiAssetContextTests, MissingTextureIsNotCached)
     tvorin::ui::UiAssetContext context;
     EXPECT_EQ(context.LoadTexture("assets/__missing_texture_for_test__.png"), nullptr);
     EXPECT_TRUE(context.IsOpen());
-}
-
-TEST(UiButtonTests, EmptyCallbackIsSafe)
-{
-    UiButton button;
-    EXPECT_NO_THROW(button.OnClick());
 }

@@ -239,7 +239,6 @@ void StockpilePanelWidget::Update(double dt)
 StockpileGuiSystem::StockpileGuiSystem(GuiController* con)
     : GuiSystem(con)
 {
-    // A4 (docs/work_plan_2026-07-13.md): shadows GuiSystem::scene (Scene*).
     scene = dynamic_cast<GameScene*>(owner->scene);
 
     WireCommonSystemActions(*this, cameraMovement);

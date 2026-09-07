@@ -31,6 +31,7 @@ TEST(GameSnapshotTests, RoundTripPreservesPlayerPaletteAndBuildingOwner)
     ownedBuilding.hasBuilding = true;
     ownedBuilding.buildingType = BuildingType::Barracks;
     ownedBuilding.buildingFootprint = {2, 3};
+    ownedBuilding.buildingUpgradeLevel = 3;
     ownedBuilding.buildingOwnerId = 11;
     ownedBuilding.isBuildingOperational = true;
     ownedBuilding.isBuildingUpgrading = true;
@@ -69,6 +70,7 @@ TEST(GameSnapshotTests, DeltaUpdatesBuildingOwnerWithoutReplacingPalette)
     delta.changes = {{0, GameSnapshotTile{}}};
     delta.changes.front().tile.hasBuilding = true;
     delta.changes.front().tile.buildingType = BuildingType::Barracks;
+    delta.changes.front().tile.buildingUpgradeLevel = 2;
     delta.changes.front().tile.buildingOwnerId = 2;
     delta.changes.front().tile.isBuildingOperational = true;
     delta.changes.front().tile.isBuildingUpgrading = true;
@@ -84,6 +86,7 @@ TEST(GameSnapshotTests, DeltaUpdatesBuildingOwnerWithoutReplacingPalette)
     EXPECT_EQ(snapshot.players[0], (GameSnapshotPlayer{1, RED}));
     EXPECT_EQ(snapshot.players[1], (GameSnapshotPlayer{2, BLUE}));
     EXPECT_EQ(snapshot.tiles[0].buildingOwnerId, 2);
+    EXPECT_EQ(snapshot.tiles[0].buildingUpgradeLevel, 2);
     EXPECT_TRUE(snapshot.tiles[0].isBuildingOperational);
     EXPECT_TRUE(snapshot.tiles[0].isBuildingUpgrading);
     EXPECT_TRUE(snapshot.tiles[0].roadDisconnected);

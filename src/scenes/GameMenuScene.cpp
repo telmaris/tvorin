@@ -21,7 +21,6 @@ void MenuNavSystem::UpdateUiWidgets(Vec2i size)
 
 // ─── GameMenuScene ───────────────────────────────────────────────────────────
 
-// Initializes GameMenuScene::GameMenuScene.
 GameMenuScene::GameMenuScene()
 {
     vbox.ChangeSizeAnchor(Vec2f{0.3f, 0.60f});
@@ -67,7 +66,6 @@ GameMenuScene::GameMenuScene()
     inputs.InitMenu(controller.get());
 }
 
-// Handles the UI action represented by OnBackPressed.
 void GameMenuScene::OnBackPressed()
 {
     auto msg = std::make_shared<ChangeSceneEvent>();
@@ -77,7 +75,6 @@ void GameMenuScene::OnBackPressed()
     broker->Broadcast(msg);
 }
 
-// Handles the UI action represented by OnOptionsPressed.
 void GameMenuScene::OnOptionsPressed()
 {
     auto msg = std::make_shared<ChangeSceneEvent>();
@@ -87,7 +84,6 @@ void GameMenuScene::OnOptionsPressed()
     broker->Broadcast(msg);
 }
 
-// Handles the UI action represented by OnMainMenuPressed.
 void GameMenuScene::OnMainMenuPressed()
 {
     auto msg = std::make_shared<ChangeSceneEvent>();
@@ -97,7 +93,6 @@ void GameMenuScene::OnMainMenuPressed()
     broker->Broadcast(msg);
 }
 
-// Handles the UI action represented by OnSaveGamePressed.
 void GameMenuScene::OnSaveGamePressed()
 {
     auto msg = std::make_shared<ChangeSceneEvent>();
@@ -107,7 +102,6 @@ void GameMenuScene::OnSaveGamePressed()
     broker->Broadcast(msg);
 }
 
-// Handles the UI action represented by OnLoadGamePressed.
 void GameMenuScene::OnLoadGamePressed()
 {
     auto msg = std::make_shared<ChangeSceneEvent>();
@@ -117,7 +111,6 @@ void GameMenuScene::OnLoadGamePressed()
     broker->Broadcast(msg);
 }
 
-// Handles the UI action represented by OnQuitPressed.
 void GameMenuScene::OnQuitPressed()
 {
     auto msg = std::make_shared<QuitGameEvent>();
@@ -125,7 +118,6 @@ void GameMenuScene::OnQuitPressed()
     broker->Broadcast(msg);
 }
 
-// Advances this object's state for one frame.
 void GameMenuScene::Update(double dt)
 {
     // Input first (gated by IGuiHandler — see GuiHandler.h), then ALWAYS
@@ -139,7 +131,6 @@ void GameMenuScene::Update(double dt)
     render.Draw(controller->GetUiWidgets(), dt);
 }
 
-// Handles the requested event or transfer.
 void GameMenuScene::HandleEvent(std::shared_ptr<Event> e)
 {
     auto sceneChange = std::dynamic_pointer_cast<ChangeSceneEvent>(e);

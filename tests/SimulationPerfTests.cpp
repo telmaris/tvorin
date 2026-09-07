@@ -8,22 +8,9 @@
 #include <cstdio>
 #include <vector>
 
-// Perf regression guard (docs/post_pivot_audit_2026-07-12.md follow-up).
-//
-// History: after the T1 logistics fix unfroze the AI economy, every AI build
-// decision ran FindBuildAnchor over the ENTIRE 301×301 tilemap with a
-// per-candidate-tile full-map DistanceToNearestInfrastructure scan — O(map²),
-// measured at 7.7 SECONDS per simulation tick (Debug), firing on the ~1.24 s
-// AI decision cadence. In-game this froze everything (sim thread holds the
-// world lock) for seconds, every few seconds. The transport path had similar
-// latent full-map scans (CountIncomingToDestination per shipped unit).
-//
 // This test runs a realistic worst-case world (default map size, AI opponent,
-// debug resources so the economy runs hot) for 15 simulated seconds and fails
-// if any single tick blows past a deliberately fat threshold. The fixed code
-// measures <50 ms/tick worst case in Debug; the regression this guards
-// against measured 7700+ ms — three orders of magnitude of headroom, so slow
-// CI machines can't flake it while a reintroduced O(map²) scan can't hide.
+// debug resources so the economy runs hot) and uses a generous threshold that
+// still catches accidental full-map scans inside per-candidate loops.
 TEST(SimulationPerfTests, NoSimulationTickTakesCatastrophicallyLong)
 {
     MapParameters params;      // defaults: S 201x201

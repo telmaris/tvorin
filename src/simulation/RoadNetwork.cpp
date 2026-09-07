@@ -32,7 +32,6 @@ namespace
     }
 }
 
-// Advances this object's state for one frame.
 TransportUpdateResult Transportable::Update(double dt)
 {
     auto cancelTransport = [&]()
@@ -173,7 +172,6 @@ double ComputeRoadTraversalCost(const Building& road,
         baseSeconds * (1.0 + penalty) * priorityFactor);
 }
 
-// Initializes Transportable::BeginTransport.
 void Transportable::BeginTransport(Building* src,Building* target, TileMap* tmap, const std::vector<int>& path)
 {
     sourceBuilding = src;
@@ -186,7 +184,6 @@ void Transportable::BeginTransport(Building* src,Building* target, TileMap* tmap
     currentPathStep = 0;
 }
 
-// Initializes RoadNetwork::RoadNetwork.
 RoadNetwork::RoadNetwork(TileMap &tmap)
 {
     navMap = std::make_unique<NavigationMap>();
@@ -245,7 +242,6 @@ void Transportable::ReleaseShipment()
     shipmentId = 0;
 }
 
-// Advances this object's state for one frame.
 void RoadNetwork::Update(double dt)
 {
     (void)dt;
@@ -332,7 +328,6 @@ bool RoadNetwork::TryAdmitRoadEntry(Transportable* transportable, Building* road
     return true;
 }
 
-// Initializes RoadNetwork::BeginTransport.
 bool RoadNetwork::BeginTransport(Building *src, Building *dest, Transportable* res)
 {
     if (src == nullptr || dest == nullptr || res == nullptr || res->shipmentNetwork != nullptr)
@@ -554,13 +549,11 @@ bool RoadNetwork::RestoreNextShipmentId(ShipmentId value) noexcept
     return true;
 }
 
-// Initializes RoadNetwork::CalculateTransportTime.
 double RoadNetwork::CalculateTransportTime(Building *src, Building *dest)
 {
     return 3.0;
 }
 
-// Advances UpdateNavMap for one frame or simulation tick.
 void RoadNetwork::UpdateNavMap(int id, Building *bld)
 {
     if (id < 0 || id >= navMap->map.size())
@@ -659,7 +652,6 @@ void RoadNetwork::StoreCachedPath(const PathCacheKey& key, std::vector<int> path
         std::move(path), routingTick + PathCacheTtlTicks, routingTick});
 }
 
-// Initializes RoadNetwork::CalculatePath.
 std::vector<int> RoadNetwork::CalculatePath(Building *src, Building *dest)
 {
     if (src == nullptr || dest == nullptr || src->owner == nullptr || tilemap == nullptr)
@@ -913,7 +905,6 @@ std::vector<int> RoadNetwork::CalculatePath(Building *src, Building *dest, Resou
     return path;
 }
 
-// Returns whether this condition is currently true.
 bool RoadNetwork::CanReserveTransportPath(Building* dest, Transportable* res, const std::vector<int>& path) const
 {
     auto* resource = dynamic_cast<Resource*>(res);
@@ -943,21 +934,13 @@ bool RoadNetwork::CanReserveTransportPath(Building* dest, Transportable* res, co
     return true;
 }
 
-// Initializes RoadNetwork::CountIncomingToDestination.
 int RoadNetwork::CountIncomingToDestination(Building* dest, ResourceType type) const
 {
     if (dest == nullptr || dest->provinceEconomy == nullptr)
         return 0;
 
-    // Perf fix (2026-07-12): this ran a FULL tilemap scan (sizeX*sizeY tiles,
-    // ~90k on the default map) on every call — and it's called from
-    // CanReserveTransportPath once per BeginTransport, i.e. once per resource
-    // unit shipped. Latent before the T1 tile.owner fix (CalculatePath failed
-    // first, so this was never reached); with transport actually working it
-    // froze the whole sim thread during dispatch bursts. In-flight
-    // transportables are always held by a building (source or road), and every
-    // building is in the owner's tracked-buildings registry — same query
-    // shape as CountIncomingResources in src/economy/Building.cpp.
+    // Every in-flight item belongs to a tracked building, so scanning the
+    // registry avoids a full-map traversal for every dispatched resource.
     int incoming = 0;
     for (Building* carrier : dest->provinceEconomy->dataTracker.buildings)
     {

@@ -32,6 +32,23 @@ namespace
     std::uint64_t presentedFrameId = 0;
     bool finalFrameCaptureRequested = false;
 
+    const Texture2D* FindUpgradeVisualTexture(
+        const std::map<std::pair<BuildingType, int>, tvorin::ui::TextureHandle>& textures,
+        BuildingType type, int visualLevel)
+    {
+        const Texture2D* best = nullptr;
+        int bestLevel = 1;
+        for (const auto& [key, texture] : textures)
+        {
+            if (key.first != type || key.second < 2 || key.second > visualLevel ||
+                key.second <= bestLevel || !texture.IsValid())
+                continue;
+            best = &texture.Get();
+            bestLevel = key.second;
+        }
+        return best;
+    }
+
     bool IsRenderTelemetryEnabled()
     {
         static const bool enabled = []
@@ -489,6 +506,7 @@ void Renderer::Shutdown()
     if (IsWindowReady())
     {
         buildingTextures.clear();
+        buildingUpgradeTextures.clear();
         atlasMap.clear();
         radialLightMask.Reset();
     }
@@ -496,12 +514,15 @@ void Renderer::Shutdown()
     {
         for (auto& [type, texture] : buildingTextures)
             texture.Forget();
+        for (auto& [key, texture] : buildingUpgradeTextures)
+            texture.Forget();
         for (auto& [atlasId, atlas] : atlasMap)
             atlas.tex.Forget();
         radialLightMask.Forget();
     }
 
     buildingTextures.clear();
+    buildingUpgradeTextures.clear();
     buildingAnimations.clear();
     atlasMap.clear();
     dynamicLights.clear();
@@ -1258,7 +1279,6 @@ void Renderer::DrawOnLayer(WorldRenderLayer layer, int atlas, int tex, Vec2f pos
     EndLayer();
 }
 
-// Initializes Renderer::BeginLayer.
 void Renderer::BeginLayer(WorldRenderLayer layer)
 {
     if (!worldLayersInitialized || layerActive)
@@ -1277,7 +1297,6 @@ void Renderer::BeginLayer(WorldRenderLayer layer)
     layerActive = true;
 }
 
-// Initializes Renderer::EndLayer.
 void Renderer::EndLayer()
 {
     if (!layerActive)
@@ -1289,7 +1308,6 @@ void Renderer::EndLayer()
     layerActive = false;
 }
 
-// Clears this runtime state.
 void Renderer::ClearLayer(WorldRenderLayer layer)
 {
     if (!worldLayersInitialized)
@@ -1577,7 +1595,6 @@ void Renderer::DrawAtlasTile(int atlas, int clipId, Vec2f pos, Vec2f drawSize, f
     DrawAtlasTile(atlas, at.GetFrameForAnimation(clipId, elapsedTime), pos, drawSize);
 }
 
-// Loads the requested data into runtime state.
 void Renderer::LoadBuildingTexture(BuildingType type, const std::string& path)
 {
     if (!FileExists(path.c_str()))
@@ -1593,6 +1610,20 @@ void Renderer::LoadBuildingTexture(BuildingType type, const std::string& path)
         SetTextureFilter(texture.Get(), TEXTURE_FILTER_POINT);
         buildingTextures[type] = std::move(texture);
     }
+}
+
+void Renderer::LoadBuildingUpgradeTexture(BuildingType type, int upgradeLevel,
+                                          const std::string& path)
+{
+    if (upgradeLevel < 2 || path.empty() || !FileExists(path.c_str()))
+        return;
+
+    tvorin::ui::TextureHandle texture{LoadTexture(path.c_str())};
+    if (!texture.IsValid())
+        return;
+
+    SetTextureFilter(texture.Get(), TEXTURE_FILTER_POINT);
+    buildingUpgradeTextures[{type, upgradeLevel}] = std::move(texture);
 }
 
 Rectangle Renderer::GetBuildingTextureFirstFrameSource(BuildingType type) const
@@ -1643,7 +1674,7 @@ bool Renderer::HasBuildingAnimation(BuildingType type) const
 }
 
 // Draws a building texture sized to its footprint, animated by its lifetime
-// (ETAP 5.4) if a clip is registered for its type — otherwise identical to
+// if a clip is registered for its type; otherwise identical to
 // the static overload.
 void Renderer::DrawBuildingTexture(Building* building, Vec2f pos, Color tint)
 {
@@ -1651,7 +1682,8 @@ void Renderer::DrawBuildingTexture(Building* building, Vec2f pos, Color tint)
         return;
 
     Color ownerColor = building->owner != nullptr ? building->owner->color : WHITE;
-    DrawBuildingTexture(building->buildingType, building->GetFootprint(), pos, tint,
+    DrawBuildingTexture(building->buildingType, building->GetFootprint(), pos,
+                         building->GetVisualUpgradeLevel(), tint,
                          static_cast<float>(building->GetLifetime()), ownerColor, building->owner != nullptr);
 }
 
@@ -1705,6 +1737,12 @@ void Renderer::DrawBuildingSprite(Texture2D texture, Rectangle source, Rectangle
 void Renderer::DrawBuildingTexture(BuildingType type, Vec2i footprint, Vec2f pos, Color tint,
                                    Color ownerColor, bool applyTeamColor)
 {
+    DrawBuildingTexture(type, footprint, pos, 1, tint, ownerColor, applyTeamColor);
+}
+
+void Renderer::DrawBuildingTexture(BuildingType type, Vec2i footprint, Vec2f pos, int visualLevel,
+                                   Color tint, Color ownerColor, bool applyTeamColor)
+{
     Vec2f drawSize{
         static_cast<float>(footprint.x * TILE_SIZE),
         static_cast<float>(footprint.y * TILE_SIZE)};
@@ -1720,13 +1758,18 @@ void Renderer::DrawBuildingTexture(BuildingType type, Vec2i footprint, Vec2f pos
             static_cast<unsigned char>(base.a * tint.a / 255)};
     };
 
-    auto textureIt = buildingTextures.find(type);
-    if (textureIt != buildingTextures.end())
+    const Texture2D* texture = FindUpgradeVisualTexture(buildingUpgradeTextures, type, visualLevel);
+    if (texture == nullptr)
     {
-        const Texture2D& texture = textureIt->second.Get();
-        Rectangle src{0.0f, 0.0f, static_cast<float>(texture.width), -static_cast<float>(texture.height)};
+        auto textureIt = buildingTextures.find(type);
+        if (textureIt != buildingTextures.end() && textureIt->second.IsValid())
+            texture = &textureIt->second.Get();
+    }
+    if (texture != nullptr)
+    {
+        Rectangle src{0.0f, 0.0f, static_cast<float>(texture->width), -static_cast<float>(texture->height)};
         Rectangle dest{pos.x, RENDER_HEIGHT - drawSize.y - pos.y, drawSize.x, drawSize.y};
-        DrawBuildingSprite(texture, src, dest, tint, ownerColor, applyTeamColor, type);
+        DrawBuildingSprite(*texture, src, dest, tint, ownerColor, applyTeamColor, type);
         return;
     }
 
@@ -1741,13 +1784,25 @@ void Renderer::DrawBuildingTexture(BuildingType type, Vec2i footprint, Vec2f pos
 void Renderer::DrawBuildingTexture(BuildingType type, Vec2i footprint, Vec2f pos, Color tint, float elapsedTime,
                                    Color ownerColor, bool applyTeamColor)
 {
+    DrawBuildingTexture(type, footprint, pos, 1, tint, elapsedTime, ownerColor, applyTeamColor);
+}
+
+void Renderer::DrawBuildingTexture(BuildingType type, Vec2i footprint, Vec2f pos, int visualLevel,
+                                   Color tint, float elapsedTime, Color ownerColor,
+                                   bool applyTeamColor)
+{
+    if (FindUpgradeVisualTexture(buildingUpgradeTextures, type, visualLevel) != nullptr)
+    {
+        DrawBuildingTexture(type, footprint, pos, visualLevel, tint, ownerColor, applyTeamColor);
+        return;
+    }
     auto animIt = buildingAnimations.find(type);
     auto textureIt = buildingTextures.find(type);
     if (animIt == buildingAnimations.end() || animIt->second.frameCount <= 1 || textureIt == buildingTextures.end())
     {
         if (type == BuildingType::Bakery && tint.r == 255 && tint.g == 255 && tint.b == 255)
             DrawBakerySmoke(pos, footprint, elapsedTime);
-        DrawBuildingTexture(type, footprint, pos, tint, ownerColor, applyTeamColor);
+        DrawBuildingTexture(type, footprint, pos, visualLevel, tint, ownerColor, applyTeamColor);
         return;
     }
 
@@ -1959,12 +2014,12 @@ void Renderer::DrawSnapshot(const GameSnapshot& snapshot)
                         const auto& neighbour = snapshot.tiles[static_cast<size_t>(checkY * snapshot.mapSize.x + checkX)];
                         return neighbour.hasBuilding && IsRoadLike(neighbour.buildingType);
                     });
-                DrawRoadTexture(tile.buildingType, pos, mask, tint);
+                DrawRoadTexture(tile.buildingType, tile.buildingUpgradeLevel, pos, mask, tint);
             }
             else
             {
-                DrawBuildingTexture(tile.buildingType, tile.buildingFootprint, pos, tint, elapsedTime,
-                                    ownerColor, hasOwner);
+                DrawBuildingTexture(tile.buildingType, tile.buildingFootprint, pos,
+                                    tile.buildingUpgradeLevel, tint, elapsedTime, ownerColor, hasOwner);
             }
         }
     }
@@ -2000,7 +2055,6 @@ void Renderer::DrawSnapshot(const GameSnapshot& snapshot)
     cachedSnapshotCameraZoom = camera.zoom;
 }
 
-// Initializes Renderer::ScreenToRender.
 Vec2f Renderer::ScreenToRender(Vector2 screen)
 {
     const RenderViewportTransform viewport = GetRenderViewportTransform();
@@ -2016,7 +2070,6 @@ Vec2f Renderer::ScreenToRender(Vector2 screen)
         (screen.y - viewport.offsetY) / viewport.scale};
 }
 
-// Initializes Renderer::RenderToScreen.
 Vec2f Renderer::RenderToScreen(Vec2f render)
 {
     const RenderViewportTransform viewport = GetRenderViewportTransform();
@@ -2026,7 +2079,6 @@ Vec2f Renderer::RenderToScreen(Vec2f render)
         viewport.offsetY + render.y * viewport.scale};
 }
 
-// Initializes Renderer::RenderToWorld.
 Vec2f Renderer::RenderToWorld(Vec2f render)
 {
     return Vec2f{
@@ -2034,7 +2086,6 @@ Vec2f Renderer::RenderToWorld(Vec2f render)
         RENDER_HEIGHT - camera.target.y - (RENDER_HEIGHT - render.y) / camera.zoom};
 }
 
-// Initializes Renderer::WorldToRender.
 Vec2f Renderer::WorldToRender(Vec2f world)
 {
     return Vec2f{
@@ -2042,7 +2093,6 @@ Vec2f Renderer::WorldToRender(Vec2f world)
         RENDER_HEIGHT - (RENDER_HEIGHT - world.y - camera.target.y) * camera.zoom};
 }
 
-// Initializes Renderer::ScreenToWorld.
 Vec2f Renderer::ScreenToWorld(Vector2 screen)
 {
     Vec2f render = ScreenToRender(screen);
@@ -2052,7 +2102,6 @@ Vec2f Renderer::ScreenToWorld(Vector2 screen)
     return RenderToWorld(render);
 }
 
-// Initializes Renderer::WorldToScreen.
 Vec2f Renderer::WorldToScreen(Vec2f world)
 {
     return RenderToScreen(WorldToRender(world));
@@ -2094,19 +2143,41 @@ void Renderer::ClampCameraToMap(Vec2i mapSize)
     camera.target.y = std::clamp(camera.target.y, minY, maxY);
 }
 
-void Renderer::DrawRoadTexture(BuildingType type, Vec2f pos, int connectionMask, Color tint)
+void Renderer::DrawRoadTexture(BuildingType type, int visualLevel, Vec2f pos,
+                               int connectionMask, Color tint)
 {
     connectionMask &= 0x0F;
+    const int tileX = static_cast<int>(std::floor(pos.x / TILE_SIZE));
+    const int tileY = static_cast<int>(std::floor(pos.y / TILE_SIZE));
+    const unsigned int hash =
+        static_cast<unsigned int>(tileX) * 73856093u ^
+        static_cast<unsigned int>(tileY) * 19349663u ^
+        static_cast<unsigned int>(connectionMask) * 83492791u;
+
+    // Upgrade visuals are loaded directly from BuildingDefinition data. Their
+    // 4x12 layout is the same 3 × 16-cell autotile contract as atlas 145, so
+    // level-specific roads keep all joins and deterministic variation intact.
+    if (const Texture2D* upgradeTexture =
+            FindUpgradeVisualTexture(buildingUpgradeTextures, type, visualLevel);
+        upgradeTexture != nullptr)
+    {
+        constexpr int CellsPerRow = 4;
+        constexpr int RoadCellSize = 64;
+        const int tileId = static_cast<int>(hash % 3u) * 16 + connectionMask;
+        Rectangle source{
+            static_cast<float>((tileId % CellsPerRow) * RoadCellSize),
+            static_cast<float>((tileId / CellsPerRow) * RoadCellSize),
+            static_cast<float>(RoadCellSize), -static_cast<float>(RoadCellSize)};
+        Rectangle destination{pos.x, RENDER_HEIGHT - TILE_SIZE - pos.y,
+                              static_cast<float>(TILE_SIZE), static_cast<float>(TILE_SIZE)};
+        DrawTexturePro(*upgradeTexture, source, destination, {0.0f, 0.0f}, 0.0f, tint);
+        return;
+    }
+
     int atlasId = 19;
     int tileId = connectionMask;
     if (type == BuildingType::Road && atlasMap.contains(145))
     {
-        const int tileX = static_cast<int>(std::floor(pos.x / TILE_SIZE));
-        const int tileY = static_cast<int>(std::floor(pos.y / TILE_SIZE));
-        const unsigned int hash =
-            static_cast<unsigned int>(tileX) * 73856093u ^
-            static_cast<unsigned int>(tileY) * 19349663u ^
-            static_cast<unsigned int>(connectionMask) * 83492791u;
         atlasId = 145;
         tileId = static_cast<int>(hash % 3u) * 16 + connectionMask;
     }
@@ -2154,7 +2225,6 @@ void Renderer::ZoomAtScreenPoint(Vector2 screen, float wheel, Vec2i mapSize)
     ClampCameraToMap(mapSize);
 }
 
-// Clears this runtime state.
 void Renderer::ClearLayers()
 {
     if (!worldLayersInitialized)

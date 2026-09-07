@@ -63,10 +63,7 @@ bool RecruitmentComponent::QueueRecruitment(Building& self, const std::string& u
     if (storage == nullptr || logistics == nullptr)
         return false;
 
-    // TD(etap-9): recruit time/manpower cost stay tunable via tech/focus so
-    // planning an attack (queue now, unit arrives later) remains a real
-    // strategic decision — floored so a multiplier can never make recruitment
-    // instant or free.
+    // Clamp modified costs so recruitment cannot become instant or free.
     double manpowerCost = std::max(0.0,
         self.owner->ModifyBalanceForUnit(BalanceStat::UnitRecruitManpowerCost, def->manpowerCost, unitDefId));
     double recruitTime = std::max(1.0,
@@ -75,17 +72,21 @@ bool RecruitmentComponent::QueueRecruitment(Building& self, const std::string& u
     // Manpower is the only hard gate — it's a global pool, not something
     // that physically travels, so there's nothing to wait on. Resources are
     // different (see below): an order joins the queue immediately either way.
-    if (self.owner->strategicResources.Get(StrategicResourceType::Manpower) < manpowerCost)
-        return false;
-    self.owner->strategicResources.Consume(StrategicResourceType::Manpower, manpowerCost);
+    ProvinceEconomy* economy = self.GetProvinceEconomy();
+    if (economy != nullptr && self.owner->homeProvinceId != InvalidProvinceId)
+    {
+        if (!self.owner->ConsumeManpower(*economy, manpowerCost))
+            return false;
+    }
+    else
+    {
+        if (self.owner->strategicResources.Get(StrategicResourceType::Manpower) < manpowerCost)
+            return false;
+        self.owner->strategicResources.Consume(StrategicResourceType::Manpower, manpowerCost);
+    }
 
-    // User request (docs/work_plan_2026-07-13.md, 2026-07-15): clicking
-    // recruit queues the order right away, tagged "waiting for resources" if
-    // its cost isn't already sitting in this Barracks' own buffer. Strict
-    // FIFO: a new entry may only consume from the buffer when no earlier
-    // entry is still waiting — otherwise it would steal resources an older
-    // order is queued for. Requesting the shortfall is Update's job (next
-    // tick, in-flight-aware), not done here.
+    // Strict FIFO prevents a new order from consuming resources reserved by an
+    // older waiting order. Update requests any shortfall on the next tick.
     bool eligible = std::none_of(queue.begin(), queue.end(),
         [](const RecruitmentQueueEntry& e) { return !e.resourcesReady; });
     bool resourcesReady = eligible && TryConsumeCostFromBuffer(*storage, *def);
@@ -128,10 +129,15 @@ std::string RecruitmentComponent::DiagnoseRecruitmentBlock(const Building& self,
 
     double manpowerCost = std::max(0.0,
         self.owner->ModifyBalanceForUnit(BalanceStat::UnitRecruitManpowerCost, def->manpowerCost, unitDefId));
-    if (self.owner->strategicResources.Get(StrategicResourceType::Manpower) < manpowerCost)
+    const ProvinceEconomy* economy = self.GetProvinceEconomy();
+    const double availableManpower = economy != nullptr &&
+        self.owner->homeProvinceId != InvalidProvinceId
+        ? economy->population.availableManpower
+        : self.owner->strategicResources.Get(StrategicResourceType::Manpower);
+    if (availableManpower < manpowerCost)
     {
         reasons.push_back("Not enough manpower (" +
-            std::to_string(static_cast<int>(self.owner->strategicResources.Get(StrategicResourceType::Manpower))) +
+            std::to_string(static_cast<int>(availableManpower)) +
             "/" + std::to_string(static_cast<int>(manpowerCost)) + ")");
     }
 

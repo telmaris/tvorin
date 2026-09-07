@@ -2,7 +2,7 @@
 
 colonization frontier_settlement
 duration 600
-cost WOOD 20
-cost STONE 10
-cost PLANKS 10
+cost WOOD 200
+cost STONE 200
+cost PLANKS 120
 end

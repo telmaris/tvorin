@@ -193,10 +193,6 @@ TEST(MapGeneratorTests, StartingVillageRoadStaysWithinPeacefulBudget)
     }
 }
 
-// B1 (docs/work_plan_2026-07-13.md): replaces the old "host always at exact
-// map center, opponents randomly maximin-placed" scheme with a single
-// deterministic n-gon covering every player, including the host.
-
 TEST(MapGeneratorTests, SinglePlayerReturnsOneAnchorNearMapCenter)
 {
     MapParameters params = MakeParams(1);
@@ -338,11 +334,7 @@ TEST(MapGeneratorTests, StartingResourcePatchShapeIsRoundedIrregularAndSlightlyL
     EXPECT_GT(distinctShapes.size(), 1u);
 }
 
-// User request 2026-07-19: iron is often missing near spawn. COAL and
-// IRON_ORE starting patches were added alongside WOOD/STONE, on a wider ring
-// (26..32 vs 17..23) so all four fit around the HQ without collisions. Every
-// HQ should end up with a reachable, non-track patch of each within the
-// starting zone.
+// Every HQ needs reachable starter deposits for the first production chains.
 TEST(MapGeneratorTests, EveryHqGetsStartingCoalAndIronOrePatches)
 {
     for (unsigned int seed : {11u, 222u, 3333u, 44444u})

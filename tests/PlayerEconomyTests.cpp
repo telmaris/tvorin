@@ -9,8 +9,8 @@
 
 namespace
 {
-    // Creates a tiny owned grass map for player economy tests.
-    void PrepareOwnedMap(TileMap& map, Player* owner)
+    // Creates a tiny grass map for player economy tests.
+    void PrepareMap(TileMap& map)
     {
         map.params.sizeX = 8;
         map.params.sizeY = 8;
@@ -18,7 +18,6 @@ namespace
         for (int i = 0; i < map.params.sizeX * map.params.sizeY; i++)
         {
             Tile tile{i};
-            tile.owner = owner;
             tile.tileType = TileType::GRASS;
             map.tilemap.push_back(std::move(tile));
         }
@@ -29,7 +28,7 @@ TEST(PlayerEconomyTests, PopulationCapCountsFinishedVillages)
 {
     TileMap map;
     Player player{0, map};
-    PrepareOwnedMap(map, &player);
+    PrepareMap(map);
 
     auto* village = dynamic_cast<Village*>(
         map.PlaceLoadedBuilding(map.GetIdFromCoords({1, 1}), &player, std::make_unique<Village>(1)));
@@ -44,7 +43,7 @@ TEST(PlayerEconomyTests, AddManpowerRespectsPopulationCapIncludingWorkersAndSold
 {
     TileMap map;
     Player player{0, map};
-    PrepareOwnedMap(map, &player);
+    PrepareMap(map);
 
     auto* village = dynamic_cast<Village*>(
         map.PlaceLoadedBuilding(map.GetIdFromCoords({1, 1}), &player, std::make_unique<Village>(1)));
@@ -63,7 +62,7 @@ TEST(PlayerEconomyTests, AutoAssignWorkersMovesManpowerIntoProductionBuilding)
 {
     TileMap map;
     Player player{0, map};
-    PrepareOwnedMap(map, &player);
+    PrepareMap(map);
 
     Woodcutter building{7};
     building.owner = &player;
@@ -81,7 +80,7 @@ TEST(PlayerEconomyTests, ManpowerGrowthAppliesToPopulationComponent)
 {
     TileMap map;
     Player player{0, map};
-    PrepareOwnedMap(map, &player);
+    PrepareMap(map);
 
     auto* village = dynamic_cast<Village*>(
         map.PlaceLoadedBuilding(map.GetIdFromCoords({1, 1}), &player, std::make_unique<Village>(1)));
@@ -99,7 +98,7 @@ TEST(PlayerEconomyTests, TelemetryDoesNotReportTheoreticalProduction)
 {
     TileMap map;
     Player player{0, map};
-    PrepareOwnedMap(map, &player);
+    PrepareMap(map);
 
     Woodcutter woodcutter{7};
     woodcutter.owner = &player;
@@ -114,7 +113,7 @@ TEST(PlayerEconomyTests, TelemetryRecordsActualProductionAndInputConsumption)
 {
     TileMap map;
     Player player{0, map};
-    PrepareOwnedMap(map, &player);
+    PrepareMap(map);
 
     LumberMill lumberMill{7};
     lumberMill.owner = &player;
@@ -152,7 +151,7 @@ TEST(PlayerEconomyTests, TelemetryDoesNotRecordBuildCostAsConsumption)
     // telemetry recording it too was double-counting.
     TileMap map;
     Player player{0, map};
-    PrepareOwnedMap(map, &player);
+    PrepareMap(map);
 
     auto* storage = dynamic_cast<Headquarters*>(
         map.PlaceLoadedBuilding(map.GetIdFromCoords({1, 1}), &player, std::make_unique<Headquarters>(1)));
@@ -169,7 +168,7 @@ TEST(PlayerEconomyTests, TelemetryDoesNotRecordBuildingPlacementCostAsConsumptio
 {
     TileMap map;
     Player player{0, map};
-    PrepareOwnedMap(map, &player);
+    PrepareMap(map);
 
     auto* storage = dynamic_cast<Headquarters*>(
         map.PlaceLoadedBuilding(map.GetIdFromCoords({4, 4}), &player, std::make_unique<Headquarters>(1)));
@@ -189,7 +188,7 @@ TEST(PlayerEconomyTests, BuildCostModifierReducesEffectiveBuildCosts)
 {
     TileMap map;
     Player player{0, map};
-    PrepareOwnedMap(map, &player);
+    PrepareMap(map);
 
     const auto& roadDefinition = GetBuildingDefinition(BuildingType::Road);
     ASSERT_FALSE(roadDefinition.buildCosts.empty());

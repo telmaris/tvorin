@@ -1,6 +1,7 @@
 #include "world/WorldEventDefinition.h"
 
 #include "data/RtsDataFile.h"
+#include "economy/BalanceStatCatalog.h"
 
 #include <algorithm>
 #include <cmath>
@@ -65,47 +66,19 @@ namespace
 
     bool ParseStat(const std::string& value, BalanceStat& out)
     {
-        static const std::map<std::string, BalanceStat> values = {
-            {"BuildTime", BalanceStat::BuildTime}, {"BuildCost", BalanceStat::BuildCost},
-            {"ProductionCycleTime", BalanceStat::ProductionCycleTime},
-            {"ProductionOutputAmount", BalanceStat::ProductionOutputAmount},
-            {"WorkerCapacity", BalanceStat::WorkerCapacity}, {"TransportTime", BalanceStat::TransportTime},
-            {"RoadCapacity", BalanceStat::RoadCapacity}, {"RoadSpeed", BalanceStat::RoadSpeed},
-            {"ManpowerRate", BalanceStat::ManpowerRate}, {"PopulationCap", BalanceStat::PopulationCap},
-            {"BuilderAmount", BalanceStat::BuilderAmount}, {"UnitHp", BalanceStat::UnitHp},
-            {"UnitFieldAttack", BalanceStat::UnitFieldAttack}, {"UnitSiegePower", BalanceStat::UnitSiegePower},
-            {"UnitArmor", BalanceStat::UnitArmor}, {"UnitMoveSpeed", BalanceStat::UnitMoveSpeed},
-            {"UnitAttackSpeed", BalanceStat::UnitAttackSpeed}, {"UnitRecruitTime", BalanceStat::UnitRecruitTime},
-            {"UnitRecruitManpowerCost", BalanceStat::UnitRecruitManpowerCost},
-            {"ProvinceFortification", BalanceStat::ProvinceFortification},
-            {"ProvinceDefense", BalanceStat::ProvinceDefense},
-            {"ProvinceCounterattack", BalanceStat::ProvinceCounterattack},
-            {"ConquestSpoilsFraction", BalanceStat::ConquestSpoilsFraction},
-            {"ProvinceDefensePower", BalanceStat::ProvinceDefensePower},
-            {"ProvinceDefenseCoverage", BalanceStat::ProvinceDefenseCoverage},
-            {"ProvinceDefenseReadiness", BalanceStat::ProvinceDefenseReadiness},
-            {"ProvinceDefenseSupplyUse", BalanceStat::ProvinceDefenseSupplyUse},
-            {"TransportDispatchDelay", BalanceStat::TransportDispatchDelay},
-            {"VillageSupplyConsumption", BalanceStat::VillageSupplyConsumption},
-            {"RouteTravelSpeed", BalanceStat::RouteTravelSpeed},
-            {"RouteIncidentChance", BalanceStat::RouteIncidentChance},
-            {"TradeExchangeRate", BalanceStat::TradeExchangeRate},
-            {"TradeScoreGain", BalanceStat::TradeScoreGain},
-            {"BattleAttack", BalanceStat::BattleAttack},
-            {"BattleCasualtyRate", BalanceStat::BattleCasualtyRate},
-            {"BattleDuration", BalanceStat::BattleDuration},
-            {"GarrisonCapacity", BalanceStat::GarrisonCapacity},
-            {"GarrisonFoodUpkeep", BalanceStat::GarrisonFoodUpkeep},
-            {"RaidBuildingDestructionChance", BalanceStat::RaidBuildingDestructionChance},
-            {"RaidStockLossFraction", BalanceStat::RaidStockLossFraction},
-            {"ProvinceEventChance", BalanceStat::ProvinceEventChance},
-            {"ProvinceEventWeight", BalanceStat::ProvinceEventWeight},
-            {"ProvinceEventDuration", BalanceStat::ProvinceEventDuration},
-            {"ColonizationDuration", BalanceStat::ColonizationDuration}};
-        const auto it = values.find(value);
-        if (it == values.end())
+        const auto stat = TryParseBalanceStat(value);
+        if (!stat.has_value())
             return false;
-        out = it->second;
+        out = *stat;
+        return true;
+    }
+
+    bool ParsePolarity(const std::string& value, WorldEventPolarity& out)
+    {
+        if (value == "Negative") out = WorldEventPolarity::Negative;
+        else if (value == "Positive") out = WorldEventPolarity::Positive;
+        else if (value == "Neutral") out = WorldEventPolarity::Neutral;
+        else return false;
         return true;
     }
 
@@ -146,6 +119,29 @@ namespace
             definition.effects.emplace_back(ModifyTradeScoreEffect{amount});
             return true;
         }
+        if (tokens[1] == "KillJourneyUnitsPercent")
+        {
+            KillJourneyUnitsEffect effect;
+            if ((tokens.size() != 4 && tokens.size() != 5 && tokens.size() != 6) ||
+                !ParseInt(tokens, 2, effect.minimumFractionBasisPoints) ||
+                !ParseInt(tokens, 3, effect.maximumFractionBasisPoints) ||
+                effect.minimumFractionBasisPoints < 0 ||
+                effect.minimumFractionBasisPoints > effect.maximumFractionBasisPoints ||
+                effect.maximumFractionBasisPoints > 10000)
+                return false;
+            effect.minimumUnits = 1;
+            effect.maximumUnits = 0;
+            if (tokens.size() >= 5 && (!ParseInt(tokens, 4, effect.minimumUnits) ||
+                                       effect.minimumUnits < 0))
+                return false;
+            if (tokens.size() == 6 && (!ParseInt(tokens, 5, effect.maximumUnits) ||
+                                       effect.maximumUnits < 0 ||
+                                       effect.maximumUnits > 0 &&
+                                           effect.maximumUnits < effect.minimumUnits))
+                return false;
+            definition.effects.emplace_back(effect);
+            return true;
+        }
         if (tokens[1] == "KillJourneyUnits" || tokens[1] == "StartRaid" || tokens[1] == "DestroyBuilding")
         {
             int amount = 0;
@@ -178,6 +174,7 @@ WorldEventDefinitionLoadResult LoadWorldEventDefinitionsFromFile(const std::stri
     std::size_t currentLine = 0;
     std::set<std::string> seenFields;
     bool blockValid = true;
+    bool periodicScheduleSeen = false;
     const auto fail = [&](std::size_t line, const std::string& message)
     {
         Error(result, path, line, "event: " + message);
@@ -188,6 +185,38 @@ WorldEventDefinitionLoadResult LoadWorldEventDefinitionsFromFile(const std::stri
         const auto& tokens = document.lines[index];
         const std::size_t line = document.sourceLines[index];
         if (tokens.empty()) continue;
+        if (tokens[0] == "periodic_schedule")
+        {
+            if (current.has_value())
+            {
+                Error(result, path, line, "periodic_schedule must be top-level");
+                continue;
+            }
+            if (periodicScheduleSeen || tokens.size() != 9 ||
+                tokens[1] != "initial_delay_ticks" ||
+                tokens[3] != "check_interval_ticks" ||
+                tokens[5] != "chance_bp" ||
+                tokens[7] != "minimum_gap_ticks")
+            {
+                Error(result, path, line, "invalid or duplicate periodic_schedule");
+                continue;
+            }
+            PeriodicEventScheduleDefinition schedule;
+            int chance = 0;
+            if (!ParseTicks(tokens, 2, schedule.initialDelayTicks) ||
+                !ParseTicks(tokens, 4, schedule.checkIntervalTicks) ||
+                !ParseInt(tokens, 6, chance) || chance < 0 || chance > 10000 ||
+                !ParseTicks(tokens, 8, schedule.minimumGapTicks) ||
+                !schedule.IsValid())
+            {
+                Error(result, path, line, "periodic_schedule values are invalid");
+                continue;
+            }
+            schedule.occurrenceChanceBasisPoints = chance;
+            result.periodicSchedule = schedule;
+            periodicScheduleSeen = true;
+            continue;
+        }
         if (tokens[0] == "event")
         {
             if (current.has_value()) fail(line, "previous block is missing end");
@@ -214,8 +243,11 @@ WorldEventDefinitionLoadResult LoadWorldEventDefinitionsFromFile(const std::stri
         {
             if (tokens.size() != 1) fail(line, "end does not accept arguments");
             if (current->trigger == WorldEventTriggerDomain::ProvincePeriodic &&
-                current->checkIntervalTicks == 0)
-                fail(line, "periodic event requires check_interval_ticks");
+                current->repeatCooldownTicks == 0)
+                fail(line, "periodic event requires repeat_cooldown_ticks");
+            if (current->trigger == WorldEventTriggerDomain::ProvincePeriodic &&
+                current->chanceBasisPoints != 0)
+                fail(line, "periodic event chance_bp must be 0; use periodic_schedule");
             if (current->effects.size() > 64) fail(line, "too many effects");
             if (std::any_of(current->allowedKinds.begin(), current->allowedKinds.end(),
                             [&](ProvinceKind kind)
@@ -248,9 +280,20 @@ WorldEventDefinitionLoadResult LoadWorldEventDefinitionsFromFile(const std::stri
             else if (tokens[0] == "require_trait") definition.requiredTrait = tokens[1];
             else definition.requiredAdjacentTrait = tokens[1];
         }
+        else if (tokens[0] == "require_produced_resource")
+        {
+            if (tokens.size() != 2 || !TryParseResourceType(tokens[1],
+                                                              definition.requiredProducedResource))
+                fail(line, "require_produced_resource must name a valid resource");
+        }
         else if (tokens[0] == "trigger")
         {
             if (tokens.size() != 2 || !ParseTrigger(tokens[1], definition.trigger)) fail(line, "unknown trigger");
+        }
+        else if (tokens[0] == "polarity")
+        {
+            if (tokens.size() != 2 || !ParsePolarity(tokens[1], definition.polarity))
+                fail(line, "polarity must be Negative, Positive or Neutral");
         }
         else if (tokens[0] == "chance_bp")
         {
@@ -263,14 +306,14 @@ WorldEventDefinitionLoadResult LoadWorldEventDefinitionsFromFile(const std::stri
             if (tokens.size() != 2 || !ParseInt(tokens, 1, definition.weight) || definition.weight < 0)
                 fail(line, "weight must be non-negative");
         }
-        else if (tokens[0] == "duration_ticks" || tokens[0] == "check_interval_ticks")
+        else if (tokens[0] == "duration_ticks" || tokens[0] == "repeat_cooldown_ticks")
         {
             std::uint64_t value = 0;
             if (tokens.size() != 2 || !ParseTicks(tokens, 1, value) ||
-                (tokens[0] == "check_interval_ticks" && value == 0))
+                (tokens[0] == "repeat_cooldown_ticks" && value == 0))
                 fail(line, tokens[0] + " must be a valid tick count");
             else if (tokens[0] == "duration_ticks") definition.durationTicks = value;
-            else definition.checkIntervalTicks = value;
+            else definition.repeatCooldownTicks = value;
         }
         else if (tokens[0] == "allow_kind" || tokens[0] == "exclude_kind")
         {
@@ -297,11 +340,24 @@ WorldEventDefinitionLoadResult LoadWorldEventDefinitionsFromFile(const std::stri
     return result;
 }
 
+namespace
+{
+    const WorldEventDefinitionLoadResult& LoadedWorldEventDefinitions()
+    {
+        static const WorldEventDefinitionLoadResult loaded =
+            LoadWorldEventDefinitionsFromFile(DefaultEventDataPath);
+        return loaded;
+    }
+}
+
 const WorldEventCatalog& GetWorldEventCatalog()
 {
-    static const WorldEventDefinitionLoadResult loaded =
-        LoadWorldEventDefinitionsFromFile(DefaultEventDataPath);
-    return loaded.definitions;
+    return LoadedWorldEventDefinitions().definitions;
+}
+
+const PeriodicEventScheduleDefinition& GetPeriodicEventScheduleDefinition()
+{
+    return LoadedWorldEventDefinitions().periodicSchedule;
 }
 
 const WorldEventDefinition* FindWorldEventDefinition(std::string_view id)

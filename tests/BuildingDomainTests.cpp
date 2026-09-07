@@ -27,8 +27,8 @@ static_assert(!std::is_move_constructible_v<LumberMill>);
 
 namespace
 {
-    // Creates a small owned grass map for building-domain tests.
-    void FillOwnedGrass(TileMap& map, Player* owner, int width = 8, int height = 8)
+    // Creates a small grass map for building-domain tests.
+    void FillGrass(TileMap& map, int width = 8, int height = 8)
     {
         map.params.sizeX = width;
         map.params.sizeY = height;
@@ -37,7 +37,6 @@ namespace
         for (int i = 0; i < width * height; i++)
         {
             Tile tile{i};
-            tile.owner = owner;
             tile.tileType = TileType::GRASS;
             map.tilemap.push_back(std::move(tile));
         }
@@ -244,16 +243,12 @@ TEST(BuildingDomainTests, ProductionInputRequestsStopAtManualBlockOrFullNextOutp
     building.production.outputBuffers[ResourceType::PLANKS].FreeResource();
 }
 
-// Regression test for the "production stalls for a moment right at 100%"
-// report: GetProductionProgress() used to divide by the unmodified
-// cycleTime.GetBase(), while Produce() actually completes the cycle when
-// elapsed reaches GetModifiedCycleTime() (tech/focus adjusted) — any active
-// modifier on ProductionCycleTime desynced the two.
+// The progress bar and completion threshold must use the same cycle duration.
 TEST(BuildingDomainTests, ProductionProgressMatchesModifiedCycleTimeNotBaseline)
 {
     TileMap map;
     Player player{0, map};
-    FillOwnedGrass(map, &player);
+    FillGrass(map);
 
     auto* building = dynamic_cast<Woodcutter*>(
         map.PlaceLoadedBuilding(map.GetIdFromCoords({2, 2}), &player, std::make_unique<Woodcutter>(9)));
@@ -286,7 +281,7 @@ TEST(BuildingDomainTests, TerrainRichnessIsConsumedAndTurnsExhaustedTileToGrass)
 {
     TileMap map;
     Player player{0, map};
-    FillOwnedGrass(map, &player);
+    FillGrass(map);
 
     Vec2i anchor{2, 2};
     Vec2i footprint = GetBuildingDefinition(BuildingType::Woodcutter).footprint;
@@ -368,7 +363,7 @@ TEST(BuildingDomainTests, ProductionBuildingRequestsFromMultipleSuppliers)
 {
     TileMap map;
     Player player{0, map};
-    FillOwnedGrass(map, &player);
+    FillGrass(map);
     RoadNetwork network{map};
     player.GetProvinceEconomy()->roadNetwork = std::make_unique<RoadNetwork>(map);
 
@@ -406,7 +401,7 @@ TEST(BuildingDomainTests, MultipleProducersPushOutputToSameConsumerUntilInputIsR
 {
     TileMap map;
     Player player{0, map};
-    FillOwnedGrass(map, &player, 12, 9);
+    FillGrass(map, 12, 9);
     auto network = std::make_unique<RoadNetwork>(map);
     RoadNetwork* networkPtr = network.get();
     player.GetProvinceEconomy()->roadNetwork = std::move(network);
@@ -461,7 +456,7 @@ TEST(BuildingDomainTests, ProducerWithNoReceiverPushesFullOutputToNearestHeadqua
 {
     TileMap map;
     Player player{0, map};
-    FillOwnedGrass(map, &player, 10, 6);
+    FillGrass(map, 10, 6);
     auto network = std::make_unique<RoadNetwork>(map);
     RoadNetwork* networkPtr = network.get();
     player.GetProvinceEconomy()->roadNetwork = std::move(network);
@@ -497,7 +492,7 @@ TEST(BuildingDomainTests, ConcurrentHqSupplyDoesNotPreventProducerDispatchToHq)
 {
     TileMap map;
     Player player{0, map};
-    FillOwnedGrass(map, &player, 16, 9);
+    FillGrass(map, 16, 9);
     auto network = std::make_unique<RoadNetwork>(map);
     RoadNetwork* networkPtr = network.get();
     player.GetProvinceEconomy()->roadNetwork = std::move(network);
@@ -546,7 +541,7 @@ TEST(BuildingDomainTests, ProducerPushesResourceImmediatelyWhenProductionComplet
 {
     TileMap map;
     Player player{0, map};
-    FillOwnedGrass(map, &player, 10, 6);
+    FillGrass(map, 10, 6);
     auto network = std::make_unique<RoadNetwork>(map);
     RoadNetwork* networkPtr = network.get();
     player.GetProvinceEconomy()->roadNetwork = std::move(network);
@@ -588,17 +583,12 @@ TEST(BuildingDomainTests, RoadStatsUseConfiguredBaseValues)
     EXPECT_DOUBLE_EQ(road.GetModifiedTransportTime(), 4.0);
 }
 
-// User request (2026-07-20): generic building upgrade system, starting with
-// roads. Exercises the whole live path — UpgradeComponent ticking via
-// Building::Update, level-up, BalanceModifier application scoped to this one
-// road (BalanceModifierScope::BuildingAtPosition) — and the one invariant the
-// user explicitly called out: the road must stay fully operational
-// (never IsUnderConstruction()) for the entire upgrade.
+// A road remains operational while its scoped upgrade modifiers are applied.
 TEST(BuildingDomainTests, RoadUpgradeProgressesConsumesResourcesAndAppliesModifiers)
 {
     TileMap map;
     Player player{0, map};
-    FillOwnedGrass(map, &player);
+    FillGrass(map);
 
     auto* storage = dynamic_cast<StorageBuilding*>(
         map.PlaceLoadedBuilding(map.GetIdFromCoords({2, 2}), &player, std::make_unique<StorageBuilding>(1)));
@@ -759,7 +749,7 @@ TEST(BuildingDomainTests, VillageGeneratesManpowerAndFoodShortageReducesProducti
 {
     TileMap map;
     Player player{0, map};
-    FillOwnedGrass(map, &player);
+    FillGrass(map);
 
     auto* village = dynamic_cast<Village*>(
         map.PlaceLoadedBuilding(map.GetIdFromCoords({1, 1}), &player, std::make_unique<Village>(40)));
@@ -782,18 +772,100 @@ TEST(BuildingDomainTests, VillageGeneratesManpowerAndFoodShortageReducesProducti
 
     village->Update(1.0);
     EXPECT_TRUE(village->population.hasFood);
-    EXPECT_NEAR(village->GetFoodSupplyRatio(), 0.67, 0.0001);
-    EXPECT_NEAR(village->GetWorkerProductivity(), 0.769, 0.0001);
-    EXPECT_NEAR(player.strategicResources.Get(StrategicResourceType::Manpower), 1.67, 0.0001);
-    EXPECT_NEAR(village->activeTime, 1.67, 0.0001);
+    const double expectedSupply = 1.0 - 1.0 / village->population.foodShortageDecaySeconds;
+    EXPECT_NEAR(village->GetFoodSupplyRatio(), expectedSupply, 0.0001);
+    EXPECT_NEAR(village->GetWorkerProductivity(), 0.3 + 0.7 * expectedSupply, 0.0001);
+    EXPECT_NEAR(player.strategicResources.Get(StrategicResourceType::Manpower),
+                1.0 + expectedSupply, 0.0001);
+    EXPECT_NEAR(village->activeTime, 1.0 + expectedSupply, 0.0001);
     village->population.foodBuffer.Clear();
+}
+
+TEST(BuildingDomainTests, VillageFoodShortageDecaysLinearlyToThirtyPercentWorkerOutput)
+{
+    TileMap map;
+    Player player{0, map};
+    FillGrass(map);
+    auto* village = dynamic_cast<Village*>(
+        map.PlaceLoadedBuilding(map.GetIdFromCoords({1, 1}), &player,
+                                std::make_unique<Village>(45)));
+    ASSERT_NE(village, nullptr);
+    village->constructionRemaining = 0.0;
+    village->population.foodBuffer.Clear();
+    village->population.foodSupplyLevel = 1.0;
+    village->population.foodShortageDecaySeconds = 180.0;
+    village->population.upkeepInterval = 60.0;
+
+    for (int second = 0; second < 30; ++second)
+        village->Update(1.0);
+    EXPECT_NEAR(village->population.foodSupplyLevel, 5.0 / 6.0, 1e-9);
+    EXPECT_NEAR(village->population.GetWorkerProductivity(), 0.3 + 0.7 * (5.0 / 6.0), 1e-9);
+
+    for (int second = 30; second < 180; ++second)
+        village->Update(1.0);
+    EXPECT_NEAR(village->population.foodSupplyLevel, 0.0, 1e-12);
+    EXPECT_NEAR(village->population.GetWorkerProductivity(), 0.3, 1e-12);
+}
+
+TEST(BuildingDomainTests, VillageFoodShortageIsStableAcrossSimulationStepSizes)
+{
+    TileMap oneSecondMap;
+    TileMap hundredthMap;
+    Player oneSecondPlayer{0, oneSecondMap};
+    Player hundredthPlayer{0, hundredthMap};
+    FillGrass(oneSecondMap);
+    FillGrass(hundredthMap);
+    auto* oneSecond = dynamic_cast<Village*>(
+        oneSecondMap.PlaceLoadedBuilding(oneSecondMap.GetIdFromCoords({1, 1}), &oneSecondPlayer,
+                                         std::make_unique<Village>(46)));
+    auto* hundredth = dynamic_cast<Village*>(
+        hundredthMap.PlaceLoadedBuilding(hundredthMap.GetIdFromCoords({1, 1}), &hundredthPlayer,
+                                         std::make_unique<Village>(47)));
+    ASSERT_NE(oneSecond, nullptr);
+    ASSERT_NE(hundredth, nullptr);
+    for (Village* village : {oneSecond, hundredth})
+    {
+        village->constructionRemaining = 0.0;
+        village->population.foodBuffer.Clear();
+        village->population.foodSupplyLevel = 1.0;
+        village->population.foodShortageDecaySeconds = 180.0;
+        village->population.upkeepInterval = 100000.0;
+    }
+
+    for (int second = 0; second < 180; ++second)
+        oneSecond->Update(1.0);
+    for (int step = 0; step < 18000; ++step)
+        hundredth->Update(0.01);
+    EXPECT_NEAR(oneSecond->population.foodSupplyLevel,
+                hundredth->population.foodSupplyLevel, 1e-9);
+    EXPECT_NEAR(oneSecond->GetWorkerProductivity(),
+                hundredth->GetWorkerProductivity(), 1e-9);
+}
+
+TEST(BuildingDomainTests, MissedFoodUpkeepHasNoAdditionalStepPenalty)
+{
+    TileMap map;
+    Player player{0, map};
+    FillGrass(map);
+    auto* village = dynamic_cast<Village*>(
+        map.PlaceLoadedBuilding(map.GetIdFromCoords({1, 1}), &player,
+                                std::make_unique<Village>(48)));
+    ASSERT_NE(village, nullptr);
+    village->constructionRemaining = 0.0;
+    village->population.foodBuffer.Clear();
+    village->population.foodSupplyLevel = 1.0;
+    village->population.foodShortageDecaySeconds = 180.0;
+    village->population.upkeepInterval = 1.0;
+
+    village->Update(1.0);
+    EXPECT_NEAR(village->population.foodSupplyLevel, 1.0 - 1.0 / 180.0, 1e-9);
 }
 
 TEST(BuildingDomainTests, VillageSupplyConsumptionUsesIndependentModifiedIntervalsAtEveryTier)
 {
     TileMap map;
     Player player{0, map};
-    FillOwnedGrass(map, &player);
+    FillGrass(map);
 
     auto* village = dynamic_cast<Village*>(
         map.PlaceLoadedBuilding(map.GetIdFromCoords({1, 1}), &player, std::make_unique<Village>(42)));
@@ -851,7 +923,7 @@ TEST(BuildingDomainTests, VillageRequestsFoodProvisionsFromOwnedStorage)
 {
     TileMap map;
     Player player{0, map};
-    FillOwnedGrass(map, &player, 12, 8);
+    FillGrass(map, 12, 8);
     player.GetProvinceEconomy()->roadNetwork = std::make_unique<RoadNetwork>(map);
 
     auto* storage = dynamic_cast<StorageBuilding*>(
@@ -898,7 +970,7 @@ TEST(BuildingDomainTests, ConstructionQueueLimitsActiveBuildersAndTracksPosition
 {
     TileMap map;
     Player player{0, map};
-    FillOwnedGrass(map, &player, 12, 8);
+    FillGrass(map, 12, 8);
 
     auto place = [&](int id, Vec2i at) -> Road*
     {
@@ -959,7 +1031,7 @@ TEST(BuildingDomainTests, RefundBuildCostReturnsResourcesToStorageAndDropsOverfl
 {
     TileMap map;
     Player player{0, map};
-    FillOwnedGrass(map, &player);
+    FillGrass(map);
 
     auto* storage = dynamic_cast<StorageBuilding*>(
         map.PlaceLoadedBuilding(map.GetIdFromCoords({2, 2}), &player, std::make_unique<StorageBuilding>(1)));
@@ -978,15 +1050,7 @@ TEST(BuildingDomainTests, RefundBuildCostReturnsResourcesToStorageAndDropsOverfl
     storage->storage.buffers[ResourceType::WOOD].Clear();
 }
 
-// Regression test, updated 2026-07-15 (docs/work_plan_2026-07-13.md, A5 +
-// correction): the T3 background-pull mechanism this test originally
-// verified (LogisticsComponent::MaintainStorageRequests continuously topping
-// up Barracks' own buffer regardless of demand) was removed by design.
-// QueueRecruitment now queues the order immediately (tagged "waiting" — see
-// RecruitmentQueueEntry::resourcesReady) and requests the shortfall from its
-// wired supplier; RecruitmentComponent::Update keeps retrying each tick until
-// it physically arrives through the real road network, at which point the
-// entry's build timer starts.
+// A queued order requests its shortfall and starts training after delivery.
 TEST(BuildingDomainTests, BarracksRequestsAndReceivesUnitCostsOnDemandThroughRoadNetwork)
 {
     TileMap map;
@@ -1048,10 +1112,7 @@ TEST(BuildingDomainTests, BarracksCanRecruitKnightAndRamNotJustSwordsman)
 
     Barracks barracks{1};
     barracks.owner = &player;
-    // Recruitment now pulls from the player's GLOBAL storage network
-    // (docs/work_plan_2026-07-13.md, 2026-07-14), which is indexed via
-    // RegisterBuilding — Player::Build<T> does this implicitly, but a
-    // manually-constructed Barracks needs it done explicitly here.
+    // A manually constructed Barracks must join the global stockpile index.
     player.RegisterBuilding(&barracks);
     player.technologies.RestoreTechnology("furnace_and_casting_geometry");
     player.technologies.RestoreTechnology("torsion_engines");
@@ -1076,12 +1137,7 @@ TEST(BuildingDomainTests, BarracksCanRecruitKnightAndRamNotJustSwordsman)
     EXPECT_TRUE(barracks.recruitment.QueueRecruitment(barracks, "ram"));
 }
 
-// Updated 2026-07-15 (docs/work_plan_2026-07-13.md, A5 correction): Diagnose
-// and QueueRecruitment are now DELIBERATELY decoupled — Diagnose stays a
-// global feasibility scan (see BuildingComponents.h for why), while
-// QueueRecruitment only hard-fails on manpower and otherwise queues the
-// order as "waiting" until resources arrive locally. They no longer agree
-// on "empty iff recruitable" by design.
+// Diagnostics report global feasibility; queuing only hard-fails on manpower.
 TEST(BuildingDomainTests, DiagnoseRecruitmentBlockReportsMissingResourceAndManpower)
 {
     TileMap map;
@@ -1112,7 +1168,7 @@ TEST(BuildingDomainTests, DiagnoseRecruitmentBlockReportsMissingResourceAndManpo
     EXPECT_FALSE(barracks.recruitment.queue.back().resourcesReady);
 
     // Stock it directly: Diagnose returns empty. The order queued above is
-    // still waiting, and strict FIFO (TODO #1, 2026-07-16) means a fresh
+    // still waiting, and strict FIFO means a fresh
     // order must NOT grab the buffer past it — Update()'s readiness pass
     // serves the oldest waiting entry first. Stock the current configured
     // swordsman cost rather than duplicating balance constants here.
@@ -1143,7 +1199,7 @@ TEST(BuildingDomainTests, ReproSwitchingSupplierAwayFromHqFallback)
 {
     TileMap map;
     Player player{0, map};
-    FillOwnedGrass(map, &player, 16, 6);
+    FillGrass(map, 16, 6);
     auto network = std::make_unique<RoadNetwork>(map);
     RoadNetwork* networkPtr = network.get();
     player.GetProvinceEconomy()->roadNetwork = std::move(network);
@@ -1195,7 +1251,7 @@ TEST(BuildingDomainTests, AutoConnectUsesHeadquartersInsteadOfPrivateBuildingBuf
 {
     TileMap map;
     Player player{0, map};
-    FillOwnedGrass(map, &player, 24, 8);
+    FillGrass(map, 24, 8);
     auto network = std::make_unique<RoadNetwork>(map);
     RoadNetwork* networkPtr = network.get();
     player.GetProvinceEconomy()->roadNetwork = std::move(network);
@@ -1232,7 +1288,7 @@ TEST(BuildingDomainTests, ConsumerStopsPullingFromHqAfterSupplierReassignment)
 {
     TileMap map;
     Player player{0, map};
-    FillOwnedGrass(map, &player, 16, 6);
+    FillGrass(map, 16, 6);
     auto network = std::make_unique<RoadNetwork>(map);
     RoadNetwork* networkPtr = network.get();
     player.GetProvinceEconomy()->roadNetwork = std::move(network);
@@ -1299,7 +1355,7 @@ TEST(BuildingDomainTests, NewStorageBuildingDoesNotDrainExistingWarehouses)
 {
     TileMap map;
     Player player{0, map};
-    FillOwnedGrass(map, &player, 20, 8);
+    FillGrass(map, 20, 8);
     auto network = std::make_unique<RoadNetwork>(map);
     RoadNetwork* networkPtr = network.get();
     player.GetProvinceEconomy()->roadNetwork = std::move(network);
@@ -1351,7 +1407,7 @@ TEST(BuildingDomainTests, ConsumerPullsFromUnwiredWarehouseThatHoldsTheStock)
 {
     TileMap map;
     Player player{0, map};
-    FillOwnedGrass(map, &player, 24, 8);
+    FillGrass(map, 24, 8);
     auto network = std::make_unique<RoadNetwork>(map);
     RoadNetwork* networkPtr = network.get();
     player.GetProvinceEconomy()->roadNetwork = std::move(network);
@@ -1416,7 +1472,7 @@ TEST(BuildingDomainTests, RankSourcesForSkipsWarehousesWithNoRoadPath)
 {
     TileMap map;
     Player player{0, map};
-    FillOwnedGrass(map, &player, 24, 8);
+    FillGrass(map, 24, 8);
     auto network = std::make_unique<RoadNetwork>(map);
     RoadNetwork* networkPtr = network.get();
     player.GetProvinceEconomy()->roadNetwork = std::move(network);
@@ -1466,7 +1522,7 @@ TEST(BuildingDomainTests, StockpileIndexCountsWarehousesOnly)
 {
     TileMap map;
     Player player{0, map};
-    FillOwnedGrass(map, &player, 20, 8);
+    FillGrass(map, 20, 8);
     auto network = std::make_unique<RoadNetwork>(map);
     RoadNetwork* networkPtr = network.get();
     player.GetProvinceEconomy()->roadNetwork = std::move(network);

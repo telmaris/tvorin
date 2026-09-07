@@ -7,6 +7,7 @@
 #include "world/ProvinceSimulation.h"
 
 #include <algorithm>
+#include <cmath>
 #include <limits>
 #include <utility>
 
@@ -27,8 +28,10 @@ namespace
         return std::any_of(instance.effects.begin(), instance.effects.end(),
                            [](const WorldEventEffect& effect)
                            {
-                               const auto* loss = std::get_if<KillJourneyUnitsEffect>(&effect);
-                               return loss != nullptr && loss->amount > 0;
+                              const auto* loss = std::get_if<KillJourneyUnitsEffect>(&effect);
+                               return loss != nullptr &&
+                                      (loss->amount > 0 ||
+                                       loss->maximumFractionBasisPoints > 0);
                            });
     }
 
@@ -146,6 +149,10 @@ bool EventEligibilityService::IsEligible(const WorldEventDefinition& definition,
     if (!definition.requiredAdjacentTrait.empty() &&
         !Contains(context.adjacentTraits, definition.requiredAdjacentTrait))
         return false;
+    if (definition.requiredProducedResource != ResourceType::Null &&
+        std::find(context.producedResources.begin(), context.producedResources.end(),
+                  definition.requiredProducedResource) == context.producedResources.end())
+        return false;
     return context.routeLevel >= definition.minimumRouteLevel;
 }
 
@@ -260,8 +267,10 @@ void WorldEventFeed::Clear()
 }
 
 ProvinceEventSystem::ProvinceEventSystem(std::uint32_t seed,
-                                         const WorldEventCatalog* catalog)
-    : campaignSeed(seed), definitions(catalog != nullptr ? catalog : &GetWorldEventCatalog())
+                                         const WorldEventCatalog* catalog,
+                                         std::optional<PeriodicEventScheduleDefinition> schedule)
+    : campaignSeed(seed), definitions(catalog != nullptr ? catalog : &GetWorldEventCatalog()),
+      periodicScheduler(schedule.has_value() ? *schedule : GetPeriodicEventScheduleDefinition())
 {
 }
 
@@ -273,11 +282,13 @@ std::uint64_t ProvinceEventSystem::Mix(std::uint64_t value)
     return value ^ (value >> 31);
 }
 
-std::uint64_t ProvinceEventSystem::NextDeterministicValue(ProvinceId provinceId,
+std::uint64_t ProvinceEventSystem::NextDeterministicValue(PlayerId playerId,
+                                                          ProvinceId provinceId,
                                                           std::uint64_t attemptCounter,
                                                           std::uint64_t salt) const
 {
     std::uint64_t value = static_cast<std::uint64_t>(campaignSeed);
+    value ^= static_cast<std::uint64_t>(playerId) * 0x8CB92BA72F3D8DD7ull;
     value ^= static_cast<std::uint64_t>(provinceId) * 0xD6E8FEB86659FD93ull;
     value ^= attemptCounter * 0xA0761D6478BD642Full;
     value ^= salt * 0xE7037ED1A0B428DBull;
@@ -295,6 +306,24 @@ EventEligibilityContext ProvinceEventSystem::BuildContext(const GlobalMap& map,
         return context;
     context.provinceKind = province->GetKind();
     AppendTraits(*province, context.provinceTraits);
+    if (const auto* buildable = dynamic_cast<const BuildableProvince*>(province);
+        buildable != nullptr && buildable->GetSimulation() != nullptr)
+    {
+        for (const Building* building : buildable->GetSimulation()->GetEconomy().dataTracker.buildings)
+        {
+            if (building == nullptr)
+                continue;
+            for (const auto& output : building->GetOutputBufferViews())
+                if (output.type != ResourceType::Null)
+                    context.producedResources.push_back(output.type);
+        }
+        std::sort(context.producedResources.begin(), context.producedResources.end(),
+                  [](ResourceType lhs, ResourceType rhs)
+                  { return static_cast<int>(lhs) < static_cast<int>(rhs); });
+        context.producedResources.erase(std::unique(context.producedResources.begin(),
+                                                    context.producedResources.end()),
+                                       context.producedResources.end());
+    }
 
     std::vector<ProvinceId> neighbors = map.GetNeighbors(provinceId);
     std::sort(neighbors.begin(), neighbors.end());
@@ -375,24 +404,63 @@ bool ProvinceEventSystem::TryCreate(GlobalMap& map, PlayerId ownerId,
     const ProvinceId ownerProvinceId = trigger == WorldEventTriggerDomain::Route
         ? secondaryProvinceId : provinceId;
     Player* owner = FindProvinceOwner(map, ownerProvinceId, ownerId);
-    for (const auto* candidate : candidates)
+    constexpr std::uint64_t NegativeOccurrenceSalt = 0x4E45474154495645ull;
+    constexpr std::uint64_t PositiveOccurrenceSalt = 0x504F534954495645ull;
+    constexpr std::uint64_t PeriodicOccurrenceSalt = 0x4F4343555252454Eull;
+    constexpr std::uint64_t PeriodicDefinitionSalt = 0x444546494E495449ull;
+    constexpr std::uint64_t PeriodicOutcomeSalt = 0x4F5554434F4D45ull;
+    if (trigger == WorldEventTriggerDomain::ProvincePeriodic)
     {
-        const std::uint64_t roll = NextDeterministicValue(
-            provinceId, attemptCounter, triggerSalt ^ StableStringHash(candidate->id));
-        int effectiveChance = candidate->chanceBasisPoints;
+        int effectiveChance = periodicScheduler.GetSchedule().occurrenceChanceBasisPoints;
         if (owner != nullptr)
-            effectiveChance = owner->ModifyBalanceInt(
-                BalanceStat::ProvinceEventChance, effectiveChance,
+            effectiveChance = owner->ModifyBalanceIntAt(
+                BalanceStat::ProvinceEventChance, effectiveChance, provinceId,
                 BuildingType::Building, ResourceType::Null, 0);
-        if (trigger == WorldEventTriggerDomain::Route && owner != nullptr)
-            effectiveChance = owner->ModifyBalanceInt(
-                BalanceStat::RouteIncidentChance, effectiveChance,
-                BuildingType::Building, ResourceType::Null, 0);
-        const int routeReduction = trigger == WorldEventTriggerDomain::Route
-            ? std::clamp(context.routeIncidentChanceReductionBasisPoints, 0, 10000) : 0;
-        effectiveChance = std::clamp(effectiveChance - routeReduction, 0, 10000);
-        if ((roll % 10000ull) < static_cast<std::uint64_t>(effectiveChance))
-            chancePassed.push_back(candidate);
+        effectiveChance = std::clamp(effectiveChance, 0, 10000);
+        const std::uint64_t occurrenceRoll = NextDeterministicValue(
+            ownerId, provinceId, attemptCounter,
+            triggerSalt ^ PeriodicOccurrenceSalt) % 10000ull;
+        if (occurrenceRoll >= static_cast<std::uint64_t>(effectiveChance))
+            return false;
+        chancePassed = candidates;
+    }
+    else
+    {
+        const std::uint64_t negativeRoll = NextDeterministicValue(
+            ownerId, provinceId, attemptCounter, triggerSalt ^ NegativeOccurrenceSalt) % 10000ull;
+        const std::uint64_t positiveRoll = NextDeterministicValue(
+            ownerId, provinceId, attemptCounter, triggerSalt ^ PositiveOccurrenceSalt) % 10000ull;
+        for (const auto* candidate : candidates)
+        {
+            int effectiveChance = candidate->chanceBasisPoints;
+            if (owner != nullptr)
+                effectiveChance = owner->ModifyBalanceInt(
+                    BalanceStat::ProvinceEventChance, effectiveChance,
+                    BuildingType::Building, ResourceType::Null, 0);
+            if (trigger == WorldEventTriggerDomain::Route && owner != nullptr)
+                effectiveChance = owner->ModifyBalanceInt(
+                    BalanceStat::RouteIncidentChance, effectiveChance,
+                    BuildingType::Building, ResourceType::Null, 0);
+            if (trigger == WorldEventTriggerDomain::Route)
+            {
+                const RouteIncidentRiskQuote quote = QuoteRouteIncidentRisk({
+                    effectiveChance,
+                    context.routeLengthUnits,
+                    context.routeQualityBasisPoints,
+                    context.routeIncidentChanceReductionBasisPoints,
+                    10000,
+                    context.scoutEscortCount,
+                    100,
+                    1000});
+                effectiveChance = quote.negativeChanceBasisPoints;
+            }
+            else
+                effectiveChance = std::clamp(effectiveChance, 0, 10000);
+            const std::uint64_t roll = candidate->polarity == WorldEventPolarity::Positive
+                ? positiveRoll : negativeRoll;
+            if (roll < static_cast<std::uint64_t>(effectiveChance))
+                chancePassed.push_back(candidate);
+        }
     }
     if (chancePassed.empty())
         return false;
@@ -417,8 +485,10 @@ bool ProvinceEventSystem::TryCreate(GlobalMap& map, PlayerId ownerId,
     }
     if (totalWeight == 0)
         return false;
+    const std::uint64_t definitionSalt = trigger == WorldEventTriggerDomain::ProvincePeriodic
+        ? triggerSalt ^ PeriodicDefinitionSalt : triggerSalt;
     std::uint64_t selectedRoll = NextDeterministicValue(
-        provinceId, attemptCounter, triggerSalt) % totalWeight;
+        ownerId, provinceId, attemptCounter, definitionSalt) % totalWeight;
     const WorldEventDefinition* selected = nullptr;
     for (const auto& [candidate, weight] : weightedCandidates)
     {
@@ -451,7 +521,9 @@ bool ProvinceEventSystem::TryCreate(GlobalMap& map, PlayerId ownerId,
     }
     instance.endTick = AddSaturating(currentTick, duration);
     instance.outcomeRoll = NextDeterministicValue(
-        provinceId, attemptCounter, triggerSalt ^ StableStringHash(selected->id));
+        ownerId, provinceId, attemptCounter,
+        (trigger == WorldEventTriggerDomain::ProvincePeriodic ?
+             triggerSalt ^ PeriodicOutcomeSalt : triggerSalt) ^ StableStringHash(selected->id));
     instance.deterministicAttemptCounter = attemptCounter;
     instance.journeyId = journeyId;
     instance.effects = selected->effects;
@@ -517,6 +589,7 @@ void ProvinceEventSystem::ApplyEffects(GlobalMap& map, WorldEventInstance& insta
             modifier.additive = timed->additive;
             modifier.multiplier = timed->multiplier;
             modifier.scope = BalanceModifierScope::Global();
+            modifier.scope.provinceId = instance.provinceId;
             modifier.source = modifierSource;
             owner->balanceModifiers.AddModifier(std::move(modifier));
             instance.appliedEffects.push_back({AppliedWorldEventEffectKind::TimedModifier,
@@ -622,46 +695,70 @@ void ProvinceEventSystem::Update(GlobalMap& map, std::uint64_t currentTick)
     if (definitions == nullptr)
         return;
 
+    std::map<PlayerId, std::vector<ProvinceId>> ownedProvinces;
     for (const ProvinceId provinceId : map.GetProvinceIds())
     {
-        const IProvince* province = map.FindProvince(provinceId);
-        if (province == nullptr)
+        const auto* province = map.FindBuildableProvince(provinceId);
+        if (province == nullptr || province->GetOwnerId() == InvalidPlayerId ||
+            province->GetSimulation() == nullptr)
+            continue;
+        ownedProvinces[province->GetOwnerId()].push_back(provinceId);
+    }
+
+    constexpr std::uint64_t ProvinceSelectionSalt = 0x50524F56494E4345ull;
+    constexpr std::uint64_t PeriodicTriggerSalt = 0x504552494F444943ull;
+    for (const auto& [playerId, provinceIds] : ownedProvinces)
+    {
+        const auto attempt = periodicScheduler.TakeDueAttempt(playerId, currentTick);
+        if (!attempt.has_value() || provinceIds.empty())
             continue;
 
-        std::vector<std::string> dueDefinitionIds;
-        std::uint64_t attemptCounter = 0;
-        auto& byDefinition = cadenceStates[provinceId];
-        for (const auto& [definitionId, definition] : *definitions)
+        struct EligibleProvince
         {
-            if (definition.trigger != WorldEventTriggerDomain::ProvincePeriodic ||
-                definition.checkIntervalTicks == 0)
-                continue;
-            auto& cadence = byDefinition[definitionId];
-            if (currentTick < cadence.nextCheckTick)
-                continue;
-            cadence.attemptCounter++;
-            attemptCounter = std::max(attemptCounter, cadence.attemptCounter);
-            cadence.nextCheckTick = AddSaturating(currentTick, definition.checkIntervalTicks);
-            dueDefinitionIds.push_back(definitionId);
+            ProvinceId provinceId{InvalidProvinceId};
+            EventEligibilityContext context;
+            std::vector<std::string> definitionIds;
+        };
+        std::vector<EligibleProvince> eligible;
+        for (const ProvinceId provinceId : provinceIds)
+        {
+            const auto context = BuildContext(map, provinceId, 0);
+            EligibleProvince candidate{provinceId, context, {}};
+            for (const auto& [definitionId, definition] : *definitions)
+            {
+                if (definition.trigger != WorldEventTriggerDomain::ProvincePeriodic ||
+                    periodicScheduler.IsDefinitionOnCooldown(playerId, definitionId, currentTick) ||
+                    !EventEligibilityService::IsEligible(
+                        definition, WorldEventTriggerDomain::ProvincePeriodic, context))
+                    continue;
+                candidate.definitionIds.push_back(definitionId);
+            }
+            if (!candidate.definitionIds.empty())
+                eligible.push_back(std::move(candidate));
         }
-        if (dueDefinitionIds.empty())
+        if (eligible.empty())
             continue;
 
-        const auto context = BuildContext(map, provinceId, 0);
-        const auto candidates = FindCandidates(WorldEventTriggerDomain::ProvincePeriodic,
-                                                context, {}, dueDefinitionIds);
-        if (candidates.empty())
-            continue;
-        // TryCreate re-evaluates from the immutable catalog. Passing a stable
-        // cadence salt makes a catch-up/update pattern independent of map
-        // iteration order.
-        const PlayerId ownerId = province->GetKind() == ProvinceKind::Buildable
-            ? dynamic_cast<const BuildableProvince*>(province)->GetOwnerId()
-            : InvalidPlayerId;
-        TryCreate(map, ownerId, provinceId, InvalidProvinceId,
-                  WorldEventTriggerDomain::ProvincePeriodic, context, {}, currentTick,
-                  attemptCounter, 0x504552494F444943ull,
-                  InvalidWorldJourneyId, dueDefinitionIds);
+        const ProvinceId selectionAnchor = provinceIds.front();
+        const std::size_t provinceIndex = static_cast<std::size_t>(
+            NextDeterministicValue(playerId, selectionAnchor, *attempt,
+                                   ProvinceSelectionSalt) % eligible.size());
+        const EligibleProvince& selectedProvince = eligible[provinceIndex];
+        const WorldEventInstanceId instanceIdBefore = nextInstanceId;
+        if (TryCreate(map, playerId, selectedProvince.provinceId, InvalidProvinceId,
+                      WorldEventTriggerDomain::ProvincePeriodic,
+                      selectedProvince.context, {}, currentTick, *attempt,
+                      PeriodicTriggerSalt, InvalidWorldJourneyId,
+                      selectedProvince.definitionIds))
+        {
+            const auto instanceIt = instances.find(instanceIdBefore);
+            if (instanceIt != instances.end())
+                periodicScheduler.RecordSuccess(
+                    playerId, instanceIt->second.definitionId,
+                    instanceIt->second.definitionId.empty() ? 0 :
+                        definitions->at(instanceIt->second.definitionId).repeatCooldownTicks,
+                    currentTick);
+        }
     }
 }
 
@@ -723,7 +820,10 @@ bool ProvinceEventSystem::TriggerRoute(GlobalMap& map, PlayerId playerId,
                                        ProvinceId sourceProvinceId,
                                        ProvinceId targetProvinceId, int routeLevel,
                                        std::uint64_t currentTick,
-                                       WorldJourneyId journeyId)
+                                       WorldJourneyId journeyId,
+                                       int scoutEscortCount,
+                                       std::size_t completedLeg,
+                                       std::uint64_t journeyAttemptCounter)
 {
     const auto* connection = map.FindConnection(sourceProvinceId, targetProvinceId);
     if (playerId == InvalidPlayerId || sourceProvinceId == InvalidProvinceId ||
@@ -736,10 +836,20 @@ bool ProvinceEventSystem::TriggerRoute(GlobalMap& map, PlayerId playerId,
         {sourceProvinceId, targetProvinceId, playerId});
     routeContext.routeIncidentChanceReductionBasisPoints =
         std::clamp(stats.incidentChanceReductionBasisPoints, 0, 10000);
+    routeContext.routeLengthUnits = std::max(1, connection->GetLengthUnits());
+    routeContext.routeQualityBasisPoints = std::clamp(
+        static_cast<int>(std::lround(10000.0 /
+            std::max(0.25, stats.traversalTimeMultiplier))), 2500, 20000);
+    routeContext.scoutEscortCount = std::max(1, scoutEscortCount);
+    const std::uint64_t attempt = journeyAttemptCounter != 0
+        ? journeyAttemptCounter : static_cast<std::uint64_t>(std::max(0, routeLevel));
+    const std::uint64_t salt = 0x524F555445ull ^
+        static_cast<std::uint64_t>(sourceProvinceId) ^
+        Mix(static_cast<std::uint64_t>(journeyId)) ^
+        Mix(static_cast<std::uint64_t>(completedLeg));
     return TryCreate(map, playerId, targetProvinceId, sourceProvinceId,
                      WorldEventTriggerDomain::Route, routeContext, {}, currentTick,
-                     static_cast<std::uint64_t>(routeLevel),
-                     0x524F555445ull ^ static_cast<std::uint64_t>(sourceProvinceId),
+                     attempt, salt,
                      journeyId);
 }
 
@@ -761,12 +871,20 @@ const WorldEventInstance* ProvinceEventSystem::FindInstance(WorldEventInstanceId
     return it == instances.end() ? nullptr : &it->second;
 }
 
-void ProvinceEventSystem::RestoreCadenceState(ProvinceId provinceId, std::string definitionId,
-                                              ProvinceEventCadenceState state)
+bool ProvinceEventSystem::RestorePeriodicSchedulerState(
+    PlayerId playerId, PeriodicEventSchedulerState state)
 {
-    if (provinceId == InvalidProvinceId || definitionId.empty())
-        return;
-    cadenceStates[provinceId][std::move(definitionId)] = state;
+    if (definitions == nullptr || playerId == InvalidPlayerId)
+        return false;
+    for (const auto& [definitionId, cooldownUntil] : state.definitionCooldownUntil)
+    {
+        (void)cooldownUntil;
+        const auto definitionIt = definitions->find(definitionId);
+        if (definitionIt == definitions->end() ||
+            definitionIt->second.trigger != WorldEventTriggerDomain::ProvincePeriodic)
+            return false;
+    }
+    return periodicScheduler.RestoreState(playerId, std::move(state));
 }
 
 bool ProvinceEventSystem::RestoreInstance(WorldEventInstance instance)
@@ -785,6 +903,37 @@ bool ProvinceEventSystem::RestoreInstance(WorldEventInstance instance)
         else
             nextInstanceId = instances.rbegin()->first + 1;
     }
+    return true;
+}
+
+bool ProvinceEventSystem::RestoreInstance(GlobalMap& map, WorldEventInstance instance)
+{
+    const WorldEventInstanceId instanceId = instance.id;
+    if (!RestoreInstance(std::move(instance)))
+        return false;
+    const auto it = instances.find(instanceId);
+    if (it == instances.end() || it->second.expired)
+        return true;
+    const auto* province = dynamic_cast<const BuildableProvince*>(
+        map.FindProvince(it->second.provinceId));
+    if (province == nullptr || province->GetSimulation() == nullptr)
+        return true;
+    Player* owner = province->GetSimulation()->GetOwner();
+    if (owner == nullptr)
+        return true;
+    const std::string source = "world_event." + std::to_string(instanceId);
+    for (const auto& effect : it->second.appliedEffects)
+        if (effect.kind == AppliedWorldEventEffectKind::TimedModifier)
+        {
+            BalanceModifier modifier;
+            modifier.stat = effect.stat;
+            modifier.additive = effect.additive;
+            modifier.multiplier = effect.multiplier;
+            modifier.scope = BalanceModifierScope::Global();
+            modifier.scope.provinceId = it->second.provinceId;
+            modifier.source = source;
+            owner->balanceModifiers.AddModifier(std::move(modifier));
+        }
     return true;
 }
 
@@ -828,9 +977,14 @@ std::vector<JourneyUnitLossRequest> ProvinceEventSystem::ConsumePendingJourneyUn
         for (const auto& effect : instance.effects)
         {
             const auto* loss = std::get_if<KillJourneyUnitsEffect>(&effect);
-            if (loss == nullptr || loss->amount <= 0)
+            if (loss == nullptr ||
+                (loss->amount <= 0 && loss->maximumFractionBasisPoints <= 0))
                 continue;
-            result.push_back({eventId, instance.journeyId, instance.ownerId, loss->amount});
+            result.push_back({eventId, instance.journeyId, instance.ownerId, loss->amount,
+                              loss->minimumFractionBasisPoints,
+                              loss->maximumFractionBasisPoints,
+                              loss->minimumUnits, loss->maximumUnits,
+                              instance.outcomeRoll});
             break;
         }
     }
@@ -862,7 +1016,7 @@ bool ProvinceEventSystem::ConfirmJourneyEffectApplied(WorldEventInstanceId event
 void ProvinceEventSystem::Clear()
 {
     nextInstanceId = 1;
-    cadenceStates.clear();
+    periodicScheduler.Clear();
     instances.clear();
     feed.Clear();
 }

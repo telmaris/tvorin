@@ -215,14 +215,8 @@ class GameWorld
         // inputs.
         std::size_t GetLiveShipmentCount() const;
         int GetStoredResourceUnits() const;
-        // ETAP 12.1 — tilemap/playerHandler are private; this is the only access
-        // point. Const-qualified callers (e.g. code holding a `const GameWorld&`)
-        // get a read-only view; non-const callers still get a mutable one, since
-        // TileMap's own accessors (GetBuilding, operator[], ...) aren't const-
-        // qualified yet — tightening that is deferred follow-up work (see
-        // docs/tech_debt.md). Even so, gameplay state must only
-        // be MUTATED through GameCommand (ProcessCommands) or persistence; UI code
-        // reading through the non-const overload must not write.
+        // The mutable overload exists for TileMap's non-const query API. Gameplay
+        // state must still change only through commands or persistence.
         TileMap& GetTileMap()
         {
             auto it = playerHandler.players.find(localPlayerId);
@@ -292,6 +286,7 @@ class GameWorld
         void UpdateControllers(double dt);
         void UpdateOwnedProvinceSimulations(double dt);
         void UpdateColonizationOperations();
+        void ProcessJourneyRouteEvents();
         void ProcessNonBattleJourneyEvents();
         void ProcessResourceTransfers();
         void ProcessArmyTransfers();
@@ -301,7 +296,8 @@ class GameWorld
         // Executes every queued command in submission order.
         void ProcessCommands();
         // Validates and applies one command to the simulation.
-        bool ExecuteCommand(const GameCommand& command);
+        bool ExecuteCommand(const GameCommand& command,
+                            std::string* failureReason = nullptr);
         // Recomputes current visibility from owned buildings.
         // Derived state is intentionally rebuilt after load/snapshot rather than
         // serialized as a visual texture or GPU resource.

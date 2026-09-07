@@ -75,9 +75,10 @@ building Village
     build_time 18.0
     footprint 4 4
     texture_id 4
-    village manpower_rate 0.5 population_cap 150 upkeep_interval 60.0 food_package_upkeep 1.0
-    upgrade level 2 population_cap 350 manpower_rate 1.75 cost PLANKS 80 cost STONE 60 cost TOOLS 12 cost CLOTHES 20 build_time 45
-    upgrade level 3 population_cap 1200 manpower_rate 6.0 cost BRICKS 180 cost PLANKS 140 cost TOOLS 30 cost COPPERWARE 40 cost GLASS 30 cost COPPER_PIPE 8 cost COPPER_VESSEL 3 build_time 90
+    village manpower_rate 0.3 population_cap 150 upkeep_interval 60.0 food_package_upkeep 1.0 food_shortage_decay_seconds 180
+    supply FOOD_PROVISIONS 1 residents_per_package 30 interval 60
+    upgrade level 2 population_cap 350 manpower_rate 0.75 cost PLANKS 80 cost STONE 60 cost TOOLS 12 cost CLOTHES 20 build_time 45 supply FOOD_PROVISIONS 1 residents_per_package 45 interval 60 supply HOUSEHOLD_GOODS 1 residents_per_package 80 interval 60
+    upgrade level 3 population_cap 1200 manpower_rate 1 cost BRICKS 180 cost PLANKS 140 cost TOOLS 30 cost COPPERWARE 40 cost GLASS 30 cost COPPER_PIPE 8 cost COPPER_VESSEL 3 build_time 90 supply FOOD_PROVISIONS 1 residents_per_package 60 interval 60 supply HOUSEHOLD_GOODS 1 residents_per_package 90 interval 60 supply URBAN_GOODS 1 residents_per_package 120 interval 60
 end
 
 building StorageBuilding
@@ -176,9 +177,9 @@ building HuntersHut
     texture_id 9
     terrain_production WOOD
         workers 4
-        cycle_time 10.0
+        cycle_time 12.0
         output MEAT 1
-        output_buffer MEAT 6
+        output_buffer MEAT 3
     end
 end
 
@@ -280,8 +281,8 @@ building Foundry
         input IRON_ORE 4
         input COAL 4
         output IRON 1
-        input_buffer IRON_ORE 8
-        input_buffer COAL 8
+        input_buffer IRON_ORE 12
+        input_buffer COAL 12
         output_buffer IRON 4
     end
     recipe "Iron"
@@ -290,8 +291,8 @@ building Foundry
         input IRON_ORE 4
         input COAL 4
         output IRON 1
-        input_buffer IRON_ORE 8
-        input_buffer COAL 8
+        input_buffer IRON_ORE 12
+        input_buffer COAL 12
         output_buffer IRON 4
     end
     recipe "Copper"
@@ -300,8 +301,8 @@ building Foundry
         input COPPER_ORE 5
         input COAL 4
         output COPPER 1
-        input_buffer COPPER_ORE 10
-        input_buffer COAL 8
+        input_buffer COPPER_ORE 15
+        input_buffer COAL 12
         output_buffer COPPER 4
     end
 end
@@ -340,10 +341,10 @@ building WheatFarm
     production
         workers 8
         cycle_time 12.0
-        input WATER 5
+        input WATER 4
         output WHEAT 4
-        input_buffer WATER 10
-        output_buffer WHEAT 16
+        input_buffer WATER 12
+        output_buffer WHEAT 12
     end
 end
 
@@ -361,11 +362,11 @@ building Windmill
     texture_id 12
     production
         workers 6
-        cycle_time 8.0
+        cycle_time 12.0
         input WHEAT 4
         output FLOUR 2
         input_buffer WHEAT 12
-        output_buffer FLOUR 8
+        output_buffer FLOUR 6
     end
 end
 
@@ -383,12 +384,12 @@ building Bakery
     texture_id 13
     production
         workers 8
-        cycle_time 10.0
-        input FLOUR 4
-        input WATER 6
+        cycle_time 12.0
+        input FLOUR 2
+        input WATER 2
         output BREAD 2
-        input_buffer FLOUR 8
-        input_buffer WATER 12
+        input_buffer FLOUR 6
+        input_buffer WATER 6
         output_buffer BREAD 6
     end
 end
@@ -407,14 +408,14 @@ building Inn
     texture_id 14
     production
         workers 8
-        cycle_time 20.0
-        input BREAD 6
-        input MEAT 3
+        cycle_time 24.0
+        input BREAD 8
+        input MEAT 6
         input WATER 8
-        output FOOD_PROVISIONS 3
-        input_buffer BREAD 12
-        input_buffer MEAT 6
-        input_buffer WATER 16
+        output FOOD_PROVISIONS 2
+        input_buffer BREAD 24
+        input_buffer MEAT 18
+        input_buffer WATER 24
         output_buffer FOOD_PROVISIONS 6
     end
 end
@@ -438,8 +439,8 @@ building Paperworks
         input WOOD 5
         input WATER 5
         output PAPER 2
-        input_buffer WOOD 10
-        input_buffer WATER 10
+        input_buffer WOOD 15
+        input_buffer WATER 15
         output_buffer PAPER 6
     end
     recipe "Wood Pulp Paper"
@@ -448,8 +449,8 @@ building Paperworks
         input WOOD 5
         input WATER 5
         output PAPER 2
-        input_buffer WOOD 10
-        input_buffer WATER 10
+        input_buffer WOOD 15
+        input_buffer WATER 15
         output_buffer PAPER 6
     end
     recipe "Hemp Paper"
@@ -458,9 +459,9 @@ building Paperworks
         input FIBRE 5
         input WATER 5
         output PAPER 4
-        input_buffer FIBRE 10
-        input_buffer WATER 10
-        output_buffer PAPER 8
+        input_buffer FIBRE 15
+        input_buffer WATER 15
+        output_buffer PAPER 12
     end
 end
 
@@ -503,7 +504,7 @@ building Smith
         input IRON 3
         input WOOD 1
         output IRON_SWORD 1
-        input_buffer IRON 6
+        input_buffer IRON 9
         input_buffer WOOD 6
         output_buffer IRON_SWORD 3
     end
@@ -666,8 +667,8 @@ building Road
     texture_id 5
     transport_time 1.0
     road upgrade_level 1 max_capacity 5 speed_modifier 1.0
-    upgrade level 2 cost STONE 2 build_time 5 capacity_additive 2 speed_multiplier 1.1
-    upgrade level 3 cost STONE 3 cost HORSE 1 build_time 8 capacity_additive 4 speed_multiplier 1.1
+    upgrade level 2 cost STONE 2 build_time 5 capacity_additive 2 speed_multiplier 1.1 visual_texture "assets/textures/roads/generated/roads_level2_stone_autotile_3x4_64px.png"
+    upgrade level 3 cost STONE 3 cost HORSE 1 build_time 8 capacity_additive 4 speed_multiplier 1.1 visual_texture "assets/textures/roads/generated/roads_level3_paved_autotile_3x4_64px.png"
     upgrade level 4 cost STONE 4 cost HORSE 1 cost MECHANICAL_PARTS 2 build_time 12 capacity_additive 6 speed_multiplier 1.2
 end
 
@@ -689,8 +690,8 @@ building AnimalFarm
         input WHEAT 10
         input WATER 10
         output CATTLE 2
-        input_buffer WHEAT 20
-        input_buffer WATER 20
+        input_buffer WHEAT 30
+        input_buffer WATER 30
         output_buffer CATTLE 6
     end
 end
@@ -759,7 +760,7 @@ building Tailor
     texture_id 4
     production
         workers 8
-        cycle_time 10.0
+        cycle_time 12.0
         input LEATHER 2
         output CLOTHES 2
         input_buffer LEATHER 12
@@ -767,11 +768,11 @@ building Tailor
     end
     recipe "Leather Clothes"
         workers 8
-        cycle_time 20.0
+        cycle_time 12.0
         input LEATHER 2
         output CLOTHES 2
-        input_buffer LEATHER 6
-        output_buffer CLOTHES 6
+        input_buffer LEATHER 12
+        output_buffer CLOTHES 12
     end
     recipe "Cloth Clothes"
         requires_tech guild_apprenticeship
@@ -780,7 +781,7 @@ building Tailor
         input CLOTH 2
         output CLOTHES 3
         input_buffer CLOTH 6
-        output_buffer CLOTHES 6
+        output_buffer CLOTHES 9
     end
 end
 
@@ -859,9 +860,9 @@ building HorseStable
         input WHEAT 5
         input WATER 5
         output HORSE 1
-        input_buffer WHEAT 10
-        input_buffer WATER 10
-        output_buffer HORSE 2
+        input_buffer WHEAT 15
+        input_buffer WATER 15
+        output_buffer HORSE 3
     end
 end
 
@@ -1035,24 +1036,24 @@ building Copperworks
         cycle_time 10.0
         input COPPER 2
         output COPPERWARE 1
-        input_buffer COPPER 4
-        output_buffer COPPERWARE 2
+        input_buffer COPPER 6
+        output_buffer COPPERWARE 3
     end
     recipe "Copperware"
         workers 10
         cycle_time 10.0
         input COPPER 2
         output COPPERWARE 1
-        input_buffer COPPER 4
-        output_buffer COPPERWARE 2
+        input_buffer COPPER 6
+        output_buffer COPPERWARE 3
     end
     recipe "Copper Vessel"
         workers 12
         cycle_time 25.0
         input COPPER 8
         output COPPER_VESSEL 1
-        input_buffer COPPER 16
-        output_buffer COPPER_VESSEL 2
+        input_buffer COPPER 24
+        output_buffer COPPER_VESSEL 3
     end
     recipe "Copper Pipe"
         requires_tech pump_engineering
@@ -1060,8 +1061,8 @@ building Copperworks
         cycle_time 10.0
         input COPPER 5
         output COPPER_PIPE 2
-        input_buffer COPPER 10
-        output_buffer COPPER_PIPE 4
+        input_buffer COPPER 15
+        output_buffer COPPER_PIPE 6
     end
     recipe "Mechanical Parts"
         requires_tech waterwheel_gearing
@@ -1070,9 +1071,9 @@ building Copperworks
         input COPPER 3
         input TOOLS 1
         output MECHANICAL_PARTS 1
-        input_buffer COPPER 6
-        input_buffer TOOLS 2
-        output_buffer MECHANICAL_PARTS 2
+        input_buffer COPPER 9
+        input_buffer TOOLS 3
+        output_buffer MECHANICAL_PARTS 3
     end
 end
 
@@ -1120,7 +1121,7 @@ building HempFarm
         cycle_time 10.0
         input WATER 5
         output HEMP 2
-        input_buffer WATER 10
+        input_buffer WATER 15
         output_buffer HEMP 6
     end
 end
@@ -1142,7 +1143,7 @@ building Ropery
         input HEMP 2
         output FIBRE 3
         input_buffer HEMP 12
-        output_buffer FIBRE 16
+        output_buffer FIBRE 18
     end
     recipe "Fibre"
         workers 7
@@ -1150,14 +1151,14 @@ building Ropery
         input HEMP 2
         output FIBRE 3
         input_buffer HEMP 12
-        output_buffer FIBRE 16
+        output_buffer FIBRE 18
     end
     recipe "Rope"
         workers 9
         cycle_time 10.0
         input FIBRE 3
         output ROPE 2
-        input_buffer FIBRE 16
+        input_buffer FIBRE 18
         output_buffer ROPE 12
     end
 end
@@ -1178,7 +1179,7 @@ building Weaver
         cycle_time 9.0
         input FIBRE 3
         output CLOTH 2
-        input_buffer FIBRE 16
+        input_buffer FIBRE 18
         output_buffer CLOTH 12
     end
 end
@@ -1232,7 +1233,7 @@ building Bowyer
         input PLANKS 3
         input ROPE 2
         output HEAVY_BOW 1
-        input_buffer PLANKS 14
+        input_buffer PLANKS 15
         input_buffer ROPE 10
         output_buffer HEAVY_BOW 8
     end
@@ -1283,7 +1284,7 @@ building SiegeWorkshop
         input IRON 2
         output BALLISTA 1
         input_buffer PLANKS 32
-        input_buffer ROPE 16
+        input_buffer ROPE 18
         input_buffer IRON 12
         output_buffer BALLISTA 4
     end
@@ -1296,7 +1297,7 @@ building SiegeWorkshop
         input IRON 2
         output BALLISTA 1
         input_buffer PLANKS 32
-        input_buffer ROPE 16
+        input_buffer ROPE 18
         input_buffer IRON 12
         output_buffer BALLISTA 4
     end
@@ -1307,8 +1308,8 @@ building SiegeWorkshop
         input PLANKS 10
         input IRON 3
         output BATTERING_RAM 1
-        input_buffer PLANKS 36
-        input_buffer IRON 14
+        input_buffer PLANKS 40
+        input_buffer IRON 15
         output_buffer BATTERING_RAM 4
     end
     recipe "Catapult"
@@ -1320,8 +1321,8 @@ building SiegeWorkshop
         input IRON 4
         input MECHANICAL_PARTS 2
         output CATAPULT 1
-        input_buffer PLANKS 40
-        input_buffer ROPE 18
+        input_buffer PLANKS 48
+        input_buffer ROPE 20
         input_buffer IRON 16
         input_buffer MECHANICAL_PARTS 10
         output_buffer CATAPULT 4
@@ -1351,7 +1352,7 @@ building Fortress
     tag "[Fortress]"
     placement_category military
     build_category military
-    texture "assets/textures/building/generated/fortress_idle_v2/fortress_idle_4x4.png"
+    texture "assets/textures/building/fortress.png"
     build_cost PLANKS 100
     build_cost STONE 150
     build_cost IRON 45

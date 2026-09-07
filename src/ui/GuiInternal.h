@@ -41,10 +41,7 @@ void UpdateStrategicHudLayout(StrategicResourceHudWidget& hud, Vec2i windowSize)
 // Middle/right-mouse camera drag shared by all interaction systems.
 void MoveCamera(GameScene* scene, CameraMovement& cameraMovement);
 
-// A3 (docs/work_plan_2026-07-13.md): starts a pan candidate on RMB press and
-// remembers the press position, for systems where RMB also triggers a click
-// action (only BasicMapViewSystem today). Systems with no competing RMB
-// click action can keep setting cameraMovement.isMoving = true directly.
+// Starts a pan candidate when RMB can also trigger a click action.
 void BeginCameraDrag(CameraMovement& cameraMovement);
 
 // Ends the RMB pan candidate started by BeginCameraDrag. Returns true when
@@ -89,6 +86,7 @@ void DrawResourceTooltip(ResourceType type, const std::vector<std::string>& line
 
 // Returns the local player's headquarters building, or nullptr.
 Building* FindLocalHeadquarters(GameScene* scene);
+bool CenterCameraOnActiveProvinceHeadquarters(GameScene* scene);
 
 // Grants the local player's HQ a package of every resource — debug worlds
 // only (params.debugMode). Wired to the F10 action in WireCommonSystemActions.

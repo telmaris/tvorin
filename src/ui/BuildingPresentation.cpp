@@ -2,6 +2,8 @@
 
 #include "economy/BuildingConfig.h"
 #include "economy/BuildingComponents.h"
+#include "economy/Player.h"
+#include "economy/ProvincePopulation.h"
 #include "data/Resource.h"
 #include "raylib.h"
 
@@ -27,6 +29,29 @@ namespace
         }
         return result;
     }
+}
+
+VillagePresentationView BuildVillagePresentationView(const Building& building)
+{
+    VillagePresentationView view;
+    const auto* population = building.GetComponent<PopulationComponent>();
+    if (population == nullptr)
+        return view;
+
+    view.populationCap = building.owner != nullptr
+        ? building.owner->ResolveStat(population->populationCap, &building)
+        : population->populationCap.GetBase();
+    const double manpowerRate = building.owner != nullptr
+        ? building.owner->ResolveStat(population->manpowerRate, &building)
+        : population->manpowerRate.GetBase();
+    view.manpowerGainPerMinute = manpowerRate * population->GetManpowerProductivity() * 60.0;
+    view.inhabitants = population->hasAssignedResidents
+        ? population->assignedResidents
+        : building.owner != nullptr
+            ? building.owner->GetTotalPopulation()
+            : 0.0;
+    view.supplies = population->GetSupplyConsumptionViews(building);
+    return view;
 }
 
 BuildingPresentationStatus BuildBuildingPresentationStatus(const Building& building)
